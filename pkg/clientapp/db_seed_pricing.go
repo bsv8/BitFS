@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseedpricingpolicy"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizseedpricingpolicy"
 )
 
 type seedPricingPolicyRow struct {

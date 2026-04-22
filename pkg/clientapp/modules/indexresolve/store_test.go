@@ -9,8 +9,9 @@ import (
 
 	"entgo.io/ent/dialect"
 	entsql "entgo.io/ent/dialect/sql"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/modules/indexresolve/storedb/gen"
 	_ "modernc.org/sqlite"
 )
 
@@ -96,6 +97,9 @@ func TestBootstrapStoreAndLifecycle(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	if _, err := db.Exec(`PRAGMA foreign_keys=ON`); err != nil {
 		t.Fatalf("pragma foreign_keys: %v", err)
+	}
+	if err := coredb.EnsureSchema(context.Background(), db); err != nil {
+		t.Fatalf("create core schema: %v", err)
 	}
 	if err := prepareIndexResolveSchema(context.Background(), db); err != nil {
 		t.Fatalf("create schema: %v", err)

@@ -20,7 +20,7 @@ func newAssetFactsTestDB(t *testing.T) *sql.DB {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 	return db

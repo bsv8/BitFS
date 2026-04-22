@@ -229,6 +229,14 @@ type LockedFunction struct {
 	Note             string
 }
 
+// SchemaEnsureHook 是模块或 owner 的建表钩子。
+//
+// 设计说明：
+// - 这里只给启动阶段用，不给业务层反复调用；
+// - 这里接的是已经打开好的 *sql.DB，避免再包一层依赖聚合结构体；
+// - schema ensure 和模块 install 分离，避免安装流程里夹带建表副作用。
+type SchemaEnsureHook func(context.Context, *sql.DB) error
+
 // ModuleDescriptor 是模块对 catalog 暴露的最小描述。
 //
 // 设计说明：
@@ -237,6 +245,8 @@ type LockedFunction struct {
 // - 静态检查器和运行时安装共享同一份模块事实。
 type ModuleDescriptor struct {
 	Name               string
+	SchemaOwner        string
+	EnsureSchema       SchemaEnsureHook
 	Install            Installer
 	ModuleLockName     string
 	ModuleLockProvider func() []LockedFunction

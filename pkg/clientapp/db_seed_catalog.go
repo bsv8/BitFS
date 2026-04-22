@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseeds"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizseeds"
 )
 
 // 设计说明：

@@ -217,13 +217,7 @@ func dbRegisterWorkspaceFileOnly(ctx context.Context, store *clientDB, absPath s
 	if !ok {
 		return fmt.Errorf("output path is outside registered biz_workspaces")
 	}
-	lockedValue := int64(0)
-	if seedLocked {
-		lockedValue = 1
-	}
-	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-		return dbUpsertWorkspaceFileTx(ctx, tx, resolved.WorkspacePath, resolved.FilePath, seedHash, lockedValue)
-	})
+	return store.UpsertWorkspaceFile(ctx, resolved.WorkspacePath, resolved.FilePath, seedHash, seedLocked)
 }
 
 func downloadFileWorkspaceDataRoot(ctx context.Context, store *clientDB, seedHash string) (string, error) {

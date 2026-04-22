@@ -8,12 +8,12 @@ import (
 	"time"
 
 	entsql "entgo.io/ent/dialect/sql"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizpricingautopilotaudit"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizpricingautopilotconfig"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizpricingautopilotstate"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseedpricingpolicy"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseeds"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpricingautopilotaudit"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpricingautopilotconfig"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpricingautopilotstate"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizseedpricingpolicy"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizseeds"
 )
 
 func entWriteRootFromSQLConn(conn SQLConn) (EntWriteRoot, error) {

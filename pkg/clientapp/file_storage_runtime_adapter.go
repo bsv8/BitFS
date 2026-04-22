@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizworkspaces"
 )
 
 type fileStorageRuntimeAdapter struct {
@@ -203,38 +202,7 @@ func (a *fileStorageRuntimeAdapter) listWorkspaceRows(ctx context.Context) ([]wo
 	if a == nil || a.store == nil {
 		return nil, fmt.Errorf("file storage is not initialized")
 	}
-	var out []workspaceItem
-	err := a.store.ReadEnt(ctx, func(root EntReadRoot) error {
-		var rows []struct {
-			WorkspacePath string `json:"workspace_path,omitempty"`
-			Enabled       int64  `json:"enabled,omitempty"`
-			MaxBytes      int64  `json:"max_bytes,omitempty"`
-			CreatedAtUnix int64  `json:"created_at_unix,omitempty"`
-		}
-		err := root.BizWorkspaces.Query().
-			Order(bizworkspaces.ByWorkspacePath()).
-			Select(
-				bizworkspaces.FieldWorkspacePath,
-				bizworkspaces.FieldEnabled,
-				bizworkspaces.FieldMaxBytes,
-				bizworkspaces.FieldCreatedAtUnix,
-			).
-			Scan(ctx, &rows)
-		if err != nil {
-			return err
-		}
-		for _, row := range rows {
-			item := workspaceItem{
-				WorkspacePath: row.WorkspacePath,
-				Enabled:       row.Enabled != 0,
-				MaxBytes:      uint64(row.MaxBytes),
-				CreatedAtUnix: row.CreatedAtUnix,
-			}
-			out = append(out, item)
-		}
-		return nil
-	})
-	return out, err
+	return dbListWorkspaces(ctx, a.store)
 }
 
 func classifyLiveWorkspacePathAdapter(items []workspaceItem, absPath string) (string, string, bool) {

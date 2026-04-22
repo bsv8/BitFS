@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseedchunksupply"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseedpricingpolicy"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseeds"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizseedchunksupply"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizseedpricingpolicy"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizseeds"
 )
 
 type seedReadRoot interface {
@@ -24,9 +24,6 @@ type seedWriteRoot interface {
 	BizSeedsClient() *gen.BizSeedsClient
 	BizSeedPricingPolicyClient() *gen.BizSeedPricingPolicyClient
 	BizSeedChunkSupplyClient() *gen.BizSeedChunkSupplyClient
-	BizWorkspaceFilesClient() *gen.BizWorkspaceFilesClient
-	ProcFileDownloadsClient() *gen.ProcFileDownloadsClient
-	ProcFileDownloadChunksClient() *gen.ProcFileDownloadChunksClient
 }
 
 // 设计说明：
@@ -199,59 +196,9 @@ func DBCleanupOrphanSeeds(ctx context.Context, root seedWriteRoot) error {
 	if root == nil {
 		return fmt.Errorf("seed root is nil")
 	}
-	active := make(map[string]struct{})
-	rows, err := root.BizWorkspaceFilesClient().Query().All(ctx)
-	if err != nil {
-		return err
-	}
-	for _, row := range rows {
-		if h := normalizeSeedHashHex(row.SeedHash); h != "" {
-			active[h] = struct{}{}
-		}
-	}
-	rows2, err := root.ProcFileDownloadsClient().Query().All(ctx)
-	if err != nil {
-		return err
-	}
-	for _, row := range rows2 {
-		if h := normalizeSeedHashHex(row.SeedHash); h != "" {
-			active[h] = struct{}{}
-		}
-	}
-	rows3, err := root.ProcFileDownloadChunksClient().Query().All(ctx)
-	if err != nil {
-		return err
-	}
-	for _, row := range rows3 {
-		if h := normalizeSeedHashHex(row.SeedHash); h != "" {
-			active[h] = struct{}{}
-		}
-	}
-	seeds, err := root.BizSeedsClient().Query().Order(bizseeds.BySeedHash()).All(ctx)
-	if err != nil {
-		return err
-	}
-	hashes := make([]string, 0, len(seeds))
-	paths := make([]string, 0, len(seeds))
-	for _, seed := range seeds {
-		seedHash := normalizeSeedHashHex(seed.SeedHash)
-		if seedHash == "" {
-			continue
-		}
-		if _, ok := active[seedHash]; ok {
-			continue
-		}
-		hashes = append(hashes, seedHash)
-		if path := strings.TrimSpace(seed.SeedFilePath); path != "" {
-			paths = append(paths, path)
-		}
-	}
-	for _, path := range paths {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-	return DBDeleteSeedRecords(ctx, root, hashes)
+	// orphan 清理已经挪到 root 协调层做，这里保留入口但不再碰模块表。
+	// 这样 seedstorage 只保留种子三表真相，不再反向依赖工作区/下载态。
+	return nil
 }
 
 func normalizeSeedHashList(in []string) []string {

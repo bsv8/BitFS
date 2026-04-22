@@ -55,7 +55,7 @@ func TestInitIndexDB_CreatesCurrentAssetFactSchema(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 
@@ -174,7 +174,7 @@ func TestInitIndexDB_AssetFactIndexesAndConstraints(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 
@@ -243,7 +243,7 @@ func TestInitIndexDB_AssetFactWriteOperations(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 
@@ -361,7 +361,7 @@ func TestInitIndexDB_AssetFactCheckConstraints(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 
@@ -476,7 +476,7 @@ func TestInitIndexDB_AssetFactUpdateOperations(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 
@@ -555,7 +555,7 @@ func TestInitIndexDB_RejectsLegacyAssetSchema(t *testing.T) {
 		t.Fatalf("create legacy table failed: %v", err)
 	}
 
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init should allow legacy asset schema tables: %v", err)
 	}
 }
@@ -571,7 +571,7 @@ func TestInitIndexDB_AllowsHistoricalAssetFlowTable(t *testing.T) {
 		t.Fatalf("create legacy fact_chain_asset_flows table failed: %v", err)
 	}
 
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init should allow legacy fact_chain_asset_flows table: %v", err)
 	}
 }

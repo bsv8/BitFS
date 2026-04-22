@@ -117,7 +117,7 @@ func newWalletOrderTestRuntime(t *testing.T) (*Runtime, *clientDB) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas failed: %v", err)
 	}
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 

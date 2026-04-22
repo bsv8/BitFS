@@ -51,7 +51,7 @@ func TestRun_RejectsEmptyConfigPathWhenHTTPManagementIsEnabled(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := ensureClientDBSchemaOnDB(ctx, openedDB.DB); err != nil {
+	if err := ensureClientSchemaOnDB(ctx, openedDB.DB); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 

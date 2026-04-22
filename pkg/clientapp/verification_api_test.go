@@ -26,7 +26,7 @@ func newTestVerificationAPIServer(t *testing.T) (*httpAPIServer, func()) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("pragmas: %v", err)
 	}
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 

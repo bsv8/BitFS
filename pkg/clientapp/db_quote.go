@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizlivequotes"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizlivequotes"
 )
 
 // dbListLiveQuotes 只负责读取 biz_live_quotes，不做业务过滤。

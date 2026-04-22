@@ -18,7 +18,7 @@ func TestBusinessBridge_MultipleBusinessesFromOneFrontOrder(t *testing.T) {
 
 	ctx := context.Background()
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 	store := newClientDB(db, nil)
@@ -146,7 +146,7 @@ func TestBusinessBridge_RealDomainRegisterIntegration(t *testing.T) {
 
 	ctx := context.Background()
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 	store := newClientDB(db, nil)
@@ -299,7 +299,7 @@ func TestBusinessBridge_TransactionAtomicity(t *testing.T) {
 
 	ctx := context.Background()
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 	store := newClientDB(db, nil)
@@ -356,7 +356,7 @@ func TestBusinessBridge_MissingBusinessRole_Fails(t *testing.T) {
 
 	ctx := context.Background()
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 	store := newClientDB(db, nil)
@@ -410,7 +410,7 @@ func TestBusinessBridge_InvalidBusinessRole_Fails(t *testing.T) {
 
 	ctx := context.Background()
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 	store := newClientDB(db, nil)

@@ -9,11 +9,11 @@ import (
 	entsql "entgo.io/ent/dialect/sql"
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv8/BFTP/pkg/obs"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizpool"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizpoolallocations"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/factpoolsessionevents"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementchannelpoolsessionquotepay"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpool"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpoolallocations"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factpoolsessionevents"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementchannelpoolsessionquotepay"
 )
 
 type directTransferPoolSessionFactInput struct {

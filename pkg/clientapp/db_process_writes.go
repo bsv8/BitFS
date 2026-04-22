@@ -9,14 +9,14 @@ import (
 	entsql "entgo.io/ent/dialect/sql"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv8/BFTP/pkg/obs"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizpool"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/factpoolsessionevents"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementchannelpoolsessionquotepay"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlementevents"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlements"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/procchaintipworkerlogs"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/procchainutxoworkerlogs"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpool"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factpoolsessionevents"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementchannelpoolsessionquotepay"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/ordersettlementevents"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/ordersettlements"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procchaintipworkerlogs"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procchainutxoworkerlogs"
 )
 
 // 设计说明：

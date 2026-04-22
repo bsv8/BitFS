@@ -7,11 +7,11 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/obs"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/procchaintipstate"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxo"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxosynccursor"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxosyncstate"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procchaintipstate"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/walletutxo"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/walletutxosynccursor"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/walletutxosyncstate"
 )
 
 // ==================== Chain Tip State ====================

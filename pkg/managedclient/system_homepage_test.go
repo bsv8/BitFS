@@ -1,11 +1,14 @@
 package managedclient
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/bsv8/BitFS/pkg/clientapp"
 )
 
 func TestLoadSystemHomepageStateAndInstall(t *testing.T) {
@@ -70,11 +73,8 @@ func TestSystemHomepageEnsureSeedPricesOnlyFillsMissingFloor(t *testing.T) {
 		t.Fatalf("open db: %v", err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE biz_seeds(seed_hash TEXT PRIMARY KEY, seed_file_path TEXT NOT NULL, chunk_count INTEGER, file_size INTEGER, recommended_file_name TEXT NOT NULL DEFAULT '', mime_hint TEXT NOT NULL DEFAULT '', created_at_unix INTEGER)`); err != nil {
-		t.Fatalf("create biz_seeds: %v", err)
-	}
-	if _, err := db.Exec(`CREATE TABLE biz_seed_pricing_policy(seed_hash TEXT PRIMARY KEY, floor_unit_price_sat_per_64k INTEGER, resale_discount_bps INTEGER, pricing_source TEXT, updated_at_unix INTEGER)`); err != nil {
-		t.Fatalf("create biz_seed_pricing_policy: %v", err)
+	if err := clientapp.EnsureCoreSchema(context.Background(), db); err != nil {
+		t.Fatalf("ensure core schema: %v", err)
 	}
 
 	rootHash := "7da33adac40556fa6e5c8258f139f01f2a3fb2a22d6c651b07a12e83c04f19fd"
@@ -87,10 +87,10 @@ func TestSystemHomepageEnsureSeedPricesOnlyFillsMissingFloor(t *testing.T) {
 	if err := os.WriteFile(childSeedPath, []byte("child-seed"), 0o644); err != nil {
 		t.Fatalf("write child seed: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,seed_file_path,chunk_count,file_size,created_at_unix) VALUES(?,?,?,?,?)`, rootHash, rootSeedPath, 1, 9, 1); err != nil {
+	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,seed_file_path,chunk_count,file_size) VALUES(?,?,?,?)`, rootHash, rootSeedPath, 1, 9); err != nil {
 		t.Fatalf("insert root biz_seed: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,seed_file_path,chunk_count,file_size,created_at_unix) VALUES(?,?,?,?,?)`, childHash, childSeedPath, 1, 10, 1); err != nil {
+	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,seed_file_path,chunk_count,file_size) VALUES(?,?,?,?)`, childHash, childSeedPath, 1, 10); err != nil {
 		t.Fatalf("insert child biz_seed: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO biz_seed_pricing_policy(seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix) VALUES(?,?,?,?,?)`, childHash, 9, 5000, "system", 1); err != nil {
@@ -101,7 +101,8 @@ func TestSystemHomepageEnsureSeedPricesOnlyFillsMissingFloor(t *testing.T) {
 		DefaultSeedHash: rootHash,
 		SeedHashes:      []string{rootHash, childHash},
 	}
-	if err := state.EnsureSeedPrices(db, 5000); err != nil {
+	store := clientapp.NewClientStore(db, nil)
+	if err := state.EnsureSeedPrices(context.Background(), store, 5000); err != nil {
 		t.Fatalf("ensure prices: %v", err)
 	}
 
@@ -130,24 +131,16 @@ func TestSystemHomepageApplySeedMetadataOnlyFillsMissingOrLowConfidenceFields(t 
 		t.Fatalf("open db: %v", err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE biz_seeds(
-		seed_hash TEXT PRIMARY KEY,
-		seed_file_path TEXT NOT NULL,
-		chunk_count INTEGER,
-		file_size INTEGER,
-		recommended_file_name TEXT NOT NULL DEFAULT '',
-		mime_hint TEXT NOT NULL DEFAULT '',
-		created_at_unix INTEGER
-	)`); err != nil {
-		t.Fatalf("create biz_seeds: %v", err)
+	if err := clientapp.EnsureCoreSchema(context.Background(), db); err != nil {
+		t.Fatalf("ensure core schema: %v", err)
 	}
 
 	rootHash := "7da33adac40556fa6e5c8258f139f01f2a3fb2a22d6c651b07a12e83c04f19fd"
 	childHash := "052b8d352bbab7129389974c9734b6bf0b6661a55b25cadb2a0b947dfb063ce0"
 	if _, err := db.Exec(
-		`INSERT INTO biz_seeds(seed_hash,seed_file_path,chunk_count,file_size,recommended_file_name,mime_hint,created_at_unix) VALUES(?,?,?,?,?,?,?),(?,?,?,?,?,?,?)`,
-		rootHash, filepath.Join(root, rootHash), 1, 10, rootHash, "application/octet-stream", 1,
-		childHash, filepath.Join(root, childHash), 1, 11, "keep.css", "text/css", 1,
+		`INSERT INTO biz_seeds(seed_hash,seed_file_path,chunk_count,file_size,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?),(?,?,?,?,?,?)`,
+		rootHash, filepath.Join(root, rootHash), 1, 10, rootHash, "application/octet-stream",
+		childHash, filepath.Join(root, childHash), 1, 11, "keep.css", "text/css",
 	); err != nil {
 		t.Fatalf("insert biz_seeds: %v", err)
 	}
@@ -166,7 +159,8 @@ func TestSystemHomepageApplySeedMetadataOnlyFillsMissingOrLowConfidenceFields(t 
 			},
 		},
 	}
-	if err := state.ApplySeedMetadata(db); err != nil {
+	store := clientapp.NewClientStore(db, nil)
+	if err := state.ApplySeedMetadata(context.Background(), store); err != nil {
 		t.Fatalf("apply metadata: %v", err)
 	}
 

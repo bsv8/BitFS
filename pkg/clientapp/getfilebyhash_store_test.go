@@ -26,7 +26,7 @@ func newGetFileByHashTestDB(t *testing.T) *sql.DB {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 	return db
@@ -48,7 +48,7 @@ func newGetFileByHashTestStoreWithActor(t *testing.T) *downloadFileJobStoreAdapt
 		_ = opened.DB.Close()
 	})
 
-	if err := ensureClientDBSchemaOnDB(t.Context(), opened.DB); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), opened.DB); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 	return newDownloadFileJobStoreAdapter(NewClientStore(opened.DB, opened.Actor))

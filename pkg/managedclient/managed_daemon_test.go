@@ -141,9 +141,9 @@ func TestApplyDesktopRuntimeBootstrap_EnablesStartupFullScanWhenSystemHomepageEx
 			DefaultSeedHash: "7da33adac40556fa6e5c8258f139f01f2a3fb2a22d6c651b07a12e83c04f19fd",
 		},
 	}
+	d.cfg.Storage.WorkspaceDir = filepath.Join(t.TempDir(), "workspace")
 	var cfg clientapp.Config
 	cfg.Scan.StartupFullScan = false
-	cfg.Storage.WorkspaceDir = filepath.Join(t.TempDir(), "workspace")
 
 	d.applyDesktopRuntimeBootstrap(&cfg)
 
@@ -357,25 +357,8 @@ func TestSystemHomepageBootstrapHook_AppliesMetadataAndPrice(t *testing.T) {
 		t.Fatalf("open db: %v", err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE biz_seeds(
-		seed_hash TEXT PRIMARY KEY,
-		seed_file_path TEXT NOT NULL,
-		chunk_count INTEGER,
-		file_size INTEGER,
-		recommended_file_name TEXT NOT NULL DEFAULT '',
-		mime_hint TEXT NOT NULL DEFAULT '',
-		created_at_unix INTEGER
-	)`); err != nil {
-		t.Fatalf("create biz_seeds: %v", err)
-	}
-	if _, err := db.Exec(`CREATE TABLE biz_seed_pricing_policy(
-		seed_hash TEXT PRIMARY KEY,
-		floor_unit_price_sat_per_64k INTEGER,
-		resale_discount_bps INTEGER,
-		pricing_source TEXT,
-		updated_at_unix INTEGER
-	)`); err != nil {
-		t.Fatalf("create biz_seed_pricing_policy: %v", err)
+	if err := clientapp.EnsureCoreSchema(context.Background(), db); err != nil {
+		t.Fatalf("ensure core schema: %v", err)
 	}
 
 	seedHash := "7da33adac40556fa6e5c8258f139f01f2a3fb2a22d6c651b07a12e83c04f19fd"
@@ -384,8 +367,8 @@ func TestSystemHomepageBootstrapHook_AppliesMetadataAndPrice(t *testing.T) {
 		t.Fatalf("write seed file: %v", err)
 	}
 	if _, err := db.Exec(
-		`INSERT INTO biz_seeds(seed_hash,seed_file_path,chunk_count,file_size,recommended_file_name,mime_hint,created_at_unix) VALUES(?,?,?,?,?,?,?)`,
-		seedHash, seedPath, 1, 128, "", "", 1,
+		`INSERT INTO biz_seeds(seed_hash,seed_file_path,chunk_count,file_size,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,
+		seedHash, seedPath, 1, 128, "", "",
 	); err != nil {
 		t.Fatalf("insert biz_seed: %v", err)
 	}
@@ -1951,7 +1934,10 @@ func newManagedPricingControlRuntime(t *testing.T) (*clientapp.Runtime, string) 
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := clientapp.EnsureClientStoreSchema(t.Context(), clientapp.NewClientStore(db, nil)); err != nil {
+	if err := clientapp.EnsureCoreSchema(t.Context(), db); err != nil {
+		t.Fatalf("ensure core schema: %v", err)
+	}
+	if err := clientapp.EnsureBuiltinModuleSchemas(t.Context(), db); err != nil {
 		t.Fatalf("ensure schema: %v", err)
 	}
 	seedHash := strings.Repeat("ab", 32)

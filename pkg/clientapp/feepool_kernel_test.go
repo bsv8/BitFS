@@ -117,7 +117,7 @@ func newKernelTestDB(t *testing.T) *sql.DB {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply sqlite pragmas failed: %v", err)
 	}
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("init index db failed: %v", err)
 	}
 	return db

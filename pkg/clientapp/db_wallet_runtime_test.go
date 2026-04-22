@@ -10,7 +10,7 @@ func TestDBLoadWalletUTXOsByID_StrictUnspent(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 

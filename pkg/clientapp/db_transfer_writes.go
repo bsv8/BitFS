@@ -6,11 +6,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizdemandquotearbiters"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizdemandquotes"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizdemands"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/procdirectdeals"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizdemandquotearbiters"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizdemandquotes"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizdemands"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procdirectdeals"
 )
 
 // 设计说明：

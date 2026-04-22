@@ -10,13 +10,13 @@ import (
 	"strings"
 
 	entsql "entgo.io/ent/dialect/sql"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	bitfsprocchaintipworkerlogs "github.com/bsv8/bitfs-contract/ent/v1/gen/procchaintipworkerlogs"
-	bitfsprocchainutxoworkerlogs "github.com/bsv8/bitfs-contract/ent/v1/gen/procchainutxoworkerlogs"
-	bitfsprocorchestratorlogs "github.com/bsv8/bitfs-contract/ent/v1/gen/procorchestratorlogs"
-	bitfsprocschedulertaskruns "github.com/bsv8/bitfs-contract/ent/v1/gen/procschedulertaskruns"
-	bitfsprocschedulertasks "github.com/bsv8/bitfs-contract/ent/v1/gen/procschedulertasks"
-	bitfswalletutxo "github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxo"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	bitfsprocchaintipworkerlogs "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procchaintipworkerlogs"
+	bitfsprocchainutxoworkerlogs "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procchainutxoworkerlogs"
+	bitfsprocorchestratorlogs "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procorchestratorlogs"
+	bitfsprocschedulertaskruns "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procschedulertaskruns"
+	bitfsprocschedulertasks "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procschedulertasks"
+	bitfswalletutxo "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/walletutxo"
 )
 
 const singleStepOrchestratorEventPrefix = "__single__:"

@@ -10,10 +10,10 @@ import (
 
 	"github.com/bsv8/BFTP/pkg/obs"
 	filedownload "github.com/bsv8/BitFS/pkg/clientapp/download/file"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/procgetfilebyhashchunks"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/procgetfilebyhashjobs"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/procgetfilebyhashquotes"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procgetfilebyhashchunks"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procgetfilebyhashjobs"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procgetfilebyhashquotes"
 )
 
 // downloadFileJobStoreAdapter 只把运行入口准备好的 clientDB 适配成 filedownload.JobStore。

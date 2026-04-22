@@ -9,12 +9,12 @@ import (
 
 	entsql "entgo.io/ent/dialect/sql"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	bitfsbizdemandquotearbiters "github.com/bsv8/bitfs-contract/ent/v1/gen/bizdemandquotearbiters"
-	bitfsbizdemandquotes "github.com/bsv8/bitfs-contract/ent/v1/gen/bizdemandquotes"
-	bitfsbizpurchases "github.com/bsv8/bitfs-contract/ent/v1/gen/bizpurchases"
-	bitfsfactpoolsessionevents "github.com/bsv8/bitfs-contract/ent/v1/gen/factpoolsessionevents"
-	bitfsprocgatewayevents "github.com/bsv8/bitfs-contract/ent/v1/gen/procgatewayevents"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	bitfsbizdemandquotearbiters "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizdemandquotearbiters"
+	bitfsbizdemandquotes "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizdemandquotes"
+	bitfsbizpurchases "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpurchases"
+	bitfsfactpoolsessionevents "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factpoolsessionevents"
+	bitfsprocgatewayevents "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procgatewayevents"
 )
 
 // 管理页和调试页的只读查询统一放在 db 内，handler 只负责参数和回包。

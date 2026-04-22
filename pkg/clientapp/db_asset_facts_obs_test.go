@@ -19,7 +19,7 @@ func TestMarkBSVUTXOSpentConn_EmitsFactSpentEvent(t *testing.T) {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("ensure schema: %v", err)
 	}
 

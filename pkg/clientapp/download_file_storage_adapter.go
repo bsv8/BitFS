@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	filedownload "github.com/bsv8/BitFS/pkg/clientapp/download/file"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
 )
 
 type downloadFileWorkspaceAdapter struct {

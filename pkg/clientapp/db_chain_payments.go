@@ -9,11 +9,11 @@ import (
 	"time"
 
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementchannelchainassetcreate"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementchannelchaindirectpay"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementchannelchainquotepay"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxo"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementchannelchainassetcreate"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementchannelchaindirectpay"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementchannelchainquotepay"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/walletutxo"
 )
 
 type sqlConn interface {

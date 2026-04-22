@@ -29,7 +29,7 @@ func TestApplyLocalBroadcastWalletProjection_UpdatesWalletUTXOView(t *testing.T)
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 
@@ -226,7 +226,7 @@ func TestApplyLocalBroadcastWalletProjection_SQLTraceRepeatUpdateTop(t *testing.
 	if err := applySQLitePragmas(opened.DB); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := ensureClientDBSchemaOnDB(t.Context(), opened.DB); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), opened.DB); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 	store := newClientDB(opened.DB, opened.Actor)
@@ -357,7 +357,7 @@ func TestReconcileWalletUTXOSet_PreservesPendingLocalBroadcastWhenUpstreamLags(t
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 
@@ -501,7 +501,7 @@ func TestGetWalletUTXOsFromDB_ExcludesProtectedAssetOutputs(t *testing.T) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 

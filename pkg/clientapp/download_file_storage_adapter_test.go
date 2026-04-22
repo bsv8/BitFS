@@ -328,7 +328,7 @@ func newDownloadFileWorkspaceAdapterTestEnv(t *testing.T) downloadFileWorkspaceA
 		t.Fatalf("open db failed: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := EnsureClientStoreSchema(t.Context(), NewClientStore(db, nil)); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), NewClientStore(db, nil)); err != nil {
 		t.Fatalf("ensure schema failed: %v", err)
 	}
 	store := NewClientStore(db, nil)

@@ -18,7 +18,7 @@ func TestCurrentLiveSellerPricingReadsPersistedBase(t *testing.T) {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := EnsureClientStoreSchema(t.Context(), NewClientStore(db, nil)); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), NewClientStore(db, nil)); err != nil {
 		t.Fatalf("ensure schema: %v", err)
 	}
 
@@ -53,7 +53,7 @@ func TestCurrentSeedLiveSellerPricingReadsPersistedEffectivePrice(t *testing.T) 
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := EnsureClientStoreSchema(t.Context(), NewClientStore(db, nil)); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), NewClientStore(db, nil)); err != nil {
 		t.Fatalf("ensure schema: %v", err)
 	}
 
@@ -104,7 +104,7 @@ func TestTriggerPricingGetStateSynthesizesSeedWithoutPriorState(t *testing.T) {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := EnsureClientStoreSchema(t.Context(), NewClientStore(db, nil)); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), NewClientStore(db, nil)); err != nil {
 		t.Fatalf("ensure schema: %v", err)
 	}
 
@@ -143,7 +143,7 @@ func TestPricingStateAndAuditsPersistAcrossRuntimeRecreate(t *testing.T) {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := EnsureClientStoreSchema(t.Context(), NewClientStore(db, nil)); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), NewClientStore(db, nil)); err != nil {
 		t.Fatalf("ensure schema: %v", err)
 	}
 
@@ -220,7 +220,7 @@ func TestTriggerPricingSetBasePersistsConfigAndSurvivesReload(t *testing.T) {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := EnsureClientStoreSchema(t.Context(), NewClientStore(db, nil)); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), NewClientStore(db, nil)); err != nil {
 		t.Fatalf("ensure schema: %v", err)
 	}
 

@@ -8,12 +8,12 @@ import (
 	"strings"
 
 	entsql "entgo.io/ent/dialect/sql"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	bitfsproccommandjournal "github.com/bsv8/bitfs-contract/ent/v1/gen/proccommandjournal"
-	bitfsprocdomainevents "github.com/bsv8/bitfs-contract/ent/v1/gen/procdomainevents"
-	bitfsproceffectlogs "github.com/bsv8/bitfs-contract/ent/v1/gen/proceffectlogs"
-	bitfsprocgatewayevents "github.com/bsv8/bitfs-contract/ent/v1/gen/procgatewayevents"
-	bitfsprocstatesnapshots "github.com/bsv8/bitfs-contract/ent/v1/gen/procstatesnapshots"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	bitfsproccommandjournal "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/proccommandjournal"
+	bitfsprocdomainevents "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procdomainevents"
+	bitfsproceffectlogs "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/proceffectlogs"
+	bitfsprocgatewayevents "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procgatewayevents"
+	bitfsprocstatesnapshots "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procstatesnapshots"
 )
 
 // 命令时间线是最终读模型，不让外层自己拼原表语义。

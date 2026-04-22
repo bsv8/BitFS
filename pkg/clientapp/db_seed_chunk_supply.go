@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseedchunksupply"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizseedchunksupply"
 )
 
 // biz_seed_chunk_supply 只走这一条 DB 线。

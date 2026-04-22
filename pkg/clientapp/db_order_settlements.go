@@ -12,8 +12,8 @@ import (
 
 	entsql "entgo.io/ent/dialect/sql"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlements"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/ordersettlements"
 )
 
 // BusinessSettlementItem 业务结算出口记录

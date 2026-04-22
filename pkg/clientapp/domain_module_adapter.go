@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlements"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/ordersettlements"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 

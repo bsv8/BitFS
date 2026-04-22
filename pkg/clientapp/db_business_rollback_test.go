@@ -12,7 +12,7 @@ func TestBusinessBridge_ValidationFailure_NoWrite(t *testing.T) {
 
 	ctx := context.Background()
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 	store := newClientDB(db, nil)
@@ -71,7 +71,7 @@ func TestBusinessBridge_TransactionIdempotentUpdate(t *testing.T) {
 
 	ctx := context.Background()
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 	store := newClientDB(db, nil)

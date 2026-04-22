@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/obs"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/orders"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlementevents"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/orders"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/ordersettlementevents"
 )
 
 // SettlementMethod 结算方式枚举

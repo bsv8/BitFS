@@ -14,7 +14,7 @@ import (
 	entsql "entgo.io/ent/dialect/sql"
 	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
 )
 
 // clientDB 是 BitFS 客户端 store 的实现。
@@ -49,41 +49,6 @@ func newEntClient(db *sql.DB) *gen.Client {
 // NewClientStore 保留给测试和入口组装用。
 func NewClientStore(db *sql.DB, actor *sqliteactor.Actor) *clientDB {
 	return newClientDB(db, actor)
-}
-
-// EnsureClientStoreSchema 只在运行入口做一次 schema 准备。
-// 设计说明：
-// - 这里直接接已准备好的 clientDB，不再额外开一层业务封装；
-// - schema 创建由 contract ent 真源负责，业务层不碰手写 DDL；
-// - 只保留这一条入口，避免初始化路径分叉。
-func EnsureClientStoreSchema(ctx context.Context, store *clientDB) error {
-	if ctx == nil {
-		return fmt.Errorf("ctx is required")
-	}
-	if store == nil {
-		return fmt.Errorf("store is nil")
-	}
-	if store.db == nil {
-		return fmt.Errorf("client db raw db is nil")
-	}
-	return ensureClientDBSchemaOnDB(ctx, store.db)
-}
-
-func ensureClientDBSchemaOnDB(ctx context.Context, db *sql.DB) error {
-	if ctx == nil {
-		return fmt.Errorf("ctx is required")
-	}
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	if err := applySQLitePragmas(db); err != nil {
-		return err
-	}
-	client := gen.NewClient(gen.Driver(entsql.OpenDB(dialect.SQLite, db)))
-	if err := client.Schema.Create(ctx); err != nil {
-		return err
-	}
-	return nil
 }
 
 // Read 执行只读查询，查询句柄禁止带出闭包。

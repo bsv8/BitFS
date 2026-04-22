@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/obs"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/procschedulertasks"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procschedulertasks"
 )
 
 // periodicTaskSpec 描述一个独立的周期任务。

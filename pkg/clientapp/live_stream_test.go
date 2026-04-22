@@ -96,7 +96,7 @@ func TestLiveSubscribeAndPublishLatest(t *testing.T) {
 	if err := applySQLitePragmas(subDB); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := ensureClientDBSchemaOnDB(t.Context(), subDB); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), subDB); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 
@@ -153,7 +153,7 @@ func TestLiveQuoteSubmitAndList(t *testing.T) {
 	if err := applySQLitePragmas(buyerDB); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := ensureClientDBSchemaOnDB(t.Context(), buyerDB); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), buyerDB); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 	buyerHost, _ := newSecpHost(t)

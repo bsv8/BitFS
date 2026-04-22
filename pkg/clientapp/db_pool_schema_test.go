@@ -11,7 +11,7 @@ func TestInitIndexDB_CreatesCurrentPoolSchema(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 
@@ -113,7 +113,7 @@ func TestInitIndexDB_PoolFactsWriteCurrentTables(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 
@@ -208,7 +208,7 @@ func TestInitIndexDB_AllowsLegacyPoolSchemaTables(t *testing.T) {
 		t.Fatalf("create legacy tx table failed: %v", err)
 	}
 
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init should allow legacy pool schema tables: %v", err)
 	}
 }

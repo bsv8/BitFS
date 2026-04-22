@@ -52,7 +52,7 @@ func listClientAppGoFiles(t *testing.T) []string {
 			return err
 		}
 		if d.IsDir() {
-			if d.Name() == "ent" {
+			if d.Name() == "ent" || d.Name() == "gen" {
 				return filepath.SkipDir
 			}
 			return nil

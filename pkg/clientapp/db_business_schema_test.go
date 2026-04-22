@@ -13,7 +13,7 @@ func TestInitIndexDB_CreatesOrdersTable(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 
@@ -76,7 +76,7 @@ func TestInitIndexDB_CreatesOrderSettlementEventsTable(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 
@@ -141,7 +141,7 @@ func TestInitIndexDB_CreatesOrderSettlementsTable(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 
@@ -216,7 +216,7 @@ func TestGetLatestBusinessByFrontOrderID_EmptyReturnsNoRows(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 	_, err := GetLatestBusinessByFrontOrderID(context.Background(), newClientDB(db, nil), "fo_empty_1")
@@ -260,7 +260,7 @@ func TestInitIndexDB_OrdersIdempotent(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 
@@ -298,7 +298,7 @@ func TestInitIndexDB_OrderSettlementEventsIdempotent(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 
@@ -332,7 +332,7 @@ func TestInitIndexDB_OrderSettlementsIdempotent(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 

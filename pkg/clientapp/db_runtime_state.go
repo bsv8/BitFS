@@ -8,10 +8,10 @@ import (
 	"time"
 
 	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/proclivefollows"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/procnodereachabilitycache"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/procselfnodereachabilitystate"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/proclivefollows"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procnodereachabilitycache"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procselfnodereachabilitystate"
 )
 
 func dbPersistLiveFollowStatus(ctx context.Context, store *clientDB, st LiveFollowStatus) error {

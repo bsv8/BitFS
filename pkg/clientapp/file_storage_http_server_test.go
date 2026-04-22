@@ -324,7 +324,8 @@ func TestFileHTTPServerServeLivePlaylistAndMedia(t *testing.T) {
 
 func newLocalOnlyTestServer(t *testing.T, _ []byte) (*fileHTTPServer, string, string) {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
+	dbPath := filepath.Join(t.TempDir(), "file-http.sqlite")
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbPath)+"?_fk=1")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -332,7 +333,7 @@ func newLocalOnlyTestServer(t *testing.T, _ []byte) (*fileHTTPServer, string, st
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("sqlite pragmas: %v", err)
 	}
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 	cfg := &Config{}
@@ -380,7 +381,8 @@ func upsertWorkspaceFileForSeedAt(t *testing.T, store *clientDB, seedHash, path 
 func TestFileHTTPServer_StartAndShutdown(t *testing.T) {
 	t.Parallel()
 
-	db, err := sql.Open("sqlite", ":memory:")
+	dbPath := filepath.Join(t.TempDir(), "file-http-start.sqlite")
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbPath)+"?_fk=1")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -388,7 +390,7 @@ func TestFileHTTPServer_StartAndShutdown(t *testing.T) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("sqlite pragmas: %v", err)
 	}
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 

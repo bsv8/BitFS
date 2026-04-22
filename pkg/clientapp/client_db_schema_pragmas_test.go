@@ -10,13 +10,18 @@ func TestEnsureClientDBSchemaTurnsOnForeignKeys(t *testing.T) {
 	t.Parallel()
 
 	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbPath)+"?_fk=1")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if err := applySQLitePragmas(db); err != nil {
+		t.Fatalf("apply pragmas failed: %v", err)
+	}
 
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 

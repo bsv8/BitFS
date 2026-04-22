@@ -9,7 +9,7 @@ import (
 	"entgo.io/ent/dialect"
 	entsql "entgo.io/ent/dialect/sql"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/modules/inboxmessage/storedb/gen"
 	_ "modernc.org/sqlite"
 )
 

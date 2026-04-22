@@ -7,14 +7,14 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	bizseeds "github.com/bsv8/bitfs-contract/ent/v1/gen/bizseeds"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	bizseeds "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizseeds"
 )
 
 func TestReadEnt_OnlyProvidesQueryRoot(t *testing.T) {
 	db := openSchemaTestDB(t)
 	store := NewClientStore(db, nil)
-	if err := EnsureClientStoreSchema(t.Context(), store); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), store); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 
@@ -56,7 +56,7 @@ func TestReadEnt_OnlyProvidesQueryRoot(t *testing.T) {
 func TestWriteEntTx_AllowsWriteAndQueryInSameTx(t *testing.T) {
 	db := openSchemaTestDB(t)
 	store := NewClientStore(db, nil)
-	if err := EnsureClientStoreSchema(t.Context(), store); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), store); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 
@@ -101,7 +101,7 @@ func TestWriteEntTx_UsesWriterQueue(t *testing.T) {
 	})
 
 	store := NewClientStore(opened.DB, opened.Actor)
-	if err := EnsureClientStoreSchema(t.Context(), store); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), store); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 

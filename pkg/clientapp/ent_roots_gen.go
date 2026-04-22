@@ -5,7 +5,7 @@ import (
 
 	"entgo.io/ent/dialect"
 	entsql "entgo.io/ent/dialect/sql"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
 )
 
 // queryBox 只给读壳用，避免把根 client 或写入口暴露出去。
@@ -39,8 +39,6 @@ type entReadRoot struct {
 	BizPurchases                             queryBox[gen.BizPurchasesQuery]
 	BizDemandQuotes                          queryBox[gen.BizDemandQuotesQuery]
 	BizDemandQuoteArbiters                   queryBox[gen.BizDemandQuoteArbitersQuery]
-	BizWorkspaces                            queryBox[gen.BizWorkspacesQuery]
-	BizWorkspaceFiles                        queryBox[gen.BizWorkspaceFilesQuery]
 	BizPool                                  queryBox[gen.BizPoolQuery]
 	BizPoolAllocations                       queryBox[gen.BizPoolAllocationsQuery]
 	Orders                                   queryBox[gen.OrdersQuery]
@@ -60,8 +58,6 @@ type entReadRoot struct {
 	ProcChainTipState                        queryBox[gen.ProcChainTipStateQuery]
 	ProcDirectDeals                          queryBox[gen.ProcDirectDealsQuery]
 	ProcDirectTransferPools                  queryBox[gen.ProcDirectTransferPoolsQuery]
-	ProcFileDownloads                        queryBox[gen.ProcFileDownloadsQuery]
-	ProcFileDownloadChunks                   queryBox[gen.ProcFileDownloadChunksQuery]
 	ProcGetFileByHashChunks                  queryBox[gen.ProcGetFileByHashChunksQuery]
 	ProcGetFileByHashJobs                    queryBox[gen.ProcGetFileByHashJobsQuery]
 	ProcGetFileByHashQuotes                  queryBox[gen.ProcGetFileByHashQuotesQuery]
@@ -100,8 +96,6 @@ type entWriteRoot struct {
 	BizPurchases                             *gen.BizPurchasesClient
 	BizDemandQuotes                          *gen.BizDemandQuotesClient
 	BizDemandQuoteArbiters                   *gen.BizDemandQuoteArbitersClient
-	BizWorkspaces                            *gen.BizWorkspacesClient
-	BizWorkspaceFiles                        *gen.BizWorkspaceFilesClient
 	BizPool                                  *gen.BizPoolClient
 	BizPoolAllocations                       *gen.BizPoolAllocationsClient
 	Orders                                   *gen.OrdersClient
@@ -121,8 +115,6 @@ type entWriteRoot struct {
 	ProcChainTipState                        *gen.ProcChainTipStateClient
 	ProcDirectDeals                          *gen.ProcDirectDealsClient
 	ProcDirectTransferPools                  *gen.ProcDirectTransferPoolsClient
-	ProcFileDownloads                        *gen.ProcFileDownloadsClient
-	ProcFileDownloadChunks                   *gen.ProcFileDownloadChunksClient
 	ProcGetFileByHashChunks                  *gen.ProcGetFileByHashChunksClient
 	ProcGetFileByHashJobs                    *gen.ProcGetFileByHashJobsClient
 	ProcGetFileByHashQuotes                  *gen.ProcGetFileByHashQuotesClient
@@ -161,8 +153,6 @@ func newEntReadRoot(client *gen.Client) EntReadRoot {
 		BizPurchases:                             newQueryBox(client.BizPurchases.Query),
 		BizDemandQuotes:                          newQueryBox(client.BizDemandQuotes.Query),
 		BizDemandQuoteArbiters:                   newQueryBox(client.BizDemandQuoteArbiters.Query),
-		BizWorkspaces:                            newQueryBox(client.BizWorkspaces.Query),
-		BizWorkspaceFiles:                        newQueryBox(client.BizWorkspaceFiles.Query),
 		BizPool:                                  newQueryBox(client.BizPool.Query),
 		BizPoolAllocations:                       newQueryBox(client.BizPoolAllocations.Query),
 		Orders:                                   newQueryBox(client.Orders.Query),
@@ -182,8 +172,6 @@ func newEntReadRoot(client *gen.Client) EntReadRoot {
 		ProcChainTipState:                        newQueryBox(client.ProcChainTipState.Query),
 		ProcDirectDeals:                          newQueryBox(client.ProcDirectDeals.Query),
 		ProcDirectTransferPools:                  newQueryBox(client.ProcDirectTransferPools.Query),
-		ProcFileDownloads:                        newQueryBox(client.ProcFileDownloads.Query),
-		ProcFileDownloadChunks:                   newQueryBox(client.ProcFileDownloadChunks.Query),
 		ProcGetFileByHashChunks:                  newQueryBox(client.ProcGetFileByHashChunks.Query),
 		ProcGetFileByHashJobs:                    newQueryBox(client.ProcGetFileByHashJobs.Query),
 		ProcGetFileByHashQuotes:                  newQueryBox(client.ProcGetFileByHashQuotes.Query),
@@ -234,8 +222,6 @@ func newEntWriteRoot(tx *sql.Tx) EntWriteRoot {
 		BizPurchases:                             client.BizPurchases,
 		BizDemandQuotes:                          client.BizDemandQuotes,
 		BizDemandQuoteArbiters:                   client.BizDemandQuoteArbiters,
-		BizWorkspaces:                            client.BizWorkspaces,
-		BizWorkspaceFiles:                        client.BizWorkspaceFiles,
 		BizPool:                                  client.BizPool,
 		BizPoolAllocations:                       client.BizPoolAllocations,
 		Orders:                                   client.Orders,
@@ -255,8 +241,6 @@ func newEntWriteRoot(tx *sql.Tx) EntWriteRoot {
 		ProcChainTipState:                        client.ProcChainTipState,
 		ProcDirectDeals:                          client.ProcDirectDeals,
 		ProcDirectTransferPools:                  client.ProcDirectTransferPools,
-		ProcFileDownloads:                        client.ProcFileDownloads,
-		ProcFileDownloadChunks:                   client.ProcFileDownloadChunks,
 		ProcGetFileByHashChunks:                  client.ProcGetFileByHashChunks,
 		ProcGetFileByHashJobs:                    client.ProcGetFileByHashJobs,
 		ProcGetFileByHashQuotes:                  client.ProcGetFileByHashQuotes,
@@ -290,16 +274,6 @@ func (r *entReadRoot) BizSeedPricingPolicyQuery() *gen.BizSeedPricingPolicyQuery
 func (r *entReadRoot) BizSeedChunkSupplyQuery() *gen.BizSeedChunkSupplyQuery {
 	return r.BizSeedChunkSupply.Query()
 }
-func (r *entReadRoot) BizWorkspacesQuery() *gen.BizWorkspacesQuery { return r.BizWorkspaces.Query() }
-func (r *entReadRoot) BizWorkspaceFilesQuery() *gen.BizWorkspaceFilesQuery {
-	return r.BizWorkspaceFiles.Query()
-}
-func (r *entReadRoot) ProcFileDownloadsQuery() *gen.ProcFileDownloadsQuery {
-	return r.ProcFileDownloads.Query()
-}
-func (r *entReadRoot) ProcFileDownloadChunksQuery() *gen.ProcFileDownloadChunksQuery {
-	return r.ProcFileDownloadChunks.Query()
-}
 
 func (r *entWriteRoot) BizSeedsClient() *gen.BizSeedsClient { return r.BizSeeds }
 func (r *entWriteRoot) BizSeedPricingPolicyClient() *gen.BizSeedPricingPolicyClient {
@@ -307,14 +281,4 @@ func (r *entWriteRoot) BizSeedPricingPolicyClient() *gen.BizSeedPricingPolicyCli
 }
 func (r *entWriteRoot) BizSeedChunkSupplyClient() *gen.BizSeedChunkSupplyClient {
 	return r.BizSeedChunkSupply
-}
-func (r *entWriteRoot) BizWorkspacesClient() *gen.BizWorkspacesClient { return r.BizWorkspaces }
-func (r *entWriteRoot) BizWorkspaceFilesClient() *gen.BizWorkspaceFilesClient {
-	return r.BizWorkspaceFiles
-}
-func (r *entWriteRoot) ProcFileDownloadsClient() *gen.ProcFileDownloadsClient {
-	return r.ProcFileDownloads
-}
-func (r *entWriteRoot) ProcFileDownloadChunksClient() *gen.ProcFileDownloadChunksClient {
-	return r.ProcFileDownloadChunks
 }

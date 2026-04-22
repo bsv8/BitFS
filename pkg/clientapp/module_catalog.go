@@ -3,11 +3,13 @@ package clientapp
 import (
 	"context"
 	"fmt"
+	"database/sql"
 	"sort"
 	"strings"
 
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	"github.com/bsv8/BitFS/pkg/clientapp/modulelock"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb"
 	domainmodule "github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
 	filestorage "github.com/bsv8/BitFS/pkg/clientapp/modules/filestorage"
 	inboxmessage "github.com/bsv8/BitFS/pkg/clientapp/modules/inboxmessage"
@@ -21,6 +23,44 @@ func builtinModuleCatalog() []moduleapi.ModuleDescriptor {
 		filestorage.Descriptor(),
 		inboxmessage.Descriptor(),
 	}
+}
+
+func ensureCoreSchema(ctx context.Context, db *sql.DB) error {
+	return coredb.EnsureSchema(ctx, db)
+}
+
+func ensureBuiltinModuleSchemas(ctx context.Context, db *sql.DB) error {
+	if ctx == nil {
+		return fmt.Errorf("ctx is required")
+	}
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	for _, entry := range builtinModuleCatalog() {
+		if entry.EnsureSchema == nil {
+			if entry.SchemaOwner != "" {
+				return fmt.Errorf("module %s schema owner %q has no ensure hook", entry.Name, entry.SchemaOwner)
+			}
+			continue
+		}
+		if strings.TrimSpace(entry.SchemaOwner) == "" {
+			return fmt.Errorf("module %s schema owner is required", entry.Name)
+		}
+		if err := entry.EnsureSchema(ctx, db); err != nil {
+			return fmt.Errorf("module %s schema ensure failed: %w", entry.Name, err)
+		}
+	}
+	return nil
+}
+
+// EnsureCoreSchema 只给外层装配层和测试用。
+func EnsureCoreSchema(ctx context.Context, db *sql.DB) error {
+	return ensureCoreSchema(ctx, db)
+}
+
+// EnsureBuiltinModuleSchemas 只给外层装配层和测试用。
+func EnsureBuiltinModuleSchemas(ctx context.Context, db *sql.DB) error {
+	return ensureBuiltinModuleSchemas(ctx, db)
 }
 
 func BuiltinModuleLockModules() []string {

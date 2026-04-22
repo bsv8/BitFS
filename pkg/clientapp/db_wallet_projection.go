@@ -10,9 +10,9 @@ import (
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxo"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxosyncstate"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/walletutxo"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/walletutxosyncstate"
 )
 
 // dbApplyLocalBroadcastWalletProjection 只负责把本地广播交易写回钱包视图。

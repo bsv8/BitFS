@@ -13,7 +13,7 @@ func TestBusinessMainFlow_FullChain(t *testing.T) {
 
 	ctx := context.Background()
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 	store := newClientDB(db, nil)
@@ -172,7 +172,7 @@ func TestBusinessBridgeFlow_CreateBusinessWithFrontTriggerAndPendingSettlement(t
 
 	ctx := context.Background()
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 	store := newClientDB(db, nil)
@@ -276,7 +276,7 @@ func TestBusinessBridgeFlow_IdempotentOnRetry(t *testing.T) {
 
 	ctx := context.Background()
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 	store := newClientDB(db, nil)
@@ -346,7 +346,7 @@ func TestBusinessMainFlow_QueryByTarget(t *testing.T) {
 
 	ctx := context.Background()
 	db := openSchemaTestDB(t)
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 	store := newClientDB(db, nil)

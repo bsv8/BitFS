@@ -27,7 +27,7 @@ func newOrchestratorTestDB(t *testing.T) (*sql.DB, string) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 	return db, dbPath
@@ -385,7 +385,7 @@ func TestSyncWalletAndApplyFacts_FactFailureAndRecovery(t *testing.T) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 	store := newClientDB(db, nil)
@@ -460,7 +460,7 @@ func TestSyncWalletAndApplyFacts_FactFailureAndRecovery(t *testing.T) {
 	if err := applySQLitePragmas(db2); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := ensureClientDBSchemaOnDB(t.Context(), db2); err != nil {
+	if err := ensureClientSchemaOnDB(t.Context(), db2); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
 

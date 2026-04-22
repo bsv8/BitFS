@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	entsql "entgo.io/ent/dialect/sql"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlementevents"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlements"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/ordersettlementevents"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/ordersettlements"
 )
 
 // businessTriggerItem / Entry / Filter / Page 保留旧调用面，但底层已切到 order_settlement_events。

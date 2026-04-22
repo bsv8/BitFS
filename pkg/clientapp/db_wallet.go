@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizpurchases"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/factbsvutxos"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/factpoolsessionevents"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementrecords"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/facttokenlots"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpurchases"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factbsvutxos"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factpoolsessionevents"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementrecords"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/facttokenlots"
 )
 
 // walletSummaryCounters 钱包统计计数器

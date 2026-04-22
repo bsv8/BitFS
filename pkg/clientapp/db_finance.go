@@ -11,15 +11,15 @@ import (
 	"time"
 
 	entsql "entgo.io/ent/dialect/sql"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/factpoolsessionevents"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementchannelchainassetcreate"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementchannelchaindirectpay"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementchannelchainquotepay"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementchannelpoolsessionquotepay"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementpaymentattempts"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlementevents"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlements"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factpoolsessionevents"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementchannelchainassetcreate"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementchannelchaindirectpay"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementchannelchainquotepay"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementchannelpoolsessionquotepay"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementpaymentattempts"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/ordersettlementevents"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/ordersettlements"
 )
 
 // order_settlements 语义说明（一次性收口）：

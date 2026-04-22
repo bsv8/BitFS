@@ -7,12 +7,12 @@ import (
 	"fmt"
 
 	entsql "entgo.io/ent/dialect/sql"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	bitfsproccommandjournal "github.com/bsv8/bitfs-contract/ent/v1/gen/proccommandjournal"
-	bitfsprocdomainevents "github.com/bsv8/bitfs-contract/ent/v1/gen/procdomainevents"
-	bitfsproceffectlogs "github.com/bsv8/bitfs-contract/ent/v1/gen/proceffectlogs"
-	bitfsprocobservedgatewaystates "github.com/bsv8/bitfs-contract/ent/v1/gen/procobservedgatewaystates"
-	bitfsprocstatesnapshots "github.com/bsv8/bitfs-contract/ent/v1/gen/procstatesnapshots"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	bitfsproccommandjournal "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/proccommandjournal"
+	bitfsprocdomainevents "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procdomainevents"
+	bitfsproceffectlogs "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/proceffectlogs"
+	bitfsprocobservedgatewaystates "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procobservedgatewaystates"
+	bitfsprocstatesnapshots "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procstatesnapshots"
 )
 
 type commandJournalFilter struct {
