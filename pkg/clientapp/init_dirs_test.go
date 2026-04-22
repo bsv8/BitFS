@@ -6,14 +6,12 @@ import (
 	"testing"
 )
 
-func TestInitDataDirsCreatesWorkspaceDir(t *testing.T) {
+func TestInitDataDirsCreatesDataDirOnly(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	ws := filepath.Join(root, "workspace")
 	data := filepath.Join(root, "data")
 
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = ws
 	cfg.Storage.DataDir = data
 	cfg.Storage.MinFreeBytes = 1
 	if err := ApplyConfigDefaults(&cfg); err != nil {
@@ -23,22 +21,17 @@ func TestInitDataDirsCreatesWorkspaceDir(t *testing.T) {
 	if err := initDataDirs(&cfg); err != nil {
 		t.Fatalf("initDataDirs failed: %v", err)
 	}
-	st, err := os.Stat(ws)
-	if err != nil {
-		t.Fatalf("workspace dir not created: %v", err)
-	}
-	if !st.IsDir() {
-		t.Fatalf("workspace path is not directory")
+	if st, err := os.Stat(data); err != nil || !st.IsDir() {
+		t.Fatalf("data dir not created: st=%v err=%v", st, err)
 	}
 }
 
-func TestInitDataDirs_AllowsEmptyWorkspaceDir(t *testing.T) {
+func TestInitDataDirs_AllowsEmptyDataDir(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	data := filepath.Join(root, "data")
 
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = ""
 	cfg.Storage.DataDir = data
 	cfg.Storage.MinFreeBytes = 1
 	if err := ApplyConfigDefaults(&cfg); err != nil {

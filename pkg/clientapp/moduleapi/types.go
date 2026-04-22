@@ -208,6 +208,15 @@ type Installer func(context.Context, Host) (func(), error)
 // - 注册和执行分开，避免模块直接摸主干内部结构。
 type Host interface {
 	Store() Store
+	ConfigPath() string
+	NodePubkeyHex() string
+	ClientPubkeyHex() string
+	SeedStorage() SeedStorage
+	FSWatchEnabled() bool
+	FSRescanIntervalSeconds() uint32
+	StartupFullScan() bool
+	SellerFloorPriceSatPer64K() uint64
+	SellerResaleDiscountBPS() uint64
 
 	InstallModule(ModuleSpec) (func(), error)
 	RegisterLibP2P(protocolID protocol.ID, hook LibP2PHook) (func(), error)

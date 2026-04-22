@@ -15,11 +15,11 @@ func TestNewRuntimeAPIHandler_DoesNotRequireRuntimeHTTPServer(t *testing.T) {
 
 	h, _ := newSecpHost(t)
 	t.Cleanup(func() { _ = h.Close() })
+	db := newWalletAPITestDB(t)
 
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = t.TempDir()
 	cfg.Storage.DataDir = t.TempDir()
-	rt := newRuntimeForTest(t, cfg, "", withRuntimeHost(h), withRuntimeWorkspace(&workspaceManager{}))
+	rt := newRuntimeForTest(t, cfg, "", withRuntimeHost(h), withRuntimeFileStorage(newFileStorageRuntimeAdapter(newClientDB(db, nil), nil)))
 	rt.HTTP = nil
 	rt.modules = newModuleRegistry()
 	if _, err := rt.modules.RegisterDomainResolveHook(domainbiz.ResolveProviderName, func(ctx context.Context, domain string) (string, error) {

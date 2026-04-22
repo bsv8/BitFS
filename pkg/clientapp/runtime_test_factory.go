@@ -17,9 +17,8 @@ import (
 func newRuntimeForTest(t *testing.T, cfg Config, privHex string, opts ...func(*Runtime)) *Runtime {
 	t.Helper()
 	runtimeCfg := cloneConfig(cfg)
-	if strings.TrimSpace(runtimeCfg.Storage.WorkspaceDir) == "" || strings.TrimSpace(runtimeCfg.Storage.DataDir) == "" || filepath.Clean(strings.TrimSpace(runtimeCfg.Storage.WorkspaceDir)) == filepath.Clean(strings.TrimSpace(runtimeCfg.Storage.DataDir)) {
+	if strings.TrimSpace(runtimeCfg.Storage.DataDir) == "" {
 		root := t.TempDir()
-		runtimeCfg.Storage.WorkspaceDir = filepath.Join(root, "workspace")
 		runtimeCfg.Storage.DataDir = filepath.Join(root, "data")
 		if strings.TrimSpace(runtimeCfg.Index.SQLitePath) == "" {
 			runtimeCfg.Index.SQLitePath = filepath.Join(root, "data", "client-index.sqlite")
@@ -64,9 +63,6 @@ func newRuntimeForTest(t *testing.T, cfg Config, privHex string, opts ...func(*R
 			opt(rt)
 		}
 	}
-	if rt.store == nil && rt.Workspace != nil && rt.Workspace.store != nil {
-		rt.store = rt.Workspace.store
-	}
 	if rt.feePool == nil && rt.store != nil {
 		rt.feePool = newFeePoolKernel(rt, rt.store)
 	}
@@ -81,10 +77,10 @@ func withRuntimeHost(h host.Host) func(*Runtime) {
 	}
 }
 
-func withRuntimeWorkspace(workspace *workspaceManager) func(*Runtime) {
+func withRuntimeFileStorage(fileStorage fileStorageRuntime) func(*Runtime) {
 	return func(rt *Runtime) {
 		if rt != nil {
-			rt.Workspace = workspace
+			rt.FileStorage = fileStorage
 		}
 	}
 }

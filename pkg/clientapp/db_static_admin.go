@@ -8,10 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseedpricingpolicy"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseeds"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizworkspacefiles"
 )
@@ -22,12 +20,6 @@ type liveWorkspaceEntry struct {
 	FileSize      int64
 	MtimeUnix     int64
 	UpdatedAtUnix int64
-}
-
-type staticFilePriceRecord struct {
-	FloorPriceSatPer64K uint64
-	ResaleDiscountBPS   uint64
-	UpdatedAtUnix       int64
 }
 
 type liveStreamStatsItem struct {
@@ -113,9 +105,6 @@ func dbDeleteLiveStreamWorkspaceRows(ctx context.Context, store *clientDB, strea
 		if _, err := tx.BizWorkspaceFiles.Delete().Where(bizworkspacefiles.FilePathHasPrefix(pathPrefix)).Exec(ctx); err != nil {
 			return 0, err
 		}
-		if err := dbCleanupOrphanSeedStateTx(ctx, tx); err != nil {
-			return 0, err
-		}
 		return int64(before), nil
 	})
 }
@@ -179,103 +168,4 @@ func dbListLiveStreamStats(ctx context.Context, store *clientDB) ([]liveStreamSt
 		return out[i].LastUpdatedUnix > out[j].LastUpdatedUnix
 	})
 	return out, nil
-}
-
-func dbGetWorkspaceFileSeedHash(ctx context.Context, store *clientDB, path string) (string, error) {
-	if store == nil {
-		return "", fmt.Errorf("client db is nil")
-	}
-	abs, err := filepath.Abs(strings.TrimSpace(path))
-	if err != nil {
-		return "", err
-	}
-	roots, err := dbListWorkspaceRoots(ctx, store)
-	if err != nil {
-		return "", err
-	}
-	resolved, ok := resolveWorkspaceRelativePath(abs, roots)
-	if !ok {
-		return "", nil
-	}
-	return readEntValue(ctx, store, func(root EntReadRoot) (string, error) {
-		row, err := root.BizWorkspaceFiles.Query().
-			Where(
-				bizworkspacefiles.WorkspacePathEQ(resolved.WorkspacePath),
-				bizworkspacefiles.FilePathEQ(resolved.FilePath),
-			).
-			Only(ctx)
-		if err != nil {
-			if gen.IsNotFound(err) {
-				return "", nil
-			}
-			return "", err
-		}
-		return row.SeedHash, nil
-	})
-}
-
-func dbGetStaticFilePrice(ctx context.Context, store *clientDB, path string) (staticFilePriceRecord, error) {
-	if store == nil {
-		return staticFilePriceRecord{}, fmt.Errorf("client db is nil")
-	}
-	seedHash, err := dbGetWorkspaceFileSeedHash(ctx, store, path)
-	if err != nil || seedHash == "" {
-		return staticFilePriceRecord{}, err
-	}
-	return readEntValue(ctx, store, func(root EntReadRoot) (staticFilePriceRecord, error) {
-		row, err := root.BizSeedPricingPolicy.Query().
-			Where(bizseedpricingpolicy.SeedHashEQ(seedHash)).
-			Only(ctx)
-		if err != nil {
-			if gen.IsNotFound(err) {
-				return staticFilePriceRecord{}, sql.ErrNoRows
-			}
-			return staticFilePriceRecord{}, err
-		}
-		return staticFilePriceRecord{
-			FloorPriceSatPer64K: uint64(row.FloorUnitPriceSatPer64k),
-			ResaleDiscountBPS:   uint64(row.ResaleDiscountBps),
-			UpdatedAtUnix:       row.UpdatedAtUnix,
-		}, nil
-	})
-}
-
-func dbBindStaticPriceToSeed2(ctx context.Context, store *clientDB, path string, floor uint64, bps uint64) (string, uint64, uint64, bool, error) {
-	if store == nil {
-		return "", 0, 0, false, fmt.Errorf("client db is nil")
-	}
-	seedHash, err := dbGetWorkspaceFileSeedHash(ctx, store, path)
-	if err != nil {
-		return "", 0, 0, false, err
-	}
-	if seedHash == "" {
-		return "", 0, 0, false, nil
-	}
-	now := time.Now().Unix()
-	if err := dbUpsertSeedPricingPolicy(ctx, store, seedHash, floor, bps, "user", now); err != nil {
-		return "", 0, 0, false, err
-	}
-	var chunkCount uint32
-	if _, err := readEntValue(ctx, store, func(root EntReadRoot) (struct{}, error) {
-		row, err := root.BizSeeds.Query().Where(bizseeds.SeedHashEQ(seedHash)).Only(ctx)
-		if err != nil {
-			if gen.IsNotFound(err) {
-				return struct{}{}, sql.ErrNoRows
-			}
-			return struct{}{}, err
-		}
-		chunkCount = uint32(row.ChunkCount)
-		return struct{}{}, nil
-	}); err != nil {
-		return "", 0, 0, false, err
-	}
-	seedPrice := floor * uint64(chunkCount)
-	return seedHash, floor, seedPrice, true, nil
-}
-
-func dbRewriteStaticPricePaths(ctx context.Context, store *clientDB, fromAbs string, toAbs string) error {
-	if store == nil {
-		return fmt.Errorf("client db is nil")
-	}
-	return nil
 }

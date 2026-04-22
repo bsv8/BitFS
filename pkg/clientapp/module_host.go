@@ -12,12 +12,15 @@ import (
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	contractmessage "github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
+	"github.com/bsv8/BitFS/pkg/clientapp/seedstorage"
 	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
 type moduleHost struct {
 	rt    *Runtime
 	store moduleBootstrapStore
+	seed  moduleapi.SeedStorage
+	once  sync.Once
 }
 
 func validateModuleSpec(spec moduleapi.ModuleSpec) error {
@@ -61,6 +64,69 @@ func (h *moduleHost) Store() moduleapi.Store {
 		return nil
 	}
 	return moduleStoreAdapter{store: h.store}
+}
+
+func (h *moduleHost) ConfigPath() string {
+	if h == nil || h.rt == nil || h.rt.RuntimeConfigService() == nil {
+		return ""
+	}
+	return h.rt.RuntimeConfigService().ConfigPath()
+}
+
+func (h *moduleHost) NodePubkeyHex() string {
+	if h == nil || h.rt == nil {
+		return ""
+	}
+	return h.rt.NodePubkeyHex()
+}
+
+func (h *moduleHost) ClientPubkeyHex() string {
+	return h.NodePubkeyHex()
+}
+
+func (h *moduleHost) SeedStorage() moduleapi.SeedStorage {
+	if h == nil || h.rt == nil {
+		return nil
+	}
+	h.once.Do(func() {
+		h.seed = seedstorage.NewService(h)
+	})
+	return h.seed
+}
+
+func (h *moduleHost) FSWatchEnabled() bool {
+	if h == nil || h.rt == nil || h.rt.RuntimeConfigService() == nil {
+		return false
+	}
+	return h.rt.RuntimeConfigService().FSWatchEnabled()
+}
+
+func (h *moduleHost) FSRescanIntervalSeconds() uint32 {
+	if h == nil || h.rt == nil || h.rt.RuntimeConfigService() == nil {
+		return 0
+	}
+	return h.rt.RuntimeConfigService().FSRescanIntervalSeconds()
+}
+
+func (h *moduleHost) StartupFullScan() bool {
+	if h == nil || h.rt == nil || h.rt.RuntimeConfigService() == nil {
+		return false
+	}
+	return h.rt.RuntimeConfigService().StartupFullScan()
+}
+
+func (h *moduleHost) SellerFloorPriceSatPer64K() uint64 {
+	if h == nil || h.rt == nil || h.rt.RuntimeConfigService() == nil {
+		return 0
+	}
+	return h.rt.RuntimeConfigService().SellerFloorPriceSatPer64K()
+}
+
+func (h *moduleHost) SellerResaleDiscountBPS() uint64 {
+	if h == nil || h.rt == nil || h.rt.RuntimeConfigService() == nil {
+		return 0
+	}
+	return h.rt.RuntimeConfigService().SellerResaleDiscountBPS()
 }
 
 func (h *moduleHost) RegisterCapabilityItem(item *contractmessage.CapabilityItem) (func(), error) {

@@ -279,10 +279,6 @@ func resolveConfigPathsForRuntime(cfg *Config, configPath string) error {
 		return fmt.Errorf("config is nil")
 	}
 	baseDir := filepath.Dir(filepath.Clean(strings.TrimSpace(configPath)))
-	// 设计说明：
-	// - workspace_dir 允许为空，空值表示“钱包模式（不启用本地文件目录）”；
-	// - 因此这里不再给 workspace_dir 注入兜底路径。
-	cfg.Storage.WorkspaceDir = resolveConfigPathValue(baseDir, cfg.Storage.WorkspaceDir, "")
 	cfg.Storage.DataDir = resolveConfigPathValue(baseDir, cfg.Storage.DataDir, "data")
 	cfg.Index.SQLitePath = resolveConfigPathValue(baseDir, cfg.Index.SQLitePath, filepath.Join("data", "client-index.sqlite"))
 	cfg.Log.File = resolveConfigPathValue(baseDir, cfg.Log.File, filepath.Join("logs", "bitfs.log"))
@@ -294,9 +290,6 @@ func normalizeConfigForFile(cfg *Config, configPath string) error {
 		return fmt.Errorf("config is nil")
 	}
 	baseDir := filepath.Dir(filepath.Clean(strings.TrimSpace(configPath)))
-	// 设计说明：
-	// - workspace_dir 为空时不落盘默认值，避免“启动就被强行写出 workspace”。
-	cfg.Storage.WorkspaceDir = saveConfigPathValue(baseDir, cfg.Storage.WorkspaceDir, "")
 	cfg.Storage.DataDir = saveConfigPathValue(baseDir, cfg.Storage.DataDir, "data")
 	cfg.Index.SQLitePath = saveConfigPathValue(baseDir, cfg.Index.SQLitePath, filepath.Join("data", "client-index.sqlite"))
 	cfg.Log.File = saveConfigPathValue(baseDir, cfg.Log.File, filepath.Join("logs", "bitfs.log"))

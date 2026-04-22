@@ -2,11 +2,7 @@ package clientapp
 
 import "net/http"
 
-func (s *httpAPIServer) registerHTTPRouteWorkspace(mux *http.ServeMux, prefix string) {
-	mux.HandleFunc(prefix+"/v1/workspace/sync-once", s.withAuth(s.handleWorkspaceSyncOnce))
-	mux.HandleFunc(prefix+"/v1/workspace/files", s.withAuth(s.handleWorkspaceFiles))
-	mux.HandleFunc(prefix+"/v1/workspace/biz_seeds", s.withAuth(s.handleWorkspaceSeeds))
-	mux.HandleFunc(prefix+"/v1/workspace/biz_seeds/price", s.withAuth(s.handleSeedPriceUpdate))
+func (s *httpAPIServer) registerHTTPRouteNetworkLive(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc(prefix+"/v1/admin/seed-cache/stats", s.withAuth(s.handleAdminSeedCacheStats))
 	mux.HandleFunc(prefix+"/v1/admin/seed-cache/presence", s.withAuth(s.handleAdminSeedCachePresence))
 }

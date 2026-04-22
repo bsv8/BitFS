@@ -337,14 +337,14 @@ func newLocalOnlyTestServer(t *testing.T, _ []byte) (*fileHTTPServer, string, st
 	}
 	cfg := &Config{}
 	cfg.Storage.DataDir = t.TempDir()
-	cfg.Storage.WorkspaceDir = t.TempDir()
+	workspaceDir := t.TempDir()
 	cfg.FSHTTP.DownloadWaitTimeoutSeconds = 1
 	cfg.FSHTTP.MaxConcurrentSessions = 4
 	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
 	rt := &Runtime{ctx: context.WithoutCancel(context.Background())}
-	srv := newFileHTTPServer(rt, staticConfigSnapshot(*cfg), newClientDB(db, nil), &workspaceManager{ctx: context.Background(), cfg: cfg, db: db, store: newClientDB(db, nil)})
+	srv := newFileHTTPServer(rt, staticConfigSnapshot(*cfg), newClientDB(db, nil), nil)
 	seedHash := strings.Repeat("a", 64)
-	return srv, seedHash, cfg.Storage.WorkspaceDir
+	return srv, seedHash, workspaceDir
 }
 
 func upsertWorkspaceFileForSeed(t *testing.T, store *clientDB, seedHash, path string, size int64) error {
@@ -395,7 +395,7 @@ func TestFileHTTPServer_StartAndShutdown(t *testing.T) {
 	cfg := &Config{}
 	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
 	rt := &Runtime{ctx: context.WithoutCancel(context.Background())}
-	srv := newFileHTTPServer(rt, staticConfigSnapshot(*cfg), newClientDB(db, nil), &workspaceManager{ctx: context.Background(), cfg: cfg, db: db, store: newClientDB(db, nil)})
+	srv := newFileHTTPServer(rt, staticConfigSnapshot(*cfg), newClientDB(db, nil), nil)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)

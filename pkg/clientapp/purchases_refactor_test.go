@@ -307,7 +307,6 @@ func newDirectPurchaseFlowEnv(t *testing.T) directPurchaseFlowEnv {
 	sellerCfg := Config{}
 	sellerCfg.Keys.PrivkeyHex = sellerPrivHex
 	sellerCfg.Storage.DataDir = dataDir
-	sellerCfg.Storage.WorkspaceDir = wsDir
 	if err := ApplyConfigDefaults(&sellerCfg); err != nil {
 		t.Fatalf("apply seller defaults: %v", err)
 	}
@@ -316,7 +315,6 @@ func newDirectPurchaseFlowEnv(t *testing.T) directPurchaseFlowEnv {
 	sellerRT.Catalog = newSellerCatalog()
 
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = wsDir
 	cfg.Storage.DataDir = dataDir
 	cfg.Seller.Pricing.FloorPriceSatPer64K = 11
 	cfg.Seller.Pricing.ResaleDiscountBPS = 8000
@@ -324,10 +322,8 @@ func newDirectPurchaseFlowEnv(t *testing.T) directPurchaseFlowEnv {
 		t.Fatalf("apply defaults: %v", err)
 	}
 
-	mgr := newTestWorkspaceManager(context.Background(), &cfg, db)
-	if err := mgr.EnsureDefaultWorkspace(); err != nil {
-		t.Fatalf("ensure workspace: %v", err)
-	}
+	mustInsertTestWorkspaceRoot(t, db, wsDir)
+	mgr := newTestFileStorageRuntime(t, &cfg, db)
 
 	fullPath := filepath.Join(wsDir, "sample.bin")
 	full := make([]byte, int(seedBlockSize*2+19))
@@ -344,7 +340,7 @@ func newDirectPurchaseFlowEnv(t *testing.T) directPurchaseFlowEnv {
 	if chunkCount < 2 {
 		t.Fatalf("test seed needs at least 2 chunks, got=%d", chunkCount)
 	}
-	if _, err := mgr.RegisterDownloadedFile(registerDownloadedFileParams{
+	if _, err := mgr.RegisterDownloadedFile(context.Background(), registerDownloadedFileParams{
 		FilePath:              fullPath,
 		Seed:                  seedBytes,
 		AvailableChunkIndexes: []uint32{0, 1},

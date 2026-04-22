@@ -216,27 +216,3 @@ func dbLoadSeedCatalogSnapshot(ctx context.Context, store *clientDB) (map[string
 	}
 	return out.seeds, nil
 }
-
-func (m *workspaceManager) LoadSeedCatalogSnapshot(ctx context.Context) (map[string]sellerSeed, error) {
-	if m == nil || m.cfg == nil {
-		return nil, fmt.Errorf("workspace manager not initialized")
-	}
-	store := workspaceStore(m)
-	if store == nil {
-		return nil, fmt.Errorf("workspace manager not initialized")
-	}
-	if m.catalog != nil {
-		m.catalog.IncDBQueries(1)
-	}
-	seeds, err := dbLoadSeedCatalogSnapshot(ctx, store)
-	if err != nil {
-		if m.catalog != nil {
-			m.catalog.MarkStale()
-		}
-		return nil, err
-	}
-	if m.catalog != nil {
-		m.catalog.Replace(seeds)
-	}
-	return seeds, nil
-}

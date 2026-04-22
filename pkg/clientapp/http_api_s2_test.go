@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -14,75 +13,22 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	filestoragemod "github.com/bsv8/BitFS/pkg/clientapp/modules/filestorage"
 )
-
-func TestHandleAdminWorkspacesPut(t *testing.T) {
-	t.Parallel()
-
-	base := t.TempDir()
-	ws1 := filepath.Join(base, "ws1")
-	dataDir := filepath.Join(base, "data")
-	if err := os.MkdirAll(ws1, 0o755); err != nil {
-		t.Fatalf("mkdir ws1: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(dataDir, "biz_seeds"), 0o755); err != nil {
-		t.Fatalf("mkdir biz_seeds: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(ws1, "a.txt"), []byte("abc"), 0o644); err != nil {
-		t.Fatalf("write ws file: %v", err)
-	}
-
-	db := newWalletAPITestDB(t)
-	cfg := Config{}
-	cfg.Storage.WorkspaceDir = ws1
-	cfg.Storage.DataDir = dataDir
-	cfg.Index.Backend = "sqlite"
-	cfg.Index.SQLitePath = ":memory:"
-	if err := ApplyConfigDefaults(&cfg); err != nil {
-		t.Fatalf("apply defaults: %v", err)
-	}
-	mgr := newTestWorkspaceManager(context.Background(), &cfg, db)
-	if err := mgr.EnsureDefaultWorkspace(); err != nil {
-		t.Fatalf("ensure default workspace: %v", err)
-	}
-	if _, err := mgr.SyncOnce(t.Context()); err != nil {
-		t.Fatalf("sync once: %v", err)
-	}
-	items, err := mgr.List()
-	if err != nil || len(items) == 0 {
-		t.Fatalf("list biz_workspaces failed: err=%v len=%d", err, len(items))
-	}
-	workspacePath := items[0].WorkspacePath
-
-	rt := newRuntimeForTest(t, cfg, "", withRuntimeWorkspace(mgr))
-	srv := &httpAPIServer{rt: rt, workspace: mgr}
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/biz_workspaces?workspace_path="+url.QueryEscape(workspacePath), strings.NewReader(`{"max_bytes":2048,"enabled":false}`))
-	rec := httptest.NewRecorder()
-	srv.handleAdminWorkspaces(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("put workspace status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-
-	var maxBytes uint64
-	var enabled int64
-	if err := db.QueryRow(`SELECT max_bytes,enabled FROM biz_workspaces WHERE workspace_path=?`, workspacePath).Scan(&maxBytes, &enabled); err != nil {
-		t.Fatalf("query workspace after put: %v", err)
-	}
-	if maxBytes != 2048 {
-		t.Fatalf("max_bytes mismatch: got=%d want=2048", maxBytes)
-	}
-	if enabled != 0 {
-		t.Fatalf("enabled mismatch: got=%d want=0", enabled)
-	}
-}
 
 func TestHandleAdminLiveStreamsListAndDelete(t *testing.T) {
 	t.Parallel()
 
 	base := t.TempDir()
 	ws := filepath.Join(base, "ws")
+	pubkeyHex := strings.Repeat("11", 32)
+	seedDir := filepath.Join(base, "config", pubkeyHex, "seeds")
 	if err := os.MkdirAll(ws, 0o755); err != nil {
 		t.Fatalf("mkdir ws: %v", err)
+	}
+	if err := os.MkdirAll(seedDir, 0o755); err != nil {
+		t.Fatalf("mkdir seed dir: %v", err)
 	}
 	streamID := strings.Repeat("ab", 32)
 	liveFile := filepath.Join(ws, "live", streamID, "000001.seg")
@@ -96,26 +42,19 @@ func TestHandleAdminLiveStreamsListAndDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build live seed: %v", err)
 	}
-	seedFile := filepath.Join(base, "data", "biz_seeds", liveSeedHash+".bse")
+	seedFile := filepath.Join(seedDir, liveSeedHash+".bse")
 	if err := os.MkdirAll(filepath.Dir(seedFile), 0o755); err != nil {
 		t.Fatalf("mkdir live seed dir: %v", err)
 	}
 	if err := os.WriteFile(seedFile, seedBytes, 0o644); err != nil {
 		t.Fatalf("write live seed: %v", err)
 	}
-	workspaceSeedFile := filepath.Join(ws, "biz_seeds", liveSeedHash+".bse")
-	if err := os.MkdirAll(filepath.Dir(workspaceSeedFile), 0o755); err != nil {
-		t.Fatalf("mkdir workspace live seed dir: %v", err)
-	}
-	if err := os.WriteFile(workspaceSeedFile, seedBytes, 0o644); err != nil {
-		t.Fatalf("write workspace live seed: %v", err)
-	}
 
 	db := newWalletAPITestDB(t)
 	if _, err := db.Exec(`INSERT INTO biz_workspaces(workspace_path,enabled,max_bytes,created_at_unix) VALUES(?,?,?,?)`, ws, 1, 0, time.Now().Unix()); err != nil {
-		t.Fatalf("insert workspace: %v", err)
+		t.Fatalf("insert fileStorage: %v", err)
 	}
-	rawSeedPath := filepath.Join(base, "data", "biz_seeds", "source.bin")
+	rawSeedPath := filepath.Join(base, "content", "source.bin")
 	if err := os.MkdirAll(filepath.Dir(rawSeedPath), 0o755); err != nil {
 		t.Fatalf("mkdir seed dir: %v", err)
 	}
@@ -126,16 +65,9 @@ func TestHandleAdminLiveStreamsListAndDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build static seed: %v", err)
 	}
-	seedPath := filepath.Join(base, "data", "biz_seeds", seedHash+".bse")
+	seedPath := filepath.Join(seedDir, seedHash+".bse")
 	if err := os.WriteFile(seedPath, seedBytesStatic, 0o644); err != nil {
 		t.Fatalf("write seed file: %v", err)
-	}
-	workspaceStaticSeedFile := filepath.Join(ws, "biz_seeds", seedHash+".bse")
-	if err := os.MkdirAll(filepath.Dir(workspaceStaticSeedFile), 0o755); err != nil {
-		t.Fatalf("mkdir workspace static seed dir: %v", err)
-	}
-	if err := os.WriteFile(workspaceStaticSeedFile, seedBytesStatic, 0o644); err != nil {
-		t.Fatalf("write workspace static seed: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,
 		seedHash, 1, 4, seedPath, "", ""); err != nil {
@@ -146,16 +78,16 @@ func TestHandleAdminLiveStreamsListAndDelete(t *testing.T) {
 		t.Fatalf("insert workspace file: %v", err)
 	}
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = ws
-	mgr := newTestWorkspaceManager(context.Background(), &cfg, db)
-	rt := newRuntimeForTest(t, cfg, "", withRuntimeWorkspace(mgr), withRuntimeStore(newClientDB(db, nil)))
+	mustInsertTestWorkspaceRoot(t, db, ws)
+	mgr := newTestFileStorageRuntime(t, &cfg, db)
+	rt := newRuntimeForTest(t, cfg, strings.Repeat("11", 32), withRuntimeFileStorage(mgr), withRuntimeStore(newClientDB(db, nil)))
 	srv := &httpAPIServer{
-		ctx:       context.Background(),
-		rt:        rt,
-		db:        db,
-		store:     newClientDB(db, nil),
-		cfgSource: staticConfigSnapshot(cfg),
-		workspace: mgr,
+		ctx:         context.Background(),
+		rt:          rt,
+		db:          db,
+		store:       newClientDB(db, nil),
+		cfgSource:   staticConfigSnapshot(cfg),
+		fileStorage: mgr,
 	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/live/streams", nil)
@@ -194,14 +126,13 @@ func TestHandleAdminStaticTreeAndPrice(t *testing.T) {
 	base := t.TempDir()
 	ws := filepath.Join(base, "ws")
 	dataDir := filepath.Join(base, "data")
+	pubkeyHex := strings.Repeat("22", 32)
+	seedDir := filepath.Join(base, "config", pubkeyHex, "seeds")
 	if err := os.MkdirAll(ws, 0o755); err != nil {
 		t.Fatalf("mkdir ws: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Join(dataDir, "biz_seeds"), 0o755); err != nil {
-		t.Fatalf("mkdir biz_seeds: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(dataDir, "biz_seeds"), 0o755); err != nil {
-		t.Fatalf("mkdir biz_seeds: %v", err)
+	if err := os.MkdirAll(seedDir, 0o755); err != nil {
+		t.Fatalf("mkdir seed dir: %v", err)
 	}
 	filePath := filepath.Join(ws, "docs", "a.txt")
 	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
@@ -213,10 +144,10 @@ func TestHandleAdminStaticTreeAndPrice(t *testing.T) {
 
 	db := newWalletAPITestDB(t)
 	if _, err := db.Exec(`INSERT INTO biz_workspaces(workspace_path,enabled,max_bytes,created_at_unix) VALUES(?,?,?,?)`, ws, 1, 0, time.Now().Unix()); err != nil {
-		t.Fatalf("insert workspace: %v", err)
+		t.Fatalf("insert fileStorage: %v", err)
 	}
 	seedHash := strings.Repeat("ef", 32)
-	seedPath := filepath.Join(dataDir, "biz_seeds", seedHash+".seed")
+	seedPath := filepath.Join(seedDir, seedHash+".bse")
 	if err := os.WriteFile(seedPath, make([]byte, 64), 0o644); err != nil {
 		t.Fatalf("write seed file: %v", err)
 	}
@@ -228,32 +159,53 @@ func TestHandleAdminStaticTreeAndPrice(t *testing.T) {
 		ws, filepath.Join("docs", "a.txt"), seedHash, 0); err != nil {
 		t.Fatalf("insert workspace file: %v", err)
 	}
+	mustInsertTestWorkspaceRoot(t, db, ws)
 
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = ws
 	cfg.Storage.DataDir = dataDir
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	srv := &httpAPIServer{db: db, store: newClientDB(db, nil), cfgSource: staticConfigSnapshot(cfg)}
+	rt := newRuntimeForTest(t, cfg, strings.Repeat("11", 32), withRuntimeStore(newClientDB(db, nil)))
+	cleanup, err := filestoragemod.Install(t.Context(), newModuleHost(rt, newClientDB(db, nil)))
+	if err != nil {
+		t.Fatalf("install filestorage module: %v", err)
+	}
+	t.Cleanup(cleanup)
+	srv := newHTTPAPIServer(rt, staticConfigSnapshot(cfg), db, newClientDB(db, nil), nil, nil, nil, nil)
+	handler, err := srv.Handler()
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
 
-	treeReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/static/tree?path=/docs", nil)
+	treeReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/static/tree?workspace_path="+url.QueryEscape(ws)+"&path=/docs", nil)
 	treeRec := httptest.NewRecorder()
-	srv.handleAdminStaticTree(treeRec, treeReq)
+	handler.ServeHTTP(treeRec, treeReq)
 	if treeRec.Code != http.StatusOK {
 		t.Fatalf("static tree status mismatch: got=%d want=%d body=%s", treeRec.Code, http.StatusOK, treeRec.Body.String())
 	}
+	var treeResp struct {
+		Status string         `json:"status"`
+		Data   map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(treeRec.Body.Bytes(), &treeResp); err != nil {
+		t.Fatalf("decode tree body: %v", err)
+	}
+	items, _ := treeResp.Data["items"].([]any)
+	if len(items) == 0 {
+		t.Fatalf("tree should contain items: %+v", treeResp)
+	}
 
-	priceReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/static/price/set", strings.NewReader(`{"path":"/docs/a.txt","floor_price_sat_per_64k":15,"resale_discount_bps":8000}`))
+	priceReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/static/price/set", strings.NewReader(`{"workspace_path":"`+ws+`","path":"/docs/a.txt","floor_price_sat_per_64k":15,"resale_discount_bps":8000}`))
 	priceRec := httptest.NewRecorder()
-	srv.handleAdminStaticPriceSet(priceRec, priceReq)
+	handler.ServeHTTP(priceRec, priceReq)
 	if priceRec.Code != http.StatusOK {
 		t.Fatalf("set static price status mismatch: got=%d want=%d body=%s", priceRec.Code, http.StatusOK, priceRec.Body.String())
 	}
 
-	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/static/price?path=/docs/a.txt", nil)
+	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/static/price?workspace_path="+url.QueryEscape(ws)+"&path=/docs/a.txt", nil)
 	getRec := httptest.NewRecorder()
-	srv.handleAdminStaticPriceGet(getRec, getReq)
+	handler.ServeHTTP(getRec, getReq)
 	if getRec.Code != http.StatusOK {
 		t.Fatalf("get static price status mismatch: got=%d want=%d body=%s", getRec.Code, http.StatusOK, getRec.Body.String())
 	}
@@ -261,8 +213,12 @@ func TestHandleAdminStaticTreeAndPrice(t *testing.T) {
 	if err := json.Unmarshal(getRec.Body.Bytes(), &getBody); err != nil {
 		t.Fatalf("decode price get body: %v", err)
 	}
-	if int64(getBody["floor_unit_price_sat_per_64k"].(float64)) != 15 {
-		t.Fatalf("floor price mismatch: got=%v want=15", getBody["floor_unit_price_sat_per_64k"])
+	data, _ := getBody["data"].(map[string]any)
+	if data == nil {
+		t.Fatalf("price get missing data: %+v", getBody)
+	}
+	if int64(data["floor_unit_price_sat_per_64k"].(float64)) != 15 {
+		t.Fatalf("floor price mismatch: got=%v want=15", data["floor_unit_price_sat_per_64k"])
 	}
 }
 
@@ -278,13 +234,23 @@ func TestHandleAdminStaticTreeRecursive(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 	db := newWalletAPITestDB(t)
+	mustInsertTestWorkspaceRoot(t, db, ws)
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = ws
-	srv := &httpAPIServer{db: db, store: newClientDB(db, nil), cfgSource: staticConfigSnapshot(cfg)}
+	rt := newRuntimeForTest(t, cfg, strings.Repeat("11", 32), withRuntimeStore(newClientDB(db, nil)))
+	cleanup, err := filestoragemod.Install(t.Context(), newModuleHost(rt, newClientDB(db, nil)))
+	if err != nil {
+		t.Fatalf("install filestorage module: %v", err)
+	}
+	t.Cleanup(cleanup)
+	srv := newHTTPAPIServer(rt, staticConfigSnapshot(cfg), db, newClientDB(db, nil), nil, nil, nil, nil)
+	handler, err := srv.Handler()
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/static/tree?path=/&recursive=true&max_depth=4", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/static/tree?workspace_path="+url.QueryEscape(ws)+"&path=/&recursive=true&max_depth=4", nil)
 	rec := httptest.NewRecorder()
-	srv.handleAdminStaticTree(rec, req)
+	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("recursive tree status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
@@ -292,7 +258,8 @@ func TestHandleAdminStaticTreeRecursive(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode recursive tree: %v", err)
 	}
-	items, _ := body["items"].([]any)
+	data, _ := body["data"].(map[string]any)
+	items, _ := data["items"].([]any)
 	if len(items) == 0 {
 		t.Fatalf("recursive tree should have items")
 	}
@@ -317,7 +284,6 @@ func TestHandleAdminStaticUploadAndMoveByTargetDir(t *testing.T) {
 	}
 	db := newWalletAPITestDB(t)
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = ws
 	cfg.Storage.DataDir = dataDir
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
@@ -325,14 +291,24 @@ func TestHandleAdminStaticUploadAndMoveByTargetDir(t *testing.T) {
 	if err := initDataDirs(&cfg); err != nil {
 		t.Fatalf("init data dirs: %v", err)
 	}
-	mgr := newTestWorkspaceManager(context.Background(), &cfg, db)
-	if err := mgr.EnsureDefaultWorkspace(); err != nil {
-		t.Fatalf("ensure default workspace: %v", err)
+	mustInsertTestWorkspaceRoot(t, db, ws)
+	rt := newRuntimeForTest(t, cfg, strings.Repeat("11", 32), withRuntimeStore(newClientDB(db, nil)))
+	cleanup, err := filestoragemod.Install(t.Context(), newModuleHost(rt, newClientDB(db, nil)))
+	if err != nil {
+		t.Fatalf("install filestorage module: %v", err)
 	}
-	srv := &httpAPIServer{db: db, store: newClientDB(db, nil), cfgSource: staticConfigSnapshot(cfg), workspace: mgr}
+	t.Cleanup(cleanup)
+	srv := newHTTPAPIServer(rt, staticConfigSnapshot(cfg), db, newClientDB(db, nil), nil, nil, nil, nil)
+	handler, err := srv.Handler()
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("workspace_path", ws); err != nil {
+		t.Fatalf("write workspace_path: %v", err)
+	}
 	if err := writer.WriteField("target_dir", "/docs"); err != nil {
 		t.Fatalf("write field: %v", err)
 	}
@@ -349,7 +325,7 @@ func TestHandleAdminStaticUploadAndMoveByTargetDir(t *testing.T) {
 	uploadReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/static/upload", &body)
 	uploadReq.Header.Set("Content-Type", writer.FormDataContentType())
 	uploadRec := httptest.NewRecorder()
-	srv.handleAdminStaticUpload(uploadRec, uploadReq)
+	handler.ServeHTTP(uploadRec, uploadReq)
 	if uploadRec.Code != http.StatusOK {
 		t.Fatalf("upload status mismatch: got=%d want=%d body=%s", uploadRec.Code, http.StatusOK, uploadRec.Body.String())
 	}
@@ -358,92 +334,30 @@ func TestHandleAdminStaticUploadAndMoveByTargetDir(t *testing.T) {
 	}
 
 	moveReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/static/move", strings.NewReader(`{
+		"workspace_path":"`+ws+`",
 		"source_path":"/docs/a.txt",
 		"target_dir":"/archive/2026",
 		"new_name":"moved.txt"
 	}`))
 	moveRec := httptest.NewRecorder()
-	srv.handleAdminStaticMove(moveRec, moveReq)
+	handler.ServeHTTP(moveRec, moveReq)
 	if moveRec.Code != http.StatusOK {
 		t.Fatalf("move status mismatch: got=%d want=%d body=%s", moveRec.Code, http.StatusOK, moveRec.Body.String())
 	}
 	if _, err := os.Stat(filepath.Join(ws, "archive", "2026", "moved.txt")); err != nil {
 		t.Fatalf("moved file missing: %v", err)
 	}
-}
-
-func TestHandleAdminRegisterDownloadedFileAcceptsAbsolutePath(t *testing.T) {
-	t.Parallel()
-
-	base := t.TempDir()
-	ws := filepath.Join(base, "ws")
-	dataDir := filepath.Join(base, "data")
-	if err := os.MkdirAll(ws, 0o755); err != nil {
-		t.Fatalf("mkdir ws: %v", err)
+	var movedCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM biz_workspace_files WHERE workspace_path=? AND file_path=?`, ws, filepath.ToSlash(filepath.Join("docs", "a.txt"))).Scan(&movedCount); err != nil {
+		t.Fatalf("query old workspace row: %v", err)
 	}
-	db := newWalletAPITestDB(t)
-	cfg := Config{}
-	cfg.Storage.WorkspaceDir = ws
-	cfg.Storage.DataDir = dataDir
-	if err := ApplyConfigDefaults(&cfg); err != nil {
-		t.Fatalf("apply defaults: %v", err)
+	if movedCount != 0 {
+		t.Fatalf("old workspace row should be removed, got=%d", movedCount)
 	}
-	if err := initDataDirs(&cfg); err != nil {
-		t.Fatalf("init data dirs: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM biz_workspace_files WHERE workspace_path=? AND file_path=?`, ws, filepath.ToSlash(filepath.Join("archive", "2026", "moved.txt"))).Scan(&movedCount); err != nil {
+		t.Fatalf("query new workspace row: %v", err)
 	}
-	mgr := newTestWorkspaceManager(context.Background(), &cfg, db)
-	if err := mgr.EnsureDefaultWorkspace(); err != nil {
-		t.Fatalf("ensure default workspace: %v", err)
-	}
-	srv := &httpAPIServer{db: db, store: newClientDB(db, nil), cfgSource: staticConfigSnapshot(cfg), workspace: mgr}
-
-	downloadedPath := filepath.Join(ws, "downloads", "abs-register.bin")
-	if err := os.MkdirAll(filepath.Dir(downloadedPath), 0o755); err != nil {
-		t.Fatalf("mkdir downloads: %v", err)
-	}
-	if err := os.WriteFile(downloadedPath, []byte("downloaded-content"), 0o644); err != nil {
-		t.Fatalf("write downloaded file: %v", err)
-	}
-	_, expectedSeedHash, _, err := buildSeedV1(downloadedPath)
-	if err != nil {
-		t.Fatalf("build seed: %v", err)
-	}
-
-	callRegister := func(path string) *httptest.ResponseRecorder {
-		raw, err := json.Marshal(map[string]any{"file_path": path})
-		if err != nil {
-			t.Fatalf("marshal request: %v", err)
-		}
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/workspace/register-downloaded-file", bytes.NewReader(raw))
-		rec := httptest.NewRecorder()
-		srv.handleAdminRegisterDownloadedFile(rec, req)
-		return rec
-	}
-
-	recAbs := callRegister(downloadedPath)
-	if recAbs.Code != http.StatusOK {
-		t.Fatalf("register absolute path status mismatch: got=%d want=%d body=%s", recAbs.Code, http.StatusOK, recAbs.Body.String())
-	}
-	var bodyAbs map[string]any
-	if err := json.Unmarshal(recAbs.Body.Bytes(), &bodyAbs); err != nil {
-		t.Fatalf("decode absolute response: %v", err)
-	}
-	gotSeedHash := func(body map[string]any) string {
-		return strings.ToLower(strings.TrimSpace(strings.TrimSpace(fmt.Sprint(body["seed_hash"]))))
-	}
-	if got := gotSeedHash(bodyAbs); got != expectedSeedHash {
-		t.Fatalf("absolute register seed mismatch: got=%s want=%s", got, expectedSeedHash)
-	}
-
-	recRel := callRegister("/downloads/abs-register.bin")
-	if recRel.Code != http.StatusOK {
-		t.Fatalf("register workspace path status mismatch: got=%d want=%d body=%s", recRel.Code, http.StatusOK, recRel.Body.String())
-	}
-	var bodyRel map[string]any
-	if err := json.Unmarshal(recRel.Body.Bytes(), &bodyRel); err != nil {
-		t.Fatalf("decode workspace response: %v", err)
-	}
-	if got := gotSeedHash(bodyRel); got != expectedSeedHash {
-		t.Fatalf("workspace register seed mismatch: got=%s want=%s", got, expectedSeedHash)
+	if movedCount != 1 {
+		t.Fatalf("new workspace row should exist, got=%d", movedCount)
 	}
 }

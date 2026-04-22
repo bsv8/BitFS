@@ -2,23 +2,22 @@ package clientapp
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	filedownload "github.com/bsv8/BitFS/pkg/clientapp/download/file"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 )
 
 type downloadFileSeedAdapter struct {
 	store     *clientDB
 	rt        *Runtime
 	cfgSource configSnapshotter
+	seedStore moduleapi.SeedStorage
 }
 
-func newDownloadFileSeedAdapter(store *clientDB, rt *Runtime, cfgSource configSnapshotter) *downloadFileSeedAdapter {
+func newDownloadFileSeedAdapter(store *clientDB, rt *Runtime, cfgSource configSnapshotter, seedStore moduleapi.SeedStorage) *downloadFileSeedAdapter {
 	if store == nil {
 		return nil
 	}
@@ -26,6 +25,7 @@ func newDownloadFileSeedAdapter(store *clientDB, rt *Runtime, cfgSource configSn
 		store:     store,
 		rt:        rt,
 		cfgSource: cfgSource,
+		seedStore: seedStore,
 	}
 }
 
@@ -50,21 +50,17 @@ func (a *downloadFileSeedAdapter) SaveSeed(ctx context.Context, input filedownlo
 	if input.FileSize > 0 && input.FileSize != meta.FileSize {
 		return filedownload.NewError(filedownload.CodeBadRequest, "seed file size mismatch")
 	}
-	dataDir, err := a.seedDataDir()
-	if err != nil {
-		return err
+	if a.seedStore == nil {
+		return filedownload.NewError(filedownload.CodeModuleDisabled, "seed storage is not available")
 	}
-	seedHash := strings.ToLower(strings.TrimSpace(meta.SeedHashHex))
-	seedPath := filepath.Join(dataDir, "biz_seeds", seedHash+".bse")
-	if err := os.MkdirAll(filepath.Dir(seedPath), 0o755); err != nil {
-		return err
-	}
-	if err := writeIfChanged(seedPath, seedBytes); err != nil {
-		return err
-	}
-	return a.store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-		return dbUpsertBizSeedClient(ctx, tx.BizSeeds, seedHash, meta.ChunkCount, meta.FileSize, seedPath, "", "")
+	_, err = a.seedStore.SaveSeed(ctx, moduleapi.SeedSaveInput{
+		SeedHash:    meta.SeedHashHex,
+		SeedBytes:   seedBytes,
+		ChunkHashes: append([]string(nil), meta.ChunkHashes...),
+		ChunkCount:  meta.ChunkCount,
+		FileSize:    meta.FileSize,
 	})
+	return err
 }
 
 func (a *downloadFileSeedAdapter) ResolveAndSaveSeedMeta(ctx context.Context, req filedownload.SeedResolveRequest) (filedownload.SeedMeta, error) {
@@ -183,17 +179,6 @@ func (a *downloadFileSeedAdapter) LoadSeedMeta(ctx context.Context, seedHash str
 		ChunkCount:  seed.ChunkCount,
 		FileSize:    seed.FileSize,
 	}, true, nil
-}
-
-func (a *downloadFileSeedAdapter) seedDataDir() (string, error) {
-	if a.cfgSource == nil {
-		return "", fmt.Errorf("seed data dir is required")
-	}
-	dataDir := strings.TrimSpace(a.cfgSource.ConfigSnapshot().Storage.DataDir)
-	if dataDir == "" {
-		return "", fmt.Errorf("seed data dir is required")
-	}
-	return filepath.Clean(dataDir), nil
 }
 
 var _ filedownload.SeedStore = (*downloadFileSeedAdapter)(nil)

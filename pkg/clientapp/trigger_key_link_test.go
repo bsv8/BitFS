@@ -33,7 +33,6 @@ func TestOrchestratorTriggerKeyRealLink(t *testing.T) {
 
 	store := newClientDB(db, nil)
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = t.TempDir()
 	cfg.Storage.DataDir = t.TempDir()
 	cfg.Index.Backend = "sqlite"
 	cfg.Index.SQLitePath = ":memory:"
@@ -328,7 +327,6 @@ func TestHTTPTriggerKeyFilter(t *testing.T) {
 	})
 
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = t.TempDir()
 	cfg.Storage.DataDir = t.TempDir()
 	cfg.Index.Backend = "sqlite"
 	cfg.Index.SQLitePath = ":memory:"

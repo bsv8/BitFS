@@ -28,7 +28,6 @@ func TestApplyConfigDefaults_LivePricing(t *testing.T) {
 	cfg.BSV.Network = "test"
 	cfg.Index.Backend = "sqlite"
 	cfg.Index.SQLitePath = "db.sqlite"
-	cfg.Storage.WorkspaceDir = "/tmp/ws"
 	cfg.Storage.DataDir = "/tmp/data"
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults failed: %v", err)

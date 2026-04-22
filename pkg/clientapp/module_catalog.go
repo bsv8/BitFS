@@ -9,6 +9,7 @@ import (
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	"github.com/bsv8/BitFS/pkg/clientapp/modulelock"
 	domainmodule "github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
+	filestorage "github.com/bsv8/BitFS/pkg/clientapp/modules/filestorage"
 	inboxmessage "github.com/bsv8/BitFS/pkg/clientapp/modules/inboxmessage"
 	indexresolve "github.com/bsv8/BitFS/pkg/clientapp/modules/indexresolve"
 )
@@ -17,6 +18,7 @@ func builtinModuleCatalog() []moduleapi.ModuleDescriptor {
 	return []moduleapi.ModuleDescriptor{
 		domainmodule.Descriptor(),
 		indexresolve.Descriptor(),
+		filestorage.Descriptor(),
 		inboxmessage.Descriptor(),
 	}
 }

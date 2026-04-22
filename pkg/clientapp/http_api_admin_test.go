@@ -33,7 +33,6 @@ func TestHandleAdminStrategyDebugLog(t *testing.T) {
 	}
 
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = filepath.Join(vaultDir, "workspace")
 	cfg.Storage.DataDir = filepath.Join(vaultDir, "data")
 	cfg.Index.Backend = "sqlite"
 	cfg.Index.SQLitePath = filepath.Join(vaultDir, "data", "client-index.sqlite")
@@ -121,7 +120,6 @@ func TestHandleAdminSchedulerTasks(t *testing.T) {
 	}
 
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = t.TempDir()
 	cfg.Storage.DataDir = t.TempDir()
 	cfg.Index.Backend = "sqlite"
 	cfg.Index.SQLitePath = ":memory:"
@@ -254,7 +252,6 @@ func TestHandleAdminSchedulerTasksDefaultOrder(t *testing.T) {
 		t.Fatalf("seed scheduler tasks: %v", err)
 	}
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = t.TempDir()
 	cfg.Storage.DataDir = t.TempDir()
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
@@ -310,7 +307,6 @@ func TestHandleAdminSchedulerRuns(t *testing.T) {
 		t.Fatalf("seed scheduler runs: %v", err)
 	}
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = t.TempDir()
 	cfg.Storage.DataDir = t.TempDir()
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
@@ -364,7 +360,7 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 		SignalType:     "workspace.tick",
 		AggregateKey:   "workspace_sync:123456",
 		IdempotencyKey: "workspace_sync:123456",
-		CommandType:    workspaceCommandTypeSync,
+		CommandType:    "workspace_sync",
 		GatewayPeerID:  "16Uiu2HAm9hV4Nj8k8rZcZqWqQPKw28Y61S7",
 		TaskStatus:     "queued",
 		RetryCount:     0,
@@ -377,7 +373,7 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 		SignalType:     "workspace.tick",
 		AggregateKey:   "workspace_sync:123456",
 		IdempotencyKey: "workspace_sync:123456",
-		CommandType:    workspaceCommandTypeSync,
+		CommandType:    "workspace_sync",
 		GatewayPeerID:  "16Uiu2HAm9hV4Nj8k8rZcZqWqQPKw28Y61S7",
 		TaskStatus:     "applied",
 		RetryCount:     0,
@@ -386,7 +382,6 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 	})
 
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = t.TempDir()
 	cfg.Storage.DataDir = t.TempDir()
 	cfg.Index.Backend = "sqlite"
 	cfg.Index.SQLitePath = ":memory:"
@@ -476,7 +471,6 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 	}
 
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = filepath.Join(vaultDir, "workspace")
 	cfg.Storage.DataDir = filepath.Join(vaultDir, "data")
 	cfg.Index.Backend = "sqlite"
 	cfg.Index.SQLitePath = filepath.Join(vaultDir, "data", "client-index.sqlite")
@@ -519,7 +513,6 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 		"payment.preferred_scheme",
 		"reachability.auto_announce_enabled",
 		"reachability.announce_ttl_seconds",
-		"storage.workspace_dir",
 		"storage.data_dir",
 		"index.sqlite_path",
 	} {
@@ -528,7 +521,7 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 		}
 	}
 	for _, it := range schemaBody.Items {
-		if it.Key == "http.listen_addr" || it.Key == "fs_http.listen_addr" || it.Key == "storage.workspace_dir" || it.Key == "storage.data_dir" || it.Key == "index.sqlite_path" {
+		if it.Key == "http.listen_addr" || it.Key == "fs_http.listen_addr" || it.Key == "storage.data_dir" || it.Key == "index.sqlite_path" {
 			if !it.RestartRequired {
 				t.Fatalf("%s should require restart", it.Key)
 			}
@@ -646,7 +639,6 @@ func TestHandleLiveAPIFlow(t *testing.T) {
 	defer subHost.Close()
 
 	pubCfg := Config{}
-	pubCfg.Storage.WorkspaceDir = t.TempDir()
 	pubCfg.Storage.DataDir = t.TempDir()
 	pubCfg.Index.Backend = "sqlite"
 	pubCfg.Index.SQLitePath = ":memory:"
@@ -657,7 +649,6 @@ func TestHandleLiveAPIFlow(t *testing.T) {
 		t.Fatalf("apply defaults pub: %v", err)
 	}
 	subCfg := pubCfg
-	subCfg.Storage.WorkspaceDir = t.TempDir()
 	subCfg.Storage.DataDir = t.TempDir()
 
 	pubRT := newRuntimeForTest(t, pubCfg, "", withRuntimeHost(pubHost), withRuntimeLiveRuntime(newLiveRuntime()))
@@ -764,7 +755,6 @@ func TestHandleLivePublishSegmentFlow(t *testing.T) {
 	defer h.Close()
 
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = t.TempDir()
 	cfg.Storage.DataDir = t.TempDir()
 	cfg.Index.Backend = "sqlite"
 	cfg.Index.SQLitePath = dbPath
@@ -774,13 +764,11 @@ func TestHandleLivePublishSegmentFlow(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	workspace := newTestWorkspaceManager(context.Background(), &cfg, db)
-	if err := workspace.EnsureDefaultWorkspace(); err != nil {
-		t.Fatalf("ensure default workspace: %v", err)
-	}
-	rt := newRuntimeForTest(t, cfg, "", withRuntimeHost(h), withRuntimeWorkspace(workspace), withRuntimeLiveRuntime(newLiveRuntime()))
+	mustInsertTestWorkspaceRoot(t, db, cfg.Storage.DataDir)
+	workspace := newTestFileStorageRuntime(t, &cfg, db)
+	rt := newRuntimeForTest(t, cfg, "", withRuntimeHost(h), withRuntimeFileStorage(workspace), withRuntimeLiveRuntime(newLiveRuntime()))
 	registerLiveHandlers(newClientDB(db, nil), rt)
-	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db, store: newClientDB(db, nil), workspace: workspace}
+	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db, store: newClientDB(db, nil), fileStorage: workspace}
 
 	req0 := httptest.NewRequest(http.MethodPost, "/api/v1/live/publish/segment", strings.NewReader(`{
 		"duration_ms": 2000,
@@ -866,7 +854,6 @@ func TestHandleLiveFollowFlow(t *testing.T) {
 	defer subHost.Close()
 
 	pubCfg := Config{}
-	pubCfg.Storage.WorkspaceDir = t.TempDir()
 	pubCfg.Storage.DataDir = t.TempDir()
 	pubCfg.Index.Backend = "sqlite"
 	pubCfg.Index.SQLitePath = dbPath
@@ -878,23 +865,20 @@ func TestHandleLiveFollowFlow(t *testing.T) {
 	}
 	pubCfg.Live.Publish.BroadcastIntervalSec = 1
 	subCfg := pubCfg
-	subCfg.Storage.WorkspaceDir = t.TempDir()
 	subCfg.Storage.DataDir = t.TempDir()
 	streamID := strings.Repeat("ab", 32)
-	subWorkspace := newTestWorkspaceManager(context.Background(), &subCfg, db)
-	if err := subWorkspace.EnsureDefaultWorkspace(); err != nil {
-		t.Fatalf("ensure default workspace: %v", err)
-	}
+	mustInsertTestWorkspaceRoot(t, db, subCfg.Storage.DataDir)
+	subWorkspace := newTestFileStorageRuntime(t, &subCfg, db)
 
 	pubStore := newClientDB(db, nil)
 	subStore := newClientDB(db, nil)
 	pubRT := newRuntimeForTest(t, pubCfg, "", withRuntimeHost(pubHost), withRuntimeLiveRuntime(newLiveRuntime()))
-	subRT := newRuntimeForTest(t, subCfg, "", withRuntimeHost(subHost), withRuntimeWorkspace(subWorkspace), withRuntimeLiveRuntime(newLiveRuntime()))
+	subRT := newRuntimeForTest(t, subCfg, "", withRuntimeHost(subHost), withRuntimeFileStorage(subWorkspace), withRuntimeLiveRuntime(newLiveRuntime()))
 	registerLiveHandlers(nil, pubRT)
 	registerLiveHandlers(subStore, subRT)
 	subHost.Peerstore().AddAddrs(pubHost.ID(), pubHost.Addrs(), time.Minute)
 	subRT.live.autoBuyFn = func(_ context.Context, _ *clientDB, _ *Runtime, decision LivePurchaseDecision, _ LiveSubscriberSnapshot) (liveAutoBuyResult, error) {
-		outPath, err := subWorkspace.SelectLiveSegmentOutputPath(streamID, decision.TargetSegmentIndex, 1)
+		outPath, err := subWorkspace.SelectLiveSegmentOutputPath(context.Background(), streamID, decision.TargetSegmentIndex, 1)
 		if err != nil {
 			return liveAutoBuyResult{}, err
 		}
@@ -1043,7 +1027,6 @@ func TestHandleAdminCommandJournalTriggerKeyFilter(t *testing.T) {
 	})
 
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = t.TempDir()
 	cfg.Storage.DataDir = t.TempDir()
 	cfg.Index.Backend = "sqlite"
 	cfg.Index.SQLitePath = ":memory:"

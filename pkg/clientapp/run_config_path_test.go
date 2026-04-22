@@ -24,7 +24,6 @@ func TestRun_RejectsEmptyConfigPathWhenHTTPManagementIsEnabled(t *testing.T) {
 
 	cfg := Config{}
 	cfg.BSV.Network = "test"
-	cfg.Storage.WorkspaceDir = wsDir
 	cfg.Storage.DataDir = dataDir
 	cfg.Storage.MinFreeBytes = 1
 	cfg.HTTP.Enabled = true

@@ -36,8 +36,7 @@ type runStartupState struct {
 	store        *clientDB
 	closeOwnedDB func()
 
-	catalog      *sellerCatalog
-	workspaceMgr *workspaceManager
+	catalog *sellerCatalog
 
 	host            host.Host
 	trace           pproto.TraceSink
@@ -162,35 +161,6 @@ func (p *runStartupPhases) BuildCore() error {
 	}
 
 	st.catalog = newSellerCatalog()
-	st.workspaceMgr = &workspaceManager{
-		ctx:     p.ctx,
-		cfg:     &runtimeCfg,
-		db:      st.db,
-		store:   st.store,
-		catalog: st.catalog,
-	}
-	if err := st.workspaceMgr.EnsureDefaultWorkspace(); err != nil {
-		return err
-	}
-	if err := st.workspaceMgr.ValidateLiveCacheCapacity(runtimeCfg.Live.CacheMaxBytes); err != nil {
-		return err
-	}
-	if _, err := st.workspaceMgr.LoadSeedCatalogSnapshot(p.ctx); err != nil {
-		return err
-	}
-	if runtimeCfg.Scan.StartupFullScan {
-		if _, err := st.workspaceMgr.SyncOnce(p.ctx); err != nil {
-			return err
-		}
-	}
-	if err := st.workspaceMgr.EnforceLiveCacheLimit(runtimeCfg.Live.CacheMaxBytes); err != nil {
-		return err
-	}
-	if p.opt.PostWorkspaceBootstrap != nil {
-		if err := p.opt.PostWorkspaceBootstrap(p.ctx, st.store); err != nil {
-			return err
-		}
-	}
 
 	opts := []libp2p.Option{
 		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
@@ -309,7 +279,6 @@ func (p *runStartupPhases) StartServices() error {
 		StartedAtUnix:            time.Now().Unix(),
 		HealthyGWs:               st.healthyGateways,
 		HealthyArbiters:          st.healthyArbiters,
-		Workspace:                st.workspaceMgr,
 		Catalog:                  st.catalog,
 		ActionChain:              p.opt.ActionChain,
 		WalletChain:              p.opt.WalletChain,
@@ -322,6 +291,8 @@ func (p *runStartupPhases) StartServices() error {
 		transferPoolSessionLocks: map[string]*sync.Mutex{},
 		rpcTrace:                 st.trace,
 	}
+	rt.SeedStorage = newModuleHost(rt, st.store).SeedStorage()
+	rt.FileStorage = newFileStorageRuntimeAdapter(st.store, rt.SeedStorage)
 	st.rtCtx, st.rtCancel = context.WithCancel(p.ctx)
 	rt.bgCancel = st.rtCancel
 	rt.taskSched = newTaskScheduler(st.store, ServiceName)
@@ -380,7 +351,7 @@ func (p *runStartupPhases) StartServices() error {
 	startListenLoops(st.rtCtx, rt, st.store)
 	startAutoNodeReachabilityAnnounceLoop(st.rtCtx, rt, st.store)
 	if runtimeCfg.HTTP.Enabled && !p.opt.DisableHTTPServer {
-		rt.HTTP = newHTTPAPIServer(rt, st.cfgSvc, st.db, st.store, st.host, st.healthyGateways, st.workspaceMgr, st.trace)
+		rt.HTTP = newHTTPAPIServer(rt, st.cfgSvc, st.db, st.store, st.host, st.healthyGateways, rt.FileStorage, st.trace)
 		st.wg.Add(1)
 		go func() {
 			defer st.wg.Done()
@@ -390,7 +361,7 @@ func (p *runStartupPhases) StartServices() error {
 		}()
 	}
 	if runtimeCfg.FSHTTP.Enabled {
-		rt.FSHTTP = newFileHTTPServer(rt, st.cfgSvc, st.store, st.workspaceMgr)
+		rt.FSHTTP = newFileHTTPServer(rt, st.cfgSvc, st.store, rt.FileStorage)
 		fsHTTPListener := p.opt.FSHTTPListener
 		st.wg.Add(1)
 		go func() {

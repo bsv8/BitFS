@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 )
 
 func newWalletAPITestDB(t *testing.T) *sql.DB {
@@ -31,14 +33,31 @@ func itoa64(v int64) string {
 	return strconv.FormatInt(v, 10)
 }
 
-func newTestWorkspaceManager(ctx context.Context, cfg *Config, db *sql.DB) *workspaceManager {
-	return &workspaceManager{
-		ctx:     ctx,
-		cfg:     cfg,
-		db:      db,
-		store:   newClientDB(db, nil),
-		catalog: newSellerCatalog(),
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if strings.TrimSpace(item) == strings.TrimSpace(want) {
+			return true
+		}
 	}
+	return false
+}
+
+func mustInsertTestWorkspaceRoot(t *testing.T, db *sql.DB, workspacePath string) {
+	t.Helper()
+	if db == nil {
+		t.Fatal("db is nil")
+	}
+	if _, err := db.Exec(`INSERT OR IGNORE INTO biz_workspaces(workspace_path,enabled,max_bytes,created_at_unix) VALUES(?,?,?,?)`, workspacePath, 1, 0, time.Now().Unix()); err != nil {
+		t.Fatalf("insert workspace root: %v", err)
+	}
+}
+
+func newTestFileStorageRuntime(t *testing.T, cfg *Config, db *sql.DB) fileStorageRuntime {
+	t.Helper()
+	store := newClientDB(db, nil)
+	rt := newRuntimeForTest(t, *cfg, strings.Repeat("11", 32), withRuntimeStore(store))
+	seedStore := newModuleHost(rt, store).SeedStorage()
+	return newFileStorageRuntimeAdapter(store, seedStore)
 }
 
 func newTestTaskScheduler(ctx context.Context, store *clientDB) *taskScheduler {

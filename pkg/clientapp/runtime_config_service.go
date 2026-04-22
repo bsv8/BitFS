@@ -182,6 +182,26 @@ func (s *runtimeConfigService) LiveSellerPricing() LiveSellerPricing {
 	}
 }
 
+func (s *runtimeConfigService) FSWatchEnabled() bool {
+	return s.Snapshot().Scan.FSWatchEnabled
+}
+
+func (s *runtimeConfigService) FSRescanIntervalSeconds() uint32 {
+	return s.Snapshot().Scan.RescanIntervalSeconds
+}
+
+func (s *runtimeConfigService) StartupFullScan() bool {
+	return s.Snapshot().Scan.StartupFullScan
+}
+
+func (s *runtimeConfigService) SellerFloorPriceSatPer64K() uint64 {
+	return s.Snapshot().Seller.Pricing.FloorPriceSatPer64K
+}
+
+func (s *runtimeConfigService) SellerResaleDiscountBPS() uint64 {
+	return s.Snapshot().Seller.Pricing.ResaleDiscountBPS
+}
+
 func (s *runtimeConfigService) WOCAPIKey() string {
 	return strings.TrimSpace(s.Snapshot().ExternalAPI.WOC.APIKey)
 }

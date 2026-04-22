@@ -25,7 +25,7 @@ type fileHTTPServer struct {
 	cfgSource configSnapshotter
 	db        *sql.DB
 	store     *clientDB
-	workspace *workspaceManager
+	fileStorage fileStorageRuntime
 
 	srvMu sync.RWMutex
 	srv   *http.Server
@@ -73,7 +73,7 @@ type localLiveSegmentFile struct {
 	IsEnd           bool
 }
 
-func newFileHTTPServer(rt *Runtime, cfgSource configSnapshotter, store *clientDB, workspace *workspaceManager) *fileHTTPServer {
+func newFileHTTPServer(rt *Runtime, cfgSource configSnapshotter, store *clientDB, fileStorage fileStorageRuntime) *fileHTTPServer {
 	db := (*sql.DB)(nil)
 	if store != nil {
 		db = store.db
@@ -83,7 +83,7 @@ func newFileHTTPServer(rt *Runtime, cfgSource configSnapshotter, store *clientDB
 		cfgSource: cfgSource,
 		db:        db,
 		store:     store,
-		workspace: workspace,
+		fileStorage: fileStorage,
 		sessions:  map[string]*fileDownloadSession{},
 	}
 }
@@ -605,14 +605,18 @@ func (sess *fileDownloadSession) prepareAndDownload() error {
 	if outName == "" {
 		outName = sess.seedHash + ".bin"
 	}
-	outPath, err := sess.server.workspace.SelectOutputPath(outName, meta.FileSize)
+	runCtx, ok := fileHTTPSessionContext(sess)
+	if !ok {
+		return fmt.Errorf("runtime not initialized")
+	}
+	outPath, err := sess.server.fileStorage.SelectOutputPath(runCtx, outName, meta.FileSize)
 	if err != nil {
 		return err
 	}
 	if err := copyFile(sess.partPath, outPath); err != nil {
 		return err
 	}
-	if _, err := sess.server.workspace.RegisterDownloadedFile(registerDownloadedFileParams{
+	if _, err := sess.server.fileStorage.RegisterDownloadedFile(runCtx, registerDownloadedFileParams{
 		FilePath:              outPath,
 		Seed:                  seedBytes,
 		AvailableChunkIndexes: contiguousChunkIndexes(meta.ChunkCount),

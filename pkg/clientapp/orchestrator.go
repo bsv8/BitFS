@@ -160,9 +160,7 @@ func (o *orchestrator) Start(ctx context.Context) {
 		},
 	})
 	go o.run(ctx)
-	// 设计约束：workspace 周期扫描只走 orchestrator 信号入口，
-	// 不再保留 run.go 的直连扫描循环，避免出现双调度语义。
-	o.runWorkspaceSignalWorker(ctx)
+	// 设计约束：文件存储扫描只走模块 open hook，不再由 orchestrator 额外驱动。
 }
 
 func (o *orchestrator) SnapshotStatus() OrchestratorStatus {
@@ -540,31 +538,10 @@ func resolveFeePoolMaintainCommandType(rt *Runtime, gatewayPeerID string) string
 }
 
 func (o *orchestrator) runWorkspaceSync(ctx context.Context, task *orchestratorTask) orchestratorTaskResult {
-	if o.rt == nil || o.rt.Workspace == nil {
-		return orchestratorTaskResult{
-			Status:       "rejected",
-			ErrorCode:    "workspace_not_initialized",
-			ErrorMessage: "workspace not initialized",
-		}
-	}
-	meta := workspaceCommandMeta{
-		CommandID:   strings.TrimSpace(task.TaskID),
-		CommandType: workspaceCommandTypeSync,
-		RequestedBy: strings.TrimSpace(task.RequestedBy),
-		RequestedAt: task.RequestedAt,
-		TriggerKey:  strings.TrimSpace(task.TriggerKey),
-	}
-	seeds, err := o.rt.Workspace.SyncOnce(withWorkspaceCommandMeta(ctx, meta))
-	_, status := workspaceManagerResultStatus(err)
 	return orchestratorTaskResult{
-		Status:       status,
-		ErrorCode:    workspaceManagerErrorCode("workspace_sync", err),
-		ErrorMessage: workspaceManagerErrorMessage(err),
-		Data: map[string]any{
-			"seed_count": len(seeds),
-			"biz_seeds":  seeds,
-			"status":     status,
-		},
+		Status:       "rejected",
+		ErrorCode:    "workspace_sync_removed",
+		ErrorMessage: "workspace sync is removed",
 	}
 }
 

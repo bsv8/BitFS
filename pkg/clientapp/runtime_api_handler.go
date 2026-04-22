@@ -17,13 +17,13 @@ func NewRuntimeAPIHandler(rt *Runtime) (http.Handler, error) {
 	if rt.Host == nil {
 		return nil, fmt.Errorf("runtime host is nil")
 	}
-	if rt.Workspace == nil {
-		return nil, fmt.Errorf("workspace not initialized")
+	if rt.FileStorage == nil {
+		return nil, fmt.Errorf("file storage not initialized")
 	}
 	var db *sql.DB
 	if rt.store != nil {
 		db = rt.store.db
 	}
-	srv := newHTTPAPIServer(rt, rt, db, rt.store, rt.Host, rt.HealthyGWs, rt.Workspace, rt.rpcTrace)
+	srv := newHTTPAPIServer(rt, rt, db, rt.store, rt.Host, rt.HealthyGWs, rt.FileStorage, rt.rpcTrace)
 	return srv.Handler()
 }

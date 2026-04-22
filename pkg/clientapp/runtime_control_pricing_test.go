@@ -154,7 +154,6 @@ func TestPricingStateAndAuditsPersistAcrossRuntimeRecreate(t *testing.T) {
 	}
 
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = filepath.Join(root, "workspace")
 	cfg.Storage.DataDir = filepath.Join(root, "data")
 	cfg.Seller.Pricing.LiveBasePriceSatPer64K = 1000
 	rt1, err := NewPricingTestRuntime(t.Context(), db, cfg)
@@ -232,7 +231,6 @@ func TestTriggerPricingSetBasePersistsConfigAndSurvivesReload(t *testing.T) {
 	}
 
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = filepath.Join(root, "workspace")
 	cfg.Storage.DataDir = filepath.Join(root, "data")
 	cfg.Seller.Pricing.LiveBasePriceSatPer64K = 1000
 	rt := newRuntimeForTest(t, cfg, "", withRuntimeConfigPath(configPath))

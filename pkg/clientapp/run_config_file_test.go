@@ -15,7 +15,6 @@ func TestSaveConfigFile_PersistsRelativePaths(t *testing.T) {
 
 	cfg := Config{}
 	cfg.BSV.Network = "test"
-	cfg.Storage.WorkspaceDir = filepath.Join(vaultDir, "workspace-custom")
 	cfg.Storage.DataDir = filepath.Join(vaultDir, "data-custom")
 	cfg.Index.Backend = "sqlite"
 	cfg.Index.SQLitePath = filepath.Join(vaultDir, "data-custom", "client-index.sqlite")
@@ -45,16 +44,10 @@ func TestSaveConfigFile_PersistsRelativePaths(t *testing.T) {
 	if strings.Contains(saved, "privkey_hex") {
 		t.Fatalf("config file should not persist privkey_hex")
 	}
-	if !strings.Contains(saved, "workspace-custom") {
-		t.Fatalf("workspace path should be saved as relative, got:\n%s", saved)
-	}
 
 	loaded, _, err := LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("load config: %v", err)
-	}
-	if loaded.Storage.WorkspaceDir != filepath.Join(vaultDir, "workspace-custom") {
-		t.Fatalf("workspace dir mismatch: got=%q", loaded.Storage.WorkspaceDir)
 	}
 	if loaded.Storage.DataDir != filepath.Join(vaultDir, "data-custom") {
 		t.Fatalf("data dir mismatch: got=%q", loaded.Storage.DataDir)
@@ -70,7 +63,7 @@ func TestSaveConfigFile_PersistsRelativePaths(t *testing.T) {
 	}
 }
 
-func TestLoadConfigWithSeed_PreservesEmptyPeers(t *testing.T) {
+func TestLoadConfigWithSeed_IgnoresLegacyWorkspaceDir(t *testing.T) {
 	t.Parallel()
 
 	vaultDir := t.TempDir()
@@ -82,7 +75,6 @@ func TestLoadConfigWithSeed_PreservesEmptyPeers(t *testing.T) {
 
 	seed := Config{}
 	seed.BSV.Network = "test"
-	seed.Storage.WorkspaceDir = "workspace"
 	seed.Storage.DataDir = "data"
 	seed.Index.Backend = "sqlite"
 	seed.Index.SQLitePath = filepath.ToSlash(filepath.Join("data", "client-index.sqlite"))
@@ -95,6 +87,9 @@ func TestLoadConfigWithSeed_PreservesEmptyPeers(t *testing.T) {
 	loaded, _, err := LoadConfigWithSeed(configPath, seed)
 	if err != nil {
 		t.Fatalf("load config with seed: %v", err)
+	}
+	if loaded.Storage.DataDir != filepath.Join(vaultDir, "data") {
+		t.Fatalf("data dir mismatch: got=%q", loaded.Storage.DataDir)
 	}
 	if len(loaded.Network.Gateways) != 0 {
 		t.Fatalf("expected empty gateways to be preserved, got=%d", len(loaded.Network.Gateways))
@@ -112,7 +107,6 @@ func TestSaveConfigFile_PreservesEmptyPeers(t *testing.T) {
 
 	cfg := Config{}
 	cfg.BSV.Network = "test"
-	cfg.Storage.WorkspaceDir = ""
 	cfg.Storage.DataDir = "data"
 	cfg.Index.Backend = "sqlite"
 	cfg.Index.SQLitePath = filepath.ToSlash(filepath.Join("data", "client-index.sqlite"))
@@ -141,7 +135,6 @@ func TestLoadOrInitConfigFile_ReturnsDefaultConfigWithoutCreatingFile(t *testing
 	seed.HTTP.Enabled = true
 	seed.FSHTTP.Enabled = true
 	seed.Index.Backend = "sqlite"
-	seed.Storage.WorkspaceDir = ""
 	seed.Storage.DataDir = "data"
 	seed.Index.SQLitePath = filepath.ToSlash(filepath.Join("data", "client-index.sqlite"))
 	seed.Log.File = filepath.ToSlash(filepath.Join("logs", "bitfs.log"))
@@ -175,7 +168,6 @@ func TestLoadOrInitConfigFileForMode_TestModeKeepsEmptyPeersOnCreate(t *testing.
 	seed.HTTP.Enabled = true
 	seed.FSHTTP.Enabled = true
 	seed.Index.Backend = "sqlite"
-	seed.Storage.WorkspaceDir = ""
 	seed.Storage.DataDir = "data"
 	seed.Index.SQLitePath = filepath.ToSlash(filepath.Join("data", "client-index.sqlite"))
 	seed.Log.File = filepath.ToSlash(filepath.Join("logs", "bitfs.log"))
@@ -203,7 +195,6 @@ func TestLoadOrInitConfigFileForMode_ProductModeBackfillsPeersOnCreate(t *testin
 	seed.HTTP.Enabled = true
 	seed.FSHTTP.Enabled = true
 	seed.Index.Backend = "sqlite"
-	seed.Storage.WorkspaceDir = ""
 	seed.Storage.DataDir = "data"
 	seed.Index.SQLitePath = filepath.ToSlash(filepath.Join("data", "client-index.sqlite"))
 	seed.Log.File = filepath.ToSlash(filepath.Join("logs", "bitfs.log"))

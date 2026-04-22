@@ -10,13 +10,10 @@ import (
 	"time"
 
 	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseedchunksupply"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseedpricingpolicy"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseeds"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizworkspacefiles"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizworkspaces"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/procfiledownloadchunks"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/procfiledownloads"
 )
 
 type workspaceFilesPage struct {
@@ -52,50 +49,6 @@ type workspaceFileRow struct {
 	FilePath      string
 	SeedHash      string
 	SeedLocked    bool
-}
-
-func workspaceStore(m *workspaceManager) *clientDB {
-	if m == nil {
-		return nil
-	}
-	return m.store
-}
-
-func dbEnsureDefaultWorkspace(ctx context.Context, store *clientDB, workspaceDir string) error {
-	if store == nil {
-		return fmt.Errorf("client db is nil")
-	}
-	workspaceDir = strings.TrimSpace(workspaceDir)
-	if workspaceDir == "" {
-		// 设计说明：
-		// - 空 workspace_dir 表示钱包模式；
-		// - 启动时不创建默认 workspace 记录。
-		return nil
-	}
-	abs, err := normalizeWorkspacePath(workspaceDir)
-	if err != nil {
-		return err
-	}
-	now := time.Now().Unix()
-	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-		if _, err := dbLoadWorkspaceByPathTx(ctx, tx, abs); err != nil {
-			if err != sql.ErrNoRows {
-				return err
-			}
-			_, err = tx.BizWorkspaces.Create().
-				SetWorkspacePath(abs).
-				SetEnabled(1).
-				SetMaxBytes(0).
-				SetCreatedAtUnix(now).
-				Save(ctx)
-			return err
-		}
-		_, err := tx.BizWorkspaces.Update().
-			Where(bizworkspaces.WorkspacePathEQ(abs)).
-			SetEnabled(1).
-			Save(ctx)
-		return err
-	})
 }
 
 func dbListWorkspaces(ctx context.Context, store *clientDB) ([]workspaceItem, error) {
@@ -191,7 +144,7 @@ func dbDeleteWorkspaceByPath(ctx context.Context, store *clientDB, workspacePath
 		if _, err := tx.BizWorkspaces.Delete().Where(bizworkspaces.WorkspacePathEQ(cur.WorkspacePath)).Exec(ctx); err != nil {
 			return err
 		}
-		return dbCleanupOrphanSeedStateTx(ctx, tx)
+		return nil
 	})
 }
 
@@ -286,57 +239,6 @@ func dbDeleteLiveStreamCacheRows(ctx context.Context, store *clientDB, streamID 
 	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		_, err := tx.BizWorkspaceFiles.Delete().Where(bizworkspacefiles.FilePathHasPrefix(strings.TrimSuffix(like, "%"))).Exec(ctx)
 		return err
-	})
-}
-
-func dbCleanupOrphanSeedState(ctx context.Context, store *clientDB) error {
-	if store == nil {
-		return fmt.Errorf("client db is nil")
-	}
-	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-		return dbCleanupOrphanSeedStateTx(ctx, tx)
-	})
-}
-
-func dbCleanupOrphanSeedStateTx(ctx context.Context, tx EntWriteRoot) error {
-	if tx == nil {
-		return fmt.Errorf("tx is nil")
-	}
-	activeSeedHashes, err := dbListActiveSeedHashesTx(ctx, tx)
-	if err != nil {
-		return err
-	}
-	if err := deleteSeedScopedOrphansTx(ctx, tx, activeSeedHashes); err != nil {
-		return err
-	}
-	return nil
-}
-
-func dbUpsertDownloadedFile(ctx context.Context, store *clientDB, absPath string, seedHash string, seedPath string, chunkCount uint32, fullFileSize uint64, recommendedName string, mimeHint string, seedLocked bool) error {
-	if store == nil {
-		return fmt.Errorf("client db is nil")
-	}
-	lockedValue := int64(0)
-	if seedLocked {
-		lockedValue = 1
-	}
-	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-		roots, err := dbListWorkspaceRootsTx(ctx, tx)
-		if err != nil {
-			return err
-		}
-		resolved, ok := resolveWorkspaceRelativePath(absPath, roots)
-		if !ok {
-			return fmt.Errorf("output path is outside registered biz_workspaces")
-		}
-		seedHash = normalizeSeedHashHex(seedHash)
-		if seedHash == "" {
-			return fmt.Errorf("seed_hash required")
-		}
-		if err := dbUpsertBizSeedTx(ctx, tx, seedHash, chunkCount, fullFileSize, seedPath, recommendedName, mimeHint); err != nil {
-			return err
-		}
-		return dbUpsertWorkspaceFileTx(ctx, tx, resolved.WorkspacePath, resolved.FilePath, seedHash, lockedValue)
 	})
 }
 
@@ -517,72 +419,6 @@ func dbLoadWorkspaceByPathTx(ctx context.Context, tx EntWriteRoot, absPath strin
 	}, nil
 }
 
-func dbUpsertBizSeedTx(ctx context.Context, tx EntWriteRoot, seedHash string, chunkCount uint32, fullFileSize uint64, seedPath string, recommendedName string, mimeHint string) error {
-	if tx == nil {
-		return fmt.Errorf("tx is nil")
-	}
-	seedHash = normalizeSeedHashHex(seedHash)
-	if seedHash == "" {
-		return fmt.Errorf("seed_hash required")
-	}
-	seed, err := tx.BizSeeds.Query().Where(bizseeds.SeedHashEQ(seedHash)).Only(ctx)
-	if err != nil {
-		if !gen.IsNotFound(err) {
-			return err
-		}
-		_, err = tx.BizSeeds.Create().
-			SetSeedHash(seedHash).
-			SetChunkCount(int64(chunkCount)).
-			SetFileSize(int64(fullFileSize)).
-			SetSeedFilePath(seedPath).
-			SetRecommendedFileName(recommendedName).
-			SetMimeHint(mimeHint).
-			Save(ctx)
-		return err
-	}
-	_, err = seed.Update().
-		SetChunkCount(int64(chunkCount)).
-		SetFileSize(int64(fullFileSize)).
-		SetSeedFilePath(seedPath).
-		SetRecommendedFileName(recommendedName).
-		SetMimeHint(mimeHint).
-		Save(ctx)
-	return err
-}
-
-func dbUpsertBizSeedClient(ctx context.Context, client *gen.BizSeedsClient, seedHash string, chunkCount uint32, fullFileSize uint64, seedPath string, recommendedName string, mimeHint string) error {
-	if client == nil {
-		return fmt.Errorf("biz_seeds client is nil")
-	}
-	seedHash = normalizeSeedHashHex(seedHash)
-	if seedHash == "" {
-		return fmt.Errorf("seed_hash required")
-	}
-	seed, err := client.Query().Where(bizseeds.SeedHashEQ(seedHash)).Only(ctx)
-	if err != nil {
-		if !gen.IsNotFound(err) {
-			return err
-		}
-		_, err = client.Create().
-			SetSeedHash(seedHash).
-			SetChunkCount(int64(chunkCount)).
-			SetFileSize(int64(fullFileSize)).
-			SetSeedFilePath(seedPath).
-			SetRecommendedFileName(recommendedName).
-			SetMimeHint(mimeHint).
-			Save(ctx)
-		return err
-	}
-	_, err = seed.Update().
-		SetChunkCount(int64(chunkCount)).
-		SetFileSize(int64(fullFileSize)).
-		SetSeedFilePath(seedPath).
-		SetRecommendedFileName(recommendedName).
-		SetMimeHint(mimeHint).
-		Save(ctx)
-	return err
-}
-
 func dbUpsertWorkspaceFileTx(ctx context.Context, tx EntWriteRoot, workspacePath string, filePath string, seedHash string, lockedValue int64) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
@@ -620,73 +456,6 @@ func dbUpsertWorkspaceFileTx(ctx context.Context, tx EntWriteRoot, workspacePath
 		SetSeedLocked(lockedValue).
 		Save(ctx)
 	return err
-}
-
-func dbListActiveSeedHashesTx(ctx context.Context, tx EntWriteRoot) ([]string, error) {
-	if tx == nil {
-		return nil, fmt.Errorf("tx is nil")
-	}
-	var rows []struct {
-		SeedHash string `json:"seed_hash,omitempty"`
-	}
-	if err := tx.BizWorkspaceFiles.Query().Unique(true).Select("seed_hash").Scan(ctx, &rows); err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(rows))
-	seen := make(map[string]struct{}, len(rows))
-	for _, row := range rows {
-		seedHash := normalizeSeedHashHex(row.SeedHash)
-		if seedHash == "" {
-			continue
-		}
-		if _, ok := seen[seedHash]; ok {
-			continue
-		}
-		seen[seedHash] = struct{}{}
-		out = append(out, seedHash)
-	}
-	return out, nil
-}
-
-func deleteSeedScopedOrphansTx(ctx context.Context, tx EntWriteRoot, activeSeedHashes []string) error {
-	if tx == nil {
-		return fmt.Errorf("tx is nil")
-	}
-	activeSeedHashes = normalizeSeedHashes(activeSeedHashes)
-	if len(activeSeedHashes) == 0 {
-		if _, err := tx.BizSeeds.Delete().Exec(ctx); err != nil {
-			return err
-		}
-		if _, err := tx.BizSeedPricingPolicy.Delete().Exec(ctx); err != nil {
-			return err
-		}
-		if _, err := tx.BizSeedChunkSupply.Delete().Exec(ctx); err != nil {
-			return err
-		}
-		if _, err := tx.ProcFileDownloads.Delete().Exec(ctx); err != nil {
-			return err
-		}
-		if _, err := tx.ProcFileDownloadChunks.Delete().Exec(ctx); err != nil {
-			return err
-		}
-		return nil
-	}
-	if _, err := tx.BizSeeds.Delete().Where(bizseeds.SeedHashNotIn(activeSeedHashes...)).Exec(ctx); err != nil {
-		return err
-	}
-	if _, err := tx.BizSeedPricingPolicy.Delete().Where(bizseedpricingpolicy.SeedHashNotIn(activeSeedHashes...)).Exec(ctx); err != nil {
-		return err
-	}
-	if _, err := tx.BizSeedChunkSupply.Delete().Where(bizseedchunksupply.SeedHashNotIn(activeSeedHashes...)).Exec(ctx); err != nil {
-		return err
-	}
-	if _, err := tx.ProcFileDownloads.Delete().Where(procfiledownloads.SeedHashNotIn(activeSeedHashes...)).Exec(ctx); err != nil {
-		return err
-	}
-	if _, err := tx.ProcFileDownloadChunks.Delete().Where(procfiledownloadchunks.SeedHashNotIn(activeSeedHashes...)).Exec(ctx); err != nil {
-		return err
-	}
-	return nil
 }
 
 func boolToInt64(v bool) int64 {

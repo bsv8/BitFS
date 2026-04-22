@@ -4,13 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"mime"
 	"net"
 	"os"
@@ -28,6 +25,8 @@ import (
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
 	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
 	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
+	"github.com/bsv8/BitFS/pkg/clientapp/seedcore"
 	bitfsv1 "github.com/bsv8/bitfs-contract/gen/go/v1"
 	bitfsprotoid "github.com/bsv8/bitfs-contract/pkg/v1/protoid"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -116,7 +115,6 @@ type Config struct {
 		Arbiters []PeerNode `yaml:"arbiters" toml:"arbiters"`
 	} `yaml:"network" toml:"network"`
 	Storage struct {
-		WorkspaceDir string `yaml:"workspace_dir" toml:"workspace_dir"`
 		DataDir      string `yaml:"data_dir" toml:"data_dir"`
 		MinFreeBytes uint64 `yaml:"min_free_bytes" toml:"min_free_bytes"`
 	} `yaml:"storage" toml:"storage"`
@@ -275,8 +273,6 @@ type RunOptions struct {
 	ActionChain poolcore.ChainClient
 	WalletChain walletChainClient
 	RPCTrace    pproto.TraceSink
-
-	PostWorkspaceBootstrap func(ctx context.Context, store ClientStore) error
 }
 
 type Runtime struct {
@@ -291,7 +287,8 @@ type Runtime struct {
 	StartedAtUnix   int64
 	HealthyGWs      []peer.AddrInfo
 	HealthyArbiters []peer.AddrInfo
-	Workspace       *workspaceManager
+	FileStorage     fileStorageRuntime
+	SeedStorage     moduleapi.SeedStorage
 	Catalog         *sellerCatalog
 	HTTP            *httpAPIServer
 	FSHTTP          *fileHTTPServer
@@ -512,13 +509,6 @@ func (r *Runtime) FSHTTPListenAddr() string {
 		return ""
 	}
 	return strings.TrimSpace(r.ConfigSnapshot().FSHTTP.ListenAddr)
-}
-
-func (r *Runtime) WorkspaceDir() string {
-	if r == nil {
-		return ""
-	}
-	return strings.TrimSpace(r.ConfigSnapshot().Storage.WorkspaceDir)
 }
 
 func (r *Runtime) BSVNetwork() string {
@@ -863,23 +853,9 @@ func validateConfigForMode(cfg *Config, mode StartupMode) error {
 	}
 	cfg.BSV.Network = n
 
-	workspaceDir := strings.TrimSpace(cfg.Storage.WorkspaceDir)
-	if workspaceDir == "" {
-		cfg.Storage.WorkspaceDir = ""
-	} else {
-		cfg.Storage.WorkspaceDir = filepath.Clean(workspaceDir)
-	}
 	cfg.Storage.DataDir = filepath.Clean(strings.TrimSpace(cfg.Storage.DataDir))
 	if cfg.Storage.DataDir == "" {
 		return errors.New("storage.data_dir is required")
-	}
-	if cfg.Storage.WorkspaceDir != "" {
-		if cfg.Storage.WorkspaceDir == cfg.Storage.DataDir {
-			return errors.New("workspace_dir and data_dir must be different")
-		}
-		if overlaps(cfg.Storage.WorkspaceDir, cfg.Storage.DataDir) {
-			return errors.New("workspace_dir and data_dir must not overlap")
-		}
 	}
 	if len(cfg.Network.Gateways) == 0 {
 		if startupMode == StartupModeProduct {
@@ -989,21 +965,12 @@ func initDataDirs(cfg *Config) error {
 	dirs := []string{
 		cfg.Storage.DataDir,
 		filepath.Join(cfg.Storage.DataDir, "config"),
-		filepath.Join(cfg.Storage.DataDir, "biz_seeds"),
 		filepath.Join(cfg.Storage.DataDir, "db"),
 		filepath.Join(cfg.Storage.DataDir, "keys"),
 		filepath.Join(cfg.Storage.DataDir, "logs"),
 	}
-	if strings.TrimSpace(cfg.Storage.WorkspaceDir) != "" {
-		dirs = append(dirs, cfg.Storage.WorkspaceDir)
-	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0o755); err != nil {
-			return err
-		}
-	}
-	if strings.TrimSpace(cfg.Storage.WorkspaceDir) != "" {
-		if err := ensureReadableDir(cfg.Storage.WorkspaceDir); err != nil {
 			return err
 		}
 	}
@@ -1573,50 +1540,7 @@ func checkPeerHealth(ctx context.Context, h host.Host, peers []peer.AddrInfo, pr
 }
 
 func buildSeedV1(path string) ([]byte, string, uint32, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, "", 0, err
-	}
-	defer f.Close()
-
-	st, err := f.Stat()
-	if err != nil {
-		return nil, "", 0, err
-	}
-	fileSize := st.Size()
-	if fileSize < 0 {
-		return nil, "", 0, fmt.Errorf("negative file size")
-	}
-	chunkCount := uint32(ceilDiv(uint64(fileSize), seedBlockSize))
-
-	buf := &bytes.Buffer{}
-	buf.WriteString("BSE1")
-	buf.WriteByte(0x01)
-	buf.WriteByte(0x01)
-	_ = binary.Write(buf, binary.BigEndian, uint32(seedBlockSize))
-	_ = binary.Write(buf, binary.BigEndian, uint64(fileSize))
-	_ = binary.Write(buf, binary.BigEndian, chunkCount)
-
-	chunk := make([]byte, seedBlockSize)
-	for i := uint32(0); i < chunkCount; i++ {
-		n, err := io.ReadFull(f, chunk)
-		if err != nil {
-			if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
-				return nil, "", 0, err
-			}
-		}
-		if n < seedBlockSize {
-			for j := n; j < seedBlockSize; j++ {
-				chunk[j] = 0
-			}
-		}
-		h := sha256.Sum256(chunk)
-		buf.Write(h[:])
-	}
-
-	seedBytes := buf.Bytes()
-	h := sha256.Sum256(seedBytes)
-	return seedBytes, hex.EncodeToString(h[:]), chunkCount, nil
+	return seedcore.BuildSeedV1(path)
 }
 
 func noEnabledGatewayMessage(httpAPIEnabled bool, fsHTTPEnabled bool) string {

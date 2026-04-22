@@ -115,7 +115,7 @@ func (lr *liveRuntime) stopFollow(streamID string) bool {
 }
 
 func liveAutoBuySegment(ctx context.Context, store *clientDB, rt *Runtime, decision LivePurchaseDecision, snapshot LiveSubscriberSnapshot) (liveAutoBuyResult, error) {
-	if rt == nil || rt.Workspace == nil {
+	if rt == nil || rt.FileStorage == nil {
 		return liveAutoBuyResult{}, fmt.Errorf("runtime not initialized")
 	}
 	if store == nil {
@@ -146,7 +146,7 @@ func liveAutoBuySegment(ctx context.Context, store *clientDB, rt *Runtime, decis
 	if !strings.EqualFold(seedHash, decision.SeedHash) {
 		return liveAutoBuyResult{}, fmt.Errorf("seed hash mismatch: expect=%s got=%s", decision.SeedHash, seedHash)
 	}
-	if _, err := rt.Workspace.RegisterDownloadedFile(registerDownloadedFileParams{
+	if _, err := rt.FileStorage.RegisterDownloadedFile(ctx, registerDownloadedFileParams{
 		FilePath:              outPath,
 		Seed:                  seedBytes,
 		AvailableChunkIndexes: contiguousChunkIndexes(chunkCount),
@@ -155,7 +155,7 @@ func liveAutoBuySegment(ctx context.Context, store *clientDB, rt *Runtime, decis
 	}); err != nil {
 		return liveAutoBuyResult{}, err
 	}
-	if err := rt.Workspace.EnforceLiveCacheLimit(rt.ConfigSnapshot().Live.CacheMaxBytes); err != nil {
+	if err := rt.FileStorage.EnforceLiveCacheLimit(ctx, rt.ConfigSnapshot().Live.CacheMaxBytes); err != nil {
 		return liveAutoBuyResult{}, err
 	}
 	return liveAutoBuyResult{

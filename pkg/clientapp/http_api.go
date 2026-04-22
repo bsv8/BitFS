@@ -6,13 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -181,7 +179,7 @@ type httpAPIServer struct {
 	store               *clientDB
 	h                   host.Host
 	gateways            []peer.AddrInfo
-	workspace           *workspaceManager
+	fileStorage         fileStorageRuntime
 	srvMu               sync.RWMutex
 	srv                 *http.Server
 	startedAt           time.Time
@@ -189,7 +187,7 @@ type httpAPIServer struct {
 	downloadFileHandler *downloadFileHTTPHandler
 }
 
-func newHTTPAPIServer(rt *Runtime, cfgSource configSnapshotter, db *sql.DB, store *clientDB, h host.Host, gateways []peer.AddrInfo, workspace *workspaceManager, trace pproto.TraceSink) *httpAPIServer {
+func newHTTPAPIServer(rt *Runtime, cfgSource configSnapshotter, db *sql.DB, store *clientDB, h host.Host, gateways []peer.AddrInfo, fileStorage fileStorageRuntime, trace pproto.TraceSink) *httpAPIServer {
 	if cfgSource == nil && rt != nil {
 		cfgSource = rt
 	}
@@ -200,15 +198,15 @@ func newHTTPAPIServer(rt *Runtime, cfgSource configSnapshotter, db *sql.DB, stor
 			}
 			return nil
 		}(),
-		rt:        rt,
-		cfgSource: cfgSource,
-		db:        db,
-		store:     store,
-		h:         h,
-		gateways:  gateways,
-		workspace: workspace,
-		startedAt: time.Now(),
-		rpcTrace:  trace,
+		rt:          rt,
+		cfgSource:   cfgSource,
+		db:          db,
+		store:       store,
+		h:           h,
+		gateways:    gateways,
+		fileStorage: fileStorage,
+		startedAt:   time.Now(),
+		rpcTrace:    trace,
 	}
 	if store != nil {
 		var demandEnv gatewayDemandPublishChainTxEnv
@@ -242,7 +240,6 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		s.registerHTTPRouteTrade(mux, prefix)
 		s.registerHTTPRouteFile(mux, prefix)
 		s.registerHTTPRouteNode(mux, prefix)
-		s.registerHTTPRouteWorkspace(mux, prefix)
 		s.registerHTTPRouteLive(mux, prefix)
 		s.registerHTTPRouteGateway(mux, prefix)
 		s.registerHTTPRouteArbiter(mux, prefix)
@@ -336,7 +333,6 @@ func (s *httpAPIServer) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"transport_peer_id":   s.h.ID().String(),
 		"pubkey_hex":          cfg.ClientID,
 		"seller_enabled":      cfg.Seller.Enabled,
-		"workspace_dir":       cfg.Storage.WorkspaceDir,
 		"data_dir":            cfg.Storage.DataDir,
 		"gateway_count":       len(s.gateways),
 		"arbiter_count":       len(cfg.Network.Arbiters),
@@ -2014,13 +2010,42 @@ func (s *httpAPIServer) handleFileHash(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	cfg := s.runtimeConfigSnapshot()
+	workspacePath := strings.TrimSpace(r.URL.Query().Get("workspace_path"))
 	path := strings.TrimSpace(r.URL.Query().Get("path"))
+	if workspacePath == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "workspace_path is required"})
+		return
+	}
 	if path == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "path is required"})
 		return
 	}
-	resolved, err := resolveWorkspacePath(cfg.Storage.WorkspaceDir, path)
+	roots, err := dbListWorkspaceRoots(r.Context(), httpStore(s))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	workspaceAbs, err := filepath.Abs(workspacePath)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	found := false
+	for _, root := range roots {
+		rootAbs, err := filepath.Abs(strings.TrimSpace(root))
+		if err != nil {
+			continue
+		}
+		if rootAbs == workspaceAbs {
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "workspace_path is not registered"})
+		return
+	}
+	resolved, err := resolveWorkspacePath(workspacePath, path)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -2045,146 +2070,6 @@ func (s *httpAPIServer) handleFileHash(w http.ResponseWriter, r *http.Request) {
 		"chunk_count":     chunkCount,
 		"file_size":       st.Size(),
 		"seed_block_size": seedBlockSize,
-	})
-}
-
-func (s *httpAPIServer) handleWorkspaceSyncOnce(w http.ResponseWriter, r *http.Request) {
-	obs.Business(ServiceName, "http_workspace_sync_once_enter", map[string]any{
-		"method": r.Method,
-		"path":   r.URL.Path,
-	})
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	if s == nil || s.rt == nil || s.rt.Workspace == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace not initialized"})
-		return
-	}
-	seeds, err := s.rt.Workspace.SyncOnce(r.Context())
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	seedCount := len(seeds)
-	cfg := s.runtimeConfigSnapshot()
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":                  true,
-		"seed_count":          seedCount,
-		"synced_at_unix":      time.Now().Unix(),
-		"workspace_dir":       cfg.Storage.WorkspaceDir,
-		"biz_workspace_files": seedCount,
-	})
-}
-
-func (s *httpAPIServer) handleWorkspaceFiles(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	limit := parseBoundInt(r.URL.Query().Get("limit"), 100, 1, 500)
-	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
-	pathLike := strings.TrimSpace(r.URL.Query().Get("path_like"))
-	page, err := dbListWorkspaceFiles(r.Context(), httpStore(s), limit, offset, pathLike)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"total":  page.Total,
-		"limit":  limit,
-		"offset": offset,
-		"items":  page.Items,
-	})
-}
-
-func (s *httpAPIServer) handleWorkspaceSeeds(w http.ResponseWriter, r *http.Request) {
-	obs.Business(ServiceName, "http_workspace_seeds_enter", map[string]any{
-		"method": r.Method,
-		"path":   r.URL.Path,
-	})
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	limit := parseBoundInt(r.URL.Query().Get("limit"), 100, 1, 500)
-	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
-	seedHash := strings.TrimSpace(r.URL.Query().Get("seed_hash"))
-	seedHashLike := strings.TrimSpace(r.URL.Query().Get("seed_hash_like"))
-	page, err := dbListWorkspaceSeeds(r.Context(), httpStore(s), limit, offset, seedHash, seedHashLike)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"total":  page.Total,
-		"limit":  limit,
-		"offset": offset,
-		"items":  page.Items,
-	})
-}
-
-func (s *httpAPIServer) handleSeedPriceUpdate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	type reqBody struct {
-		SeedHash            string `json:"seed_hash"`
-		FloorPriceSatPer64K uint64 `json:"floor_price_sat_per_64k"`
-		ResaleDiscountBPS   uint64 `json:"resale_discount_bps"`
-	}
-	var req reqBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
-		return
-	}
-	if strings.TrimSpace(req.SeedHash) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "seed_hash is required"})
-		return
-	}
-	if req.FloorPriceSatPer64K == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "floor_price_sat_per_64k must be > 0"})
-		return
-	}
-	if req.ResaleDiscountBPS == 0 {
-		req.ResaleDiscountBPS = s.runtimeConfigSnapshot().Seller.Pricing.ResaleDiscountBPS
-	}
-	if req.ResaleDiscountBPS > 10000 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "resale_discount_bps must be <= 10000"})
-		return
-	}
-	seedHash := strings.ToLower(strings.TrimSpace(req.SeedHash))
-	store := httpStore(s)
-	if _, err := dbGetSeedFilePathByHash(r.Context(), store, seedHash); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "seed not found"})
-			return
-		}
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	unit, total, err := func() (uint64, uint64, error) {
-		if err := dbUpsertSeedPricingPolicy(r.Context(), store, seedHash, req.FloorPriceSatPer64K, req.ResaleDiscountBPS, "user", time.Now().Unix()); err != nil {
-			return 0, 0, err
-		}
-		// 从种子元数据获取 chunk_count（使用 db 抽象层）
-		chunkCount, err := dbGetSeedChunkCountForPricing(r.Context(), store, seedHash)
-		if err != nil {
-			return 0, 0, err
-		}
-		return req.FloorPriceSatPer64K, req.FloorPriceSatPer64K * uint64(chunkCount), nil
-	}()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":                 true,
-		"seed_hash":          seedHash,
-		"chunk_price_sat":    unit,
-		"seed_price_satoshi": total,
-		"pricing_source":     "user",
 	})
 }
 
@@ -2366,7 +2251,7 @@ func (s *httpAPIServer) handleLivePublishSegment(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	if s == nil || s.rt == nil || s.rt.Workspace == nil || s.rt.Host == nil {
+	if s == nil || s.rt == nil || s.rt.FileStorage == nil || s.rt.Host == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
@@ -2465,7 +2350,7 @@ func (s *httpAPIServer) handleLivePublishSegment(w http.ResponseWriter, r *http.
 		segData.StreamId = ""
 		recent = nil
 	}
-	outPath, err := s.rt.Workspace.SelectLiveSegmentOutputPath(streamID, segmentIndex, uint64(len(segmentBytes)))
+	outPath, err := s.rt.FileStorage.SelectLiveSegmentOutputPath(r.Context(), streamID, segmentIndex, uint64(len(segmentBytes)))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -2478,7 +2363,7 @@ func (s *httpAPIServer) handleLivePublishSegment(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	if _, err := s.rt.Workspace.RegisterDownloadedFile(registerDownloadedFileParams{
+	if _, err := s.rt.FileStorage.RegisterDownloadedFile(r.Context(), registerDownloadedFileParams{
 		FilePath:              outPath,
 		Seed:                  seedBytes,
 		AvailableChunkIndexes: contiguousChunkIndexes(chunkCount),
@@ -2489,7 +2374,7 @@ func (s *httpAPIServer) handleLivePublishSegment(w http.ResponseWriter, r *http.
 		return
 	}
 	cfg := s.runtimeConfigSnapshot()
-	if err := s.rt.Workspace.EnforceLiveCacheLimit(cfg.Live.CacheMaxBytes); err != nil {
+	if err := s.rt.FileStorage.EnforceLiveCacheLimit(r.Context(), cfg.Live.CacheMaxBytes); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
@@ -2773,7 +2658,7 @@ func resolveWorkspacePath(root, input string) (string, error) {
 		return "", err
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path is outside workspace_dir")
+		return "", fmt.Errorf("path is outside file storage root")
 	}
 	return abs, nil
 }
@@ -3479,150 +3364,6 @@ func (s *httpAPIServer) handleArbiterHealth(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-func (s *httpAPIServer) handleAdminWorkspaces(w http.ResponseWriter, r *http.Request) {
-	workspace := (*workspaceManager)(nil)
-	if s != nil && s.rt != nil {
-		workspace = s.rt.Workspace
-	}
-	switch r.Method {
-	case http.MethodGet:
-		if s == nil || workspace == nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace not initialized"})
-			return
-		}
-		items, err := workspace.ListWithContext(r.Context())
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
-	case http.MethodPost:
-		var req struct {
-			Path     string `json:"path"`
-			MaxBytes uint64 `json:"max_bytes"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
-			return
-		}
-		if s == nil || workspace == nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace not initialized"})
-			return
-		}
-		item, err := workspace.AddWithContext(r.Context(), req.Path, req.MaxBytes)
-		res := WorkspaceAddResult{Workspace: item, MutationApplied: err == nil}
-		if err == nil {
-			syncSeeds, syncErr := workspace.SyncOnce(r.Context())
-			res.Sync = workspaceSyncResultFromSeeds(workspaceChunkPriceSatPer64K(s.cfgSource), syncSeeds)
-			if syncErr != nil {
-				res.NeedSync = true
-				err = syncErr
-			}
-		}
-		if err != nil {
-			status := http.StatusBadRequest
-			if res.MutationApplied && res.NeedSync {
-				status = http.StatusInternalServerError
-			}
-			writeJSON(w, status, map[string]any{
-				"error":            err.Error(),
-				"mutation_applied": res.MutationApplied,
-				"need_sync":        res.NeedSync,
-				"workspace":        res.Workspace,
-				"sync":             res.Sync,
-			})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "workspace": res.Workspace, "sync": res.Sync})
-	case http.MethodPut:
-		workspacePath := strings.TrimSpace(r.URL.Query().Get("workspace_path"))
-		if workspacePath == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "workspace_path is required"})
-			return
-		}
-		var req struct {
-			MaxBytes *uint64 `json:"max_bytes,omitempty"`
-			Enabled  *bool   `json:"enabled,omitempty"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
-			return
-		}
-		if s == nil || workspace == nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace not initialized"})
-			return
-		}
-		item, err := workspace.UpdateByPathWithContext(r.Context(), workspacePath, req.MaxBytes, req.Enabled)
-		res := WorkspaceUpdateResult{Workspace: item, MutationApplied: err == nil}
-		if err == nil {
-			syncSeeds, syncErr := workspace.SyncOnce(r.Context())
-			res.Sync = workspaceSyncResultFromSeeds(workspaceChunkPriceSatPer64K(s.cfgSource), syncSeeds)
-			if syncErr != nil {
-				res.NeedSync = true
-				err = syncErr
-			}
-		}
-		if err != nil {
-			status := http.StatusBadRequest
-			if strings.Contains(strings.ToLower(err.Error()), "not found") {
-				status = http.StatusNotFound
-			}
-			if res.MutationApplied && res.NeedSync {
-				status = http.StatusInternalServerError
-			}
-			writeJSON(w, status, map[string]any{
-				"error":            err.Error(),
-				"mutation_applied": res.MutationApplied,
-				"need_sync":        res.NeedSync,
-				"workspace":        res.Workspace,
-				"sync":             res.Sync,
-			})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "workspace": res.Workspace, "sync": res.Sync})
-	case http.MethodDelete:
-		workspacePath := strings.TrimSpace(r.URL.Query().Get("workspace_path"))
-		if workspacePath == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "workspace_path is required"})
-			return
-		}
-		if s == nil || workspace == nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace not initialized"})
-			return
-		}
-		err := workspace.DeleteByPathWithContext(r.Context(), workspacePath)
-		res := WorkspaceDeleteResult{WorkspacePath: workspacePath, MutationApplied: err == nil}
-		if err == nil {
-			syncSeeds, syncErr := workspace.SyncOnce(r.Context())
-			res.Sync = workspaceSyncResultFromSeeds(workspaceChunkPriceSatPer64K(s.cfgSource), syncSeeds)
-			if syncErr != nil {
-				res.NeedSync = true
-				err = syncErr
-			}
-		}
-		if err != nil {
-			status := http.StatusBadRequest
-			if strings.Contains(strings.ToLower(err.Error()), "not found") {
-				status = http.StatusNotFound
-			}
-			if res.MutationApplied && res.NeedSync {
-				status = http.StatusInternalServerError
-			}
-			writeJSON(w, status, map[string]any{
-				"error":            err.Error(),
-				"mutation_applied": res.MutationApplied,
-				"need_sync":        res.NeedSync,
-				"workspace_path":   res.WorkspacePath,
-				"sync":             res.Sync,
-			})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": true, "workspace_path": res.WorkspacePath, "sync": res.Sync})
-	default:
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-	}
-}
-
 func (s *httpAPIServer) handleAdminResumeDownload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -3726,9 +3467,6 @@ func (s *httpAPIServer) handleAdminLiveStreams(w http.ResponseWriter, r *http.Re
 			}
 			deleteDirs[filepath.Join(workspaceRoot, "live", streamID)] = struct{}{}
 		}
-		if root := strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir); root != "" {
-			deleteDirs[filepath.Join(root, "live", streamID)] = struct{}{}
-		}
 		for livePath := range deleteDirs {
 			_ = os.RemoveAll(livePath)
 		}
@@ -3795,7 +3533,7 @@ func (s *httpAPIServer) handleAdminLiveStreamDetail(w http.ResponseWriter, r *ht
 		"file_count":      len(out),
 		"total_bytes":     totalBytes,
 		"last_updated":    newest,
-		"live_root_path":  filepath.Join(strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir), "live", streamID),
+		"live_root_path":  "",
 		"segment_entries": out,
 	})
 }
@@ -3841,9 +3579,8 @@ func (s *httpAPIServer) queryLiveStreamStats() ([]adminLiveStreamStat, error) {
 		return nil, err
 	}
 	out := make([]adminLiveStreamStat, 0, len(rows))
-	cfg := s.runtimeConfigSnapshot()
 	for _, row := range rows {
-		liveFolder := filepath.Join(strings.TrimSpace(cfg.Storage.WorkspaceDir), "live", row.StreamID)
+		liveFolder := liveRootPathForWorkspaceRoots(row.WorkspaceRoots, row.StreamID)
 		out = append(out, adminLiveStreamStat{
 			StreamID:         row.StreamID,
 			FileCount:        row.FileCount,
@@ -3879,602 +3616,15 @@ func extractLiveStreamIDFromPath(fullPath string) (string, string, bool) {
 	return "", "", false
 }
 
-func (s *httpAPIServer) handleAdminStaticTree(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
+func liveRootPathForWorkspaceRoots(workspaceRoots []string, streamID string) string {
+	if len(workspaceRoots) != 1 {
+		return ""
 	}
-	root := strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir)
+	root := strings.TrimSpace(workspaceRoots[0])
 	if root == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace_dir not configured"})
-		return
+		return ""
 	}
-	abs, rel, err := resolveStaticPath(root, r.URL.Query().Get("path"))
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	recursive := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("recursive")), "1") ||
-		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("recursive")), "true")
-	maxDepth := parseBoundInt(r.URL.Query().Get("max_depth"), 1, 1, 16)
-	if !recursive {
-		maxDepth = 1
-	}
-	st, err := os.Stat(abs)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "path not found"})
-			return
-		}
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	if !st.IsDir() {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "path is not directory"})
-		return
-	}
-	out, err := s.buildAdminStaticTree(abs, rel, 1, maxDepth)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	parent := "/"
-	if rel != "/" {
-		parent = filepath.ToSlash(filepath.Dir(rel))
-		if !strings.HasPrefix(parent, "/") {
-			parent = "/" + parent
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"root_path":    root,
-		"current_path": rel,
-		"parent_path":  parent,
-		"recursive":    recursive,
-		"max_depth":    maxDepth,
-		"total":        len(out),
-		"items":        out,
-	})
-}
-
-type adminStaticTreeNode struct {
-	Name                string                `json:"name"`
-	Path                string                `json:"path"`
-	Type                string                `json:"type"`
-	Size                int64                 `json:"size"`
-	MtimeUnix           int64                 `json:"mtime_unix"`
-	HasChildren         bool                  `json:"has_children,omitempty"`
-	Children            []adminStaticTreeNode `json:"children,omitempty"`
-	SeedHash            string                `json:"seed_hash,omitempty"`
-	FloorPriceSatPer64K uint64                `json:"floor_unit_price_sat_per_64k,omitempty"`
-	ResaleDiscountBPS   uint64                `json:"resale_discount_bps,omitempty"`
-	PriceUpdatedAtUnix  int64                 `json:"price_updated_at_unix,omitempty"`
-}
-
-func (s *httpAPIServer) buildAdminStaticTree(abs string, rel string, depth int, maxDepth int) ([]adminStaticTreeNode, error) {
-	entries, err := os.ReadDir(abs)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]adminStaticTreeNode, 0, len(entries))
-	for _, de := range entries {
-		name := strings.TrimSpace(de.Name())
-		if name == "" {
-			continue
-		}
-		full := filepath.Join(abs, name)
-		info, err := de.Info()
-		if err != nil {
-			continue
-		}
-		relPath := filepath.ToSlash(filepath.Join(rel, name))
-		if !strings.HasPrefix(relPath, "/") {
-			relPath = "/" + relPath
-		}
-		node := adminStaticTreeNode{
-			Name:      name,
-			Path:      relPath,
-			Size:      info.Size(),
-			MtimeUnix: info.ModTime().Unix(),
-		}
-		if de.IsDir() {
-			node.Type = "dir"
-			if kids, err := os.ReadDir(full); err == nil && len(kids) > 0 {
-				node.HasChildren = true
-			}
-			if depth < maxDepth {
-				children, err := s.buildAdminStaticTree(full, relPath, depth+1, maxDepth)
-				if err == nil {
-					node.Children = children
-				}
-			}
-		} else {
-			node.Type = "file"
-			node.SeedHash, _ = dbGetWorkspaceFileSeedHash(s.ctx, httpStore(s), full)
-			if price, err := dbGetStaticFilePrice(s.ctx, httpStore(s), full); err == nil {
-				node.FloorPriceSatPer64K = price.FloorPriceSatPer64K
-				node.ResaleDiscountBPS = price.ResaleDiscountBPS
-				node.PriceUpdatedAtUnix = price.UpdatedAtUnix
-			}
-		}
-		out = append(out, node)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Type != out[j].Type {
-			return out[i].Type == "dir"
-		}
-		return out[i].Name < out[j].Name
-	})
-	return out, nil
-}
-
-func (s *httpAPIServer) handleAdminStaticMkdir(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	root := strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir)
-	if root == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace_dir not configured"})
-		return
-	}
-	var req struct {
-		Path string `json:"path"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
-		return
-	}
-	abs, rel, err := resolveStaticPath(root, req.Path)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	if err := os.MkdirAll(abs, 0o755); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": rel})
-}
-
-func (s *httpAPIServer) handleAdminStaticUpload(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	root := strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir)
-	if root == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace_dir not configured"})
-		return
-	}
-	if err := r.ParseMultipartForm(128 << 20); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid multipart form"})
-		return
-	}
-	targetDirRaw := strings.TrimSpace(r.FormValue("target_dir"))
-	if targetDirRaw == "" {
-		targetDirRaw = strings.TrimSpace(r.FormValue("path"))
-	}
-	if targetDirRaw == "" {
-		targetDirRaw = "/"
-	}
-	targetAbs, targetRel, err := resolveStaticPath(root, targetDirRaw)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	overwrite := strings.EqualFold(strings.TrimSpace(r.FormValue("overwrite")), "1") ||
-		strings.EqualFold(strings.TrimSpace(r.FormValue("overwrite")), "true")
-	fileName := sanitizeRecommendedFileName(strings.TrimSpace(r.FormValue("file_name")))
-	file, fileHeader, err := r.FormFile("file")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "file is required"})
-		return
-	}
-	defer file.Close()
-	if fileName == "" {
-		fileName = sanitizeRecommendedFileName(strings.TrimSpace(fileHeader.Filename))
-	}
-	if fileName == "" {
-		fileName = fmt.Sprintf("upload_%d.bin", time.Now().UnixNano())
-	}
-	if err := os.MkdirAll(targetAbs, 0o755); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	dst := filepath.Join(targetAbs, fileName)
-	if _, err := os.Stat(dst); err == nil && !overwrite {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "target file already exists"})
-		return
-	}
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	defer out.Close()
-	written, err := io.Copy(out, file)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	if s == nil || s.workspace == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace not initialized"})
-		return
-	}
-	if _, err := s.workspace.SyncOnce(r.Context()); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	seedHash, _ := dbGetWorkspaceFileSeedHash(r.Context(), httpStore(s), dst)
-	relPath := filepath.ToSlash(filepath.Join(targetRel, fileName))
-	if !strings.HasPrefix(relPath, "/") {
-		relPath = "/" + relPath
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":         true,
-		"path":       relPath,
-		"seed_hash":  strings.ToLower(strings.TrimSpace(seedHash)),
-		"target_dir": targetRel,
-		"bytes":      written,
-		"overwrite":  overwrite,
-	})
-}
-
-func (s *httpAPIServer) handleAdminRegisterDownloadedFile(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	root := strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir)
-	if root == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace_dir not configured"})
-		return
-	}
-	var req struct {
-		FilePath string `json:"file_path"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
-		return
-	}
-	filePath := strings.TrimSpace(req.FilePath)
-	if filePath == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "file_path is required"})
-		return
-	}
-	absPath, err := resolveDownloadedFilePath(root, filePath)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	seedBytes, _, chunkCount, err := buildSeedV1(absPath)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	if s.workspace == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace manager not initialized"})
-		return
-	}
-	seed, err := s.workspace.RegisterDownloadedFile(registerDownloadedFileParams{
-		FilePath:              absPath,
-		Seed:                  seedBytes,
-		AvailableChunkIndexes: contiguousChunkIndexes(chunkCount),
-		RecommendedFileName:   sanitizeRecommendedFileName(filepath.Base(absPath)),
-		MIMEHint:              sanitizeMIMEHint(guessContentType(absPath, nil)),
-	})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":        true,
-		"path":      absPath,
-		"seed_hash": strings.ToLower(strings.TrimSpace(seed.SeedHash)),
-	})
-}
-
-func (s *httpAPIServer) handleAdminStaticMove(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	root := strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir)
-	if root == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace_dir not configured"})
-		return
-	}
-	var req struct {
-		FromPath   string `json:"from_path"`
-		ToPath     string `json:"to_path"`
-		SourcePath string `json:"source_path"`
-		TargetDir  string `json:"target_dir"`
-		NewName    string `json:"new_name"`
-		Overwrite  bool   `json:"overwrite"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
-		return
-	}
-	sourcePath := strings.TrimSpace(req.SourcePath)
-	if sourcePath == "" {
-		sourcePath = strings.TrimSpace(req.FromPath)
-	}
-	fromAbs, fromRel, err := resolveStaticPath(root, sourcePath)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	targetPath := strings.TrimSpace(req.ToPath)
-	if strings.TrimSpace(req.TargetDir) != "" || strings.TrimSpace(req.NewName) != "" {
-		targetDir := strings.TrimSpace(req.TargetDir)
-		if targetDir == "" {
-			targetDir = filepath.ToSlash(filepath.Dir(fromRel))
-		}
-		newName := sanitizeRecommendedFileName(strings.TrimSpace(req.NewName))
-		if newName == "" {
-			newName = filepath.Base(fromRel)
-		}
-		targetPath = filepath.ToSlash(filepath.Join(targetDir, newName))
-		if !strings.HasPrefix(targetPath, "/") {
-			targetPath = "/" + targetPath
-		}
-	}
-	toAbs, toRel, err := resolveStaticPath(root, targetPath)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	if _, err := os.Stat(fromAbs); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "source path not found"})
-			return
-		}
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	if _, err := os.Stat(toAbs); err == nil {
-		if !req.Overwrite {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "target path already exists"})
-			return
-		}
-		_ = os.RemoveAll(toAbs)
-	}
-	if err := os.MkdirAll(filepath.Dir(toAbs), 0o755); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	if err := os.Rename(fromAbs, toAbs); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	if err := s.rewriteStaticPricePaths(fromAbs, toAbs); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	if s == nil || s.workspace == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace not initialized"})
-		return
-	}
-	if _, err := s.workspace.SyncOnce(r.Context()); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":        true,
-		"from_path": fromRel,
-		"to_path":   toRel,
-	})
-}
-
-func (s *httpAPIServer) handleAdminStaticEntry(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	root := strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir)
-	if root == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace_dir not configured"})
-		return
-	}
-	abs, rel, err := resolveStaticPath(root, r.URL.Query().Get("path"))
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	recursive := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("recursive")), "1") ||
-		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("recursive")), "true")
-	st, err := os.Stat(abs)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "path not found"})
-			return
-		}
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	if st.IsDir() {
-		if !recursive {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "directory delete requires recursive=true"})
-			return
-		}
-		if err := os.RemoveAll(abs); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
-	} else {
-		if err := os.Remove(abs); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
-	}
-	if s == nil || s.workspace == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace not initialized"})
-		return
-	}
-	if _, err := s.workspace.SyncOnce(r.Context()); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": true, "path": rel})
-}
-
-func (s *httpAPIServer) handleAdminStaticPriceSet(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	root := strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir)
-	if root == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace_dir not configured"})
-		return
-	}
-	var req struct {
-		Path                string `json:"path"`
-		FloorPriceSatPer64K uint64 `json:"floor_price_sat_per_64k"`
-		ResaleDiscountBPS   uint64 `json:"resale_discount_bps"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
-		return
-	}
-	if req.FloorPriceSatPer64K == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "floor_price_sat_per_64k must be > 0"})
-		return
-	}
-	if req.ResaleDiscountBPS == 0 {
-		req.ResaleDiscountBPS = s.runtimeConfigSnapshot().Seller.Pricing.ResaleDiscountBPS
-	}
-	if req.ResaleDiscountBPS > 10000 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "resale_discount_bps must be <= 10000"})
-		return
-	}
-	abs, rel, err := resolveStaticPath(root, req.Path)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	st, err := os.Stat(abs)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "path not found"})
-			return
-		}
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	if st.IsDir() {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "path is directory"})
-		return
-	}
-	seedHash, unit, total, pricingBound, err := dbBindStaticPriceToSeed2(r.Context(), httpStore(s), abs, req.FloorPriceSatPer64K, req.ResaleDiscountBPS)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":                           true,
-		"path":                         rel,
-		"seed_hash":                    seedHash,
-		"floor_unit_price_sat_per_64k": req.FloorPriceSatPer64K,
-		"resale_discount_bps":          req.ResaleDiscountBPS,
-		"seed_price_satoshi":           total,
-		"chunk_price_sat":              unit,
-		"pricing_bound":                pricingBound,
-	})
-}
-
-func (s *httpAPIServer) handleAdminStaticPriceGet(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	root := strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir)
-	if root == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace_dir not configured"})
-		return
-	}
-	abs, rel, err := resolveStaticPath(root, r.URL.Query().Get("path"))
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	price, err := dbGetStaticFilePrice(r.Context(), httpStore(s), abs)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "price not configured"})
-			return
-		}
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	seedHash, _ := dbGetWorkspaceFileSeedHash(r.Context(), httpStore(s), abs)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"path":                         rel,
-		"seed_hash":                    seedHash,
-		"floor_unit_price_sat_per_64k": price.FloorPriceSatPer64K,
-		"resale_discount_bps":          price.ResaleDiscountBPS,
-		"price_updated_at_unix":        price.UpdatedAtUnix,
-	})
-}
-
-func resolveStaticPath(root, input string) (string, string, error) {
-	root = strings.TrimSpace(root)
-	if root == "" {
-		return "", "", fmt.Errorf("workspace_dir not configured")
-	}
-	clean := pathClean(input)
-	if clean == "/" {
-		abs, err := resolveWorkspacePath(root, ".")
-		if err != nil {
-			return "", "", err
-		}
-		return abs, "/", nil
-	}
-	rel := strings.TrimPrefix(clean, "/")
-	abs, err := resolveWorkspacePath(root, rel)
-	if err != nil {
-		return "", "", err
-	}
-	return abs, "/" + filepath.ToSlash(rel), nil
-}
-
-func resolveDownloadedFilePath(root, input string) (string, error) {
-	root = strings.TrimSpace(root)
-	if root == "" {
-		return "", fmt.Errorf("workspace_dir not configured")
-	}
-	raw := strings.TrimSpace(input)
-	if raw == "" {
-		return "", fmt.Errorf("file_path is required")
-	}
-	rootAbs, err := filepath.Abs(root)
-	if err != nil {
-		return "", err
-	}
-	// 下载任务返回的是绝对路径；老管理面历史上传的是“/xxx”这种 workspace 相对路径。
-	// 这里统一支持两种语义，避免下载结果和注册入口语义打架。
-	if filepath.IsAbs(raw) {
-		candidateAbs, err := filepath.Abs(raw)
-		if err != nil {
-			return "", err
-		}
-		rel, err := filepath.Rel(rootAbs, candidateAbs)
-		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return candidateAbs, nil
-		}
-		raw = strings.TrimPrefix(filepath.ToSlash(raw), "/")
-	}
-	clean := pathClean(raw)
-	rel := strings.TrimPrefix(clean, "/")
-	if rel == "" || rel == "." {
-		return "", fmt.Errorf("file_path must point to a regular file")
-	}
-	return resolveWorkspacePath(root, rel)
-}
-
-func (s *httpAPIServer) rewriteStaticPricePaths(fromAbs, toAbs string) error {
-	return dbRewriteStaticPricePaths(s.ctx, httpStore(s), fromAbs, toAbs)
+	return filepath.Join(root, "live", streamID)
 }
 
 type adminConfigValueType string
@@ -4516,7 +3666,6 @@ func adminConfigRules() []adminConfigRule {
 		{Key: "reachability.auto_announce_enabled", Type: adminConfigBool, Description: "是否自动发布本节点地址声明到 gateway 目录"},
 		{Key: "reachability.announce_ttl_seconds", Type: adminConfigInt, MinInt: 60, MaxInt: 604800, Description: "地址声明有效期秒"},
 		{Key: "scan.rescan_interval_seconds", Type: adminConfigInt, MinInt: 5, MaxInt: 86400, Description: "全量扫描间隔秒"},
-		{Key: "storage.workspace_dir", Type: adminConfigString, MinLen: 0, MaxLen: 512, Description: "工作目录（可空：钱包模式）", RestartRequired: true},
 		{Key: "storage.data_dir", Type: adminConfigString, MinLen: 1, MaxLen: 512, Description: "数据目录", RestartRequired: true},
 		{Key: "storage.min_free_bytes", Type: adminConfigInt, MinInt: 0, MaxInt: 1 << 50, Description: "最小空闲空间"},
 		{Key: "index.sqlite_path", Type: adminConfigString, MinLen: 1, MaxLen: 512, Description: "SQLite 路径", RestartRequired: true},
@@ -4830,7 +3979,6 @@ func adminConfigSnapshot(cfg Config) map[string]any {
 		"reachability.auto_announce_enabled":          cfgBool(cfg.Reachability.AutoAnnounceEnabled, true),
 		"reachability.announce_ttl_seconds":           cfg.Reachability.AnnounceTTLSeconds,
 		"scan.rescan_interval_seconds":                cfg.Scan.RescanIntervalSeconds,
-		"storage.workspace_dir":                       cfg.Storage.WorkspaceDir,
 		"storage.data_dir":                            cfg.Storage.DataDir,
 		"storage.min_free_bytes":                      cfg.Storage.MinFreeBytes,
 		"index.sqlite_path":                           cfg.Index.SQLitePath,

@@ -15,18 +15,13 @@ import (
 // 启动回归只盯组装层，不让 SQL trace 再被空日志路径卡死。
 func TestRun_SQLTraceStartupBackfillsEmptyLogFile(t *testing.T) {
 	dir := t.TempDir()
-	wsDir := filepath.Join(dir, "workspace")
 	dataDir := filepath.Join(dir, "data")
-	if err := os.MkdirAll(wsDir, 0o755); err != nil {
-		t.Fatalf("mkdir workspace: %v", err)
-	}
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		t.Fatalf("mkdir data: %v", err)
 	}
 
 	cfg := Config{}
 	cfg.BSV.Network = "test"
-	cfg.Storage.WorkspaceDir = wsDir
 	cfg.Storage.DataDir = dataDir
 	cfg.Storage.MinFreeBytes = 1
 	cfg.HTTP.Enabled = true

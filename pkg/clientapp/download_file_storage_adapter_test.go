@@ -300,7 +300,9 @@ type downloadFileWorkspaceAdapterTestEnv struct {
 	adapter      *downloadFileWorkspaceAdapter
 	root         string
 	dataDir      string
+	configDir    string
 	workspaceDir string
+	pubkeyHex    string
 	seedHash     string
 }
 
@@ -308,12 +310,17 @@ func newDownloadFileWorkspaceAdapterTestEnv(t *testing.T) downloadFileWorkspaceA
 	t.Helper()
 	root := t.TempDir()
 	dataDir := filepath.Join(root, "data")
+	configDir := filepath.Join(root, "config")
 	workspaceDir := filepath.Join(root, "workspace")
-	if err := os.MkdirAll(filepath.Join(dataDir, "biz_seeds"), 0o755); err != nil {
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		t.Fatalf("mkdir data dir failed: %v", err)
 	}
 	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
 		t.Fatalf("mkdir workspace dir failed: %v", err)
+	}
+	pubkeyHex := strings.Repeat("aa", 32)
+	if err := os.MkdirAll(filepath.Join(configDir, pubkeyHex, "seeds"), 0o755); err != nil {
+		t.Fatalf("mkdir seed dir failed: %v", err)
 	}
 	dbPath := filepath.Join(dataDir, "client-index.sqlite")
 	db, err := sql.Open("sqlite", dbPath)
@@ -335,7 +342,9 @@ func newDownloadFileWorkspaceAdapterTestEnv(t *testing.T) downloadFileWorkspaceA
 		adapter:      newDownloadFileWorkspaceAdapter(store),
 		root:         root,
 		dataDir:      dataDir,
+		configDir:    configDir,
 		workspaceDir: workspaceDir,
+		pubkeyHex:    pubkeyHex,
 		seedHash:     strings.Repeat("a", 64),
 	}
 	return env
@@ -343,7 +352,7 @@ func newDownloadFileWorkspaceAdapterTestEnv(t *testing.T) downloadFileWorkspaceA
 
 func (e downloadFileWorkspaceAdapterTestEnv) insertSeedMeta(t *testing.T, chunkCount uint32, fileSize uint64) {
 	t.Helper()
-	seedPath := filepath.Join(e.dataDir, "biz_seeds", e.seedHash+".bse")
+	seedPath := filepath.Join(e.configDir, e.pubkeyHex, "seeds", e.seedHash+".bse")
 	if err := os.WriteFile(seedPath, []byte("seed"), 0o644); err != nil {
 		t.Fatalf("write seed file failed: %v", err)
 	}

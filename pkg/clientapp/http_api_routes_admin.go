@@ -3,20 +3,11 @@ package clientapp
 import "net/http"
 
 func (s *httpAPIServer) registerHTTPRouteAdmin(mux *http.ServeMux, prefix string) {
-	mux.HandleFunc(prefix+"/v1/admin/biz_workspaces", s.withAuth(s.handleAdminWorkspaces))
 	mux.HandleFunc(prefix+"/v1/admin/downloads/resume", s.withAuth(s.handleAdminResumeDownload))
 	mux.HandleFunc(prefix+"/v1/admin/fs-http/strategy-debug-log", s.withAuth(s.handleAdminStrategyDebugLog))
 	mux.HandleFunc(prefix+"/v1/admin/live/streams", s.withAuth(s.handleAdminLiveStreams))
 	mux.HandleFunc(prefix+"/v1/admin/live/streams/detail", s.withAuth(s.handleAdminLiveStreamDetail))
 	mux.HandleFunc(prefix+"/v1/admin/live/storage/summary", s.withAuth(s.handleAdminLiveStorageSummary))
-	mux.HandleFunc(prefix+"/v1/admin/static/tree", s.withAuth(s.handleAdminStaticTree))
-	mux.HandleFunc(prefix+"/v1/admin/static/mkdir", s.withAuth(s.handleAdminStaticMkdir))
-	mux.HandleFunc(prefix+"/v1/admin/static/upload", s.withAuth(s.handleAdminStaticUpload))
-	mux.HandleFunc(prefix+"/v1/admin/workspace/register-downloaded-file", s.withAuth(s.handleAdminRegisterDownloadedFile))
-	mux.HandleFunc(prefix+"/v1/admin/static/move", s.withAuth(s.handleAdminStaticMove))
-	mux.HandleFunc(prefix+"/v1/admin/static/entry", s.withAuth(s.handleAdminStaticEntry))
-	mux.HandleFunc(prefix+"/v1/admin/static/price/set", s.withAuth(s.handleAdminStaticPriceSet))
-	mux.HandleFunc(prefix+"/v1/admin/static/price", s.withAuth(s.handleAdminStaticPriceGet))
 	// 费用池审计历史查询入口（非主入口，仅保留原始事实查询能力）
 	// 主排障入口请使用 /v1/admin/feepool/audit/gateway-timeline 和 command-timeline
 	mux.HandleFunc(prefix+"/v1/admin/feepool/commands", s.withAuth(s.handleAdminFeePoolCommands))
