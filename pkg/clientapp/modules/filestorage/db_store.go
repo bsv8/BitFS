@@ -6,30 +6,16 @@ import (
 	"time"
 
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizworkspacefiles"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizworkspaces"
+	"github.com/bsv8/BitFS/pkg/clientapp/modules/filestorage/storedb/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/modules/filestorage/storedb/gen/bizworkspacefiles"
+	"github.com/bsv8/BitFS/pkg/clientapp/modules/filestorage/storedb/gen/bizworkspaces"
 )
-
-type workspaceReadRoot interface {
-	BizWorkspacesQuery() *gen.BizWorkspacesQuery
-	BizWorkspaceFilesQuery() *gen.BizWorkspaceFilesQuery
-	BizSeedsQuery() *gen.BizSeedsQuery
-	BizSeedPricingPolicyQuery() *gen.BizSeedPricingPolicyQuery
-}
-
-type workspaceWriteRoot interface {
-	BizWorkspacesClient() *gen.BizWorkspacesClient
-	BizWorkspaceFilesClient() *gen.BizWorkspaceFilesClient
-	BizSeedsClient() *gen.BizSeedsClient
-	BizSeedPricingPolicyClient() *gen.BizSeedPricingPolicyClient
-}
 
 // 设计说明：
 // - 这里放文件存储箱子的 DB 入口本体；
 // - 外层 store 只负责把能力传进来，不再承载一堆实现细节。
 
-func DBListWorkspaces(ctx context.Context, root workspaceReadRoot) ([]moduleapi.WorkspaceItem, error) {
+func DBListWorkspaces(ctx context.Context, root DBReadRoot) ([]moduleapi.WorkspaceItem, error) {
 	if root == nil {
 		return nil, fmt.Errorf("workspace root is nil")
 	}
@@ -51,7 +37,7 @@ func DBListWorkspaces(ctx context.Context, root workspaceReadRoot) ([]moduleapi.
 	return out, nil
 }
 
-func DBUpsertWorkspace(ctx context.Context, root workspaceWriteRoot, absPath string, maxBytes uint64, enabled bool) (moduleapi.WorkspaceItem, error) {
+func DBUpsertWorkspace(ctx context.Context, root DBWriteRoot, absPath string, maxBytes uint64, enabled bool) (moduleapi.WorkspaceItem, error) {
 	if root == nil {
 		return moduleapi.WorkspaceItem{}, fmt.Errorf("workspace root is nil")
 	}
@@ -95,7 +81,7 @@ func DBUpsertWorkspace(ctx context.Context, root workspaceWriteRoot, absPath str
 	}, nil
 }
 
-func DBDeleteWorkspace(ctx context.Context, root workspaceWriteRoot, workspacePath string) error {
+func DBDeleteWorkspace(ctx context.Context, root DBWriteRoot, workspacePath string) error {
 	if root == nil {
 		return fmt.Errorf("workspace root is nil")
 	}
@@ -112,7 +98,7 @@ func DBDeleteWorkspace(ctx context.Context, root workspaceWriteRoot, workspacePa
 	return nil
 }
 
-func DBUpdateWorkspace(ctx context.Context, root workspaceWriteRoot, workspacePath string, maxBytes *uint64, enabled *bool) (moduleapi.WorkspaceItem, error) {
+func DBUpdateWorkspace(ctx context.Context, root DBWriteRoot, workspacePath string, maxBytes *uint64, enabled *bool) (moduleapi.WorkspaceItem, error) {
 	if root == nil {
 		return moduleapi.WorkspaceItem{}, fmt.Errorf("workspace root is nil")
 	}
@@ -149,7 +135,7 @@ func DBUpdateWorkspace(ctx context.Context, root workspaceWriteRoot, workspacePa
 	}, nil
 }
 
-func DBListWorkspaceFiles(ctx context.Context, root workspaceReadRoot, limit, offset int, pathLike string) ([]moduleapi.WorkspaceFileItem, int, error) {
+func DBListWorkspaceFiles(ctx context.Context, root DBReadRoot, limit, offset int, pathLike string) ([]moduleapi.WorkspaceFileItem, int, error) {
 	if root == nil {
 		return nil, 0, fmt.Errorf("workspace root is nil")
 	}
@@ -180,7 +166,7 @@ func DBListWorkspaceFiles(ctx context.Context, root workspaceReadRoot, limit, of
 	return out, total, nil
 }
 
-func DBListWorkspaceRoots(ctx context.Context, root workspaceReadRoot) ([]string, error) {
+func DBListWorkspaceRoots(ctx context.Context, root DBReadRoot) ([]string, error) {
 	if root == nil {
 		return nil, fmt.Errorf("workspace root is nil")
 	}
@@ -200,7 +186,7 @@ func DBListWorkspaceRoots(ctx context.Context, root workspaceReadRoot) ([]string
 	return out, nil
 }
 
-func DBUpsertWorkspaceFile(ctx context.Context, root workspaceWriteRoot, workspacePath, filePath, seedHash string, locked bool) error {
+func DBUpsertWorkspaceFile(ctx context.Context, root DBWriteRoot, workspacePath, filePath, seedHash string, locked bool) error {
 	if root == nil {
 		return fmt.Errorf("workspace root is nil")
 	}
@@ -239,7 +225,7 @@ func DBUpsertWorkspaceFile(ctx context.Context, root workspaceWriteRoot, workspa
 	return err
 }
 
-func DBDeleteWorkspaceFile(ctx context.Context, root workspaceWriteRoot, workspacePath, filePath string) error {
+func DBDeleteWorkspaceFile(ctx context.Context, root DBWriteRoot, workspacePath, filePath string) error {
 	if root == nil {
 		return fmt.Errorf("workspace root is nil")
 	}
@@ -258,7 +244,7 @@ func DBDeleteWorkspaceFile(ctx context.Context, root workspaceWriteRoot, workspa
 	return err
 }
 
-func DBGetWorkspaceFileSeedHashByAbsPath(ctx context.Context, root workspaceReadRoot, absPath string) (string, error) {
+func DBGetWorkspaceFileSeedHashByAbsPath(ctx context.Context, root DBReadRoot, absPath string) (string, error) {
 	if root == nil {
 		return "", fmt.Errorf("workspace root is nil")
 	}

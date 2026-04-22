@@ -164,6 +164,30 @@ func (p *runStartupPhases) Preflight() error {
 	return nil
 }
 
+// EnsureSchemas 只负责把 Run 依赖的 schema 补齐。
+// 设计说明：
+// - core schema 先补齐，后面 BuildCore 才能安全写 core 表；
+// - builtin module schema 紧跟其后，避免模块安装阶段踩空表；
+// - 这里只做 owner 建表，不掺安装逻辑。
+func (p *runStartupPhases) EnsureSchemas() error {
+	if p == nil {
+		return fmt.Errorf("startup phases are required")
+	}
+	if p.ctx == nil {
+		return fmt.Errorf("ctx is required")
+	}
+	if p.deps.RawDB == nil {
+		return fmt.Errorf("runtime deps are required")
+	}
+	if err := ensureCoreSchema(p.ctx, p.deps.RawDB); err != nil {
+		return fmt.Errorf("ensure core schema failed: %w", err)
+	}
+	if err := ensureBuiltinModuleSchemas(p.ctx, p.deps.RawDB); err != nil {
+		return fmt.Errorf("ensure builtin module schemas failed: %w", err)
+	}
+	return nil
+}
+
 func (p *runStartupPhases) RuntimeConfig() Config {
 	if p == nil {
 		return Config{}

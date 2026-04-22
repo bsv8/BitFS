@@ -291,6 +291,7 @@ func (p *runStartupPhases) StartServices() error {
 		transferPoolSessionLocks: map[string]*sync.Mutex{},
 		rpcTrace:                 st.trace,
 	}
+	rt.Workspace = newWorkspaceRuntimeAdapter(st.store)
 	rt.SeedStorage = newModuleHost(rt, st.store).SeedStorage()
 	rt.FileStorage = newFileStorageRuntimeAdapter(st.store, rt.SeedStorage)
 	st.rtCtx, st.rtCancel = context.WithCancel(p.ctx)

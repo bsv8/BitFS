@@ -1188,7 +1188,7 @@ func (d *managedDaemon) executeManagedWorkspaceControlCommand(req controlCommand
 		return workspaceActionFailure(req, d, "runtime not initialized", nil), nil
 	}
 	workspace := rt.Workspace
-	walletMode := strings.TrimSpace(rt.ConfigSnapshot().Storage.WorkspaceDir) == ""
+	walletMode := strings.TrimSpace(d.cfg.Storage.WorkspaceDir) == ""
 	if workspace == nil {
 		switch strings.TrimSpace(req.Action) {
 		case controlActionWorkspaceList:
@@ -1626,9 +1626,9 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 	if err != nil {
 		return err
 	}
-	systemHomepageActive := d.systemHomepage != nil && strings.TrimSpace(runCfg.Storage.WorkspaceDir) != ""
+	systemHomepageActive := d.systemHomepage != nil && strings.TrimSpace(d.cfg.Storage.WorkspaceDir) != ""
 	if systemHomepageActive {
-		d.systemHomepage.BindWorkspace(runCfg.Storage.WorkspaceDir)
+		d.systemHomepage.BindWorkspace(d.cfg.Storage.WorkspaceDir)
 		if err := d.systemHomepage.InstallIntoWorkspace(); err != nil {
 			return err
 		}
@@ -1645,18 +1645,13 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 		obsSink = d.controlStream.ObsSink()
 	}
 	obsSink = d.runtimeObsSink(obsSink)
-	postWorkspaceBootstrap := d.systemHomepageBootstrapHook()
-	if !systemHomepageActive {
-		postWorkspaceBootstrap = nil
-	}
 	runOpt := clientapp.RunOptions{
-		ConfigPath:             configPath,
-		StartupMode:            clientapp.StartupModeProduct,
-		PostWorkspaceBootstrap: postWorkspaceBootstrap,
-		DisableHTTPServer:      true,
-		FSHTTPListener:         d.takeReservedFSHTTPListener(),
-		ObsSink:                obsSink,
-		EffectivePrivKeyHex:    privHex,
+		ConfigPath:          configPath,
+		StartupMode:         clientapp.StartupModeProduct,
+		DisableHTTPServer:   true,
+		FSHTTPListener:      d.takeReservedFSHTTPListener(),
+		ObsSink:             obsSink,
+		EffectivePrivKeyHex: privHex,
 	}
 	indexDBPath := strings.TrimSpace(runCfg.Index.SQLitePath)
 	if indexDBPath == "" {
@@ -1677,18 +1672,6 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 		RawDB:   openedDB.DB,
 		DBActor: openedDB.Actor,
 		OwnsDB:  true,
-	}
-	// 设计说明：
-	// - managed daemon 解锁后会直接进入 runtime；
-	// - runtime 入口不再隐式建表，所以这里要先把 schema 准备好；
-	// - 失败时沿用统一收尾，避免占住 fs listener 和 db actor。
-	if err := clientapp.EnsureClientStoreSchema(d.rootCtx, deps.Store); err != nil {
-		if runOpt.FSHTTPListener != nil {
-			_ = runOpt.FSHTTPListener.Close()
-			_ = d.reserveFSHTTPListener()
-		}
-		_ = openedDB.Actor.Close()
-		return fmt.Errorf("prepare runtime db schema failed: %w", err)
 	}
 	actionChain, err := chainbridge.NewEmbeddedFeePoolChain(chainbridge.RouteConfig{
 		Provider: chainbridge.WhatsOnChainProvider,
@@ -1729,6 +1712,16 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 		cancel()
 		_ = openedDB.Actor.Close()
 		return err
+	}
+	if systemHomepageActive {
+		if hook := d.systemHomepageBootstrapHook(); hook != nil {
+			if err := hook(runCtx, deps.Store); err != nil {
+				_ = rt.Close()
+				cancel()
+				_ = d.reserveFSHTTPListener()
+				return err
+			}
+		}
 	}
 	runtimeAPI, err := buildRuntimeAPIHandler(rt)
 	if err != nil {
@@ -1789,7 +1782,7 @@ func (d *managedDaemon) applyDesktopRuntimeBootstrap(cfg *clientapp.Config) {
 	if d.systemHomepage == nil {
 		return
 	}
-	if strings.TrimSpace(cfg.Storage.WorkspaceDir) == "" {
+	if strings.TrimSpace(d.cfg.Storage.WorkspaceDir) == "" {
 		// 设计说明：
 		// - workspace_dir 为空代表钱包模式；
 		// - 该模式不做系统首页落盘与启动全量扫描。

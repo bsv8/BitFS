@@ -59,107 +59,110 @@ func (d *clientDB) DeleteSeedRecords(ctx context.Context, seedHashes []string) e
 }
 
 func (d *clientDB) CleanupOrphanSeeds(ctx context.Context) error {
-	_, err := writeEntValue(ctx, d, func(root EntWriteRoot) (struct{}, error) {
-		return struct{}{}, seedstorage.DBCleanupOrphanSeeds(ctx, root)
-	})
-	return err
+	return cleanupOrphanSeeds(ctx, d)
 }
 
 func (d *clientDB) ListWorkspaces(ctx context.Context) ([]moduleapi.WorkspaceItem, error) {
 	var out []moduleapi.WorkspaceItem
-	_, err := readEntValue(ctx, d, func(root EntReadRoot) (struct{}, error) {
+	err := d.Read(ctx, func(conn moduleapi.ReadConn) error {
+		root := filestorage.NewDBReadRoot(conn)
 		rows, err := filestorage.DBListWorkspaces(ctx, root)
 		if err != nil {
-			return struct{}{}, err
+			return err
 		}
 		out = rows
-		return struct{}{}, nil
+		return nil
 	})
 	return out, err
 }
 
 func (d *clientDB) UpsertWorkspace(ctx context.Context, workspacePath string, maxBytes uint64, enabled bool) (moduleapi.WorkspaceItem, error) {
 	var out moduleapi.WorkspaceItem
-	_, err := writeEntValue(ctx, d, func(root EntWriteRoot) (struct{}, error) {
+	err := d.WriteTx(ctx, func(tx moduleapi.WriteTx) error {
+		root := filestorage.NewDBWriteRoot(tx)
 		item, err := filestorage.DBUpsertWorkspace(ctx, root, workspacePath, maxBytes, enabled)
 		if err != nil {
-			return struct{}{}, err
+			return err
 		}
 		out = item
-		return struct{}{}, nil
+		return nil
 	})
 	return out, err
 }
 
 func (d *clientDB) DeleteWorkspace(ctx context.Context, workspacePath string) error {
-	_, err := writeEntValue(ctx, d, func(root EntWriteRoot) (struct{}, error) {
-		return struct{}{}, filestorage.DBDeleteWorkspace(ctx, root, workspacePath)
+	return d.WriteTx(ctx, func(tx moduleapi.WriteTx) error {
+		root := filestorage.NewDBWriteRoot(tx)
+		return filestorage.DBDeleteWorkspace(ctx, root, workspacePath)
 	})
-	return err
 }
 
 func (d *clientDB) UpdateWorkspace(ctx context.Context, workspacePath string, maxBytes *uint64, enabled *bool) (moduleapi.WorkspaceItem, error) {
 	var out moduleapi.WorkspaceItem
-	_, err := writeEntValue(ctx, d, func(root EntWriteRoot) (struct{}, error) {
+	err := d.WriteTx(ctx, func(tx moduleapi.WriteTx) error {
+		root := filestorage.NewDBWriteRoot(tx)
 		item, err := filestorage.DBUpdateWorkspace(ctx, root, workspacePath, maxBytes, enabled)
 		if err != nil {
-			return struct{}{}, err
+			return err
 		}
 		out = item
-		return struct{}{}, nil
+		return nil
 	})
 	return out, err
 }
 
 func (d *clientDB) ListWorkspaceFiles(ctx context.Context, limit, offset int, pathLike string) (moduleapi.WorkspaceFilesPage, error) {
 	var page moduleapi.WorkspaceFilesPage
-	_, err := readEntValue(ctx, d, func(root EntReadRoot) (struct{}, error) {
+	err := d.Read(ctx, func(conn moduleapi.ReadConn) error {
+		root := filestorage.NewDBReadRoot(conn)
 		items, total, err := filestorage.DBListWorkspaceFiles(ctx, root, limit, offset, pathLike)
 		if err != nil {
-			return struct{}{}, err
+			return err
 		}
 		page = moduleapi.WorkspaceFilesPage{Total: total, Items: items}
-		return struct{}{}, nil
+		return nil
 	})
 	return page, err
 }
 
 func (d *clientDB) UpsertWorkspaceFile(ctx context.Context, workspacePath, filePath, seedHash string, locked bool) error {
-	_, err := writeEntValue(ctx, d, func(root EntWriteRoot) (struct{}, error) {
-		return struct{}{}, filestorage.DBUpsertWorkspaceFile(ctx, root, workspacePath, filePath, seedHash, locked)
+	return d.WriteTx(ctx, func(tx moduleapi.WriteTx) error {
+		root := filestorage.NewDBWriteRoot(tx)
+		return filestorage.DBUpsertWorkspaceFile(ctx, root, workspacePath, filePath, seedHash, locked)
 	})
-	return err
 }
 
 func (d *clientDB) DeleteWorkspaceFile(ctx context.Context, workspacePath, filePath string) error {
-	_, err := writeEntValue(ctx, d, func(root EntWriteRoot) (struct{}, error) {
-		return struct{}{}, filestorage.DBDeleteWorkspaceFile(ctx, root, workspacePath, filePath)
+	return d.WriteTx(ctx, func(tx moduleapi.WriteTx) error {
+		root := filestorage.NewDBWriteRoot(tx)
+		return filestorage.DBDeleteWorkspaceFile(ctx, root, workspacePath, filePath)
 	})
-	return err
 }
 
 func (d *clientDB) ListWorkspaceRoots(ctx context.Context) ([]string, error) {
 	var out []string
-	_, err := readEntValue(ctx, d, func(root EntReadRoot) (struct{}, error) {
+	err := d.Read(ctx, func(conn moduleapi.ReadConn) error {
+		root := filestorage.NewDBReadRoot(conn)
 		rows, err := filestorage.DBListWorkspaceRoots(ctx, root)
 		if err != nil {
-			return struct{}{}, err
+			return err
 		}
 		out = rows
-		return struct{}{}, nil
+		return nil
 	})
 	return out, err
 }
 
 func (d *clientDB) GetWorkspaceFileSeedHashByAbsPath(ctx context.Context, absPath string) (string, error) {
 	var out string
-	_, err := readEntValue(ctx, d, func(root EntReadRoot) (struct{}, error) {
+	err := d.Read(ctx, func(conn moduleapi.ReadConn) error {
+		root := filestorage.NewDBReadRoot(conn)
 		seedHash, err := filestorage.DBGetWorkspaceFileSeedHashByAbsPath(ctx, root, absPath)
 		if err != nil {
-			return struct{}{}, err
+			return err
 		}
 		out = seedHash
-		return struct{}{}, nil
+		return nil
 	})
 	return out, err
 }

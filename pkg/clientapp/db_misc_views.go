@@ -7,9 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseeds"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizworkspacefiles"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizseeds"
 )
 
 func dbGetSeedChunkCount(ctx context.Context, store *clientDB, seedHash string) (uint32, bool) {
@@ -68,14 +67,11 @@ func dbRecommendedFileNameBySeedHash(ctx context.Context, store *clientDB, seedH
 				return normalized, nil
 			}
 		}
-		row, err := root.BizWorkspaceFiles.Query().
-			Where(bizworkspacefiles.SeedHashEQ(seedHash)).
-			Order(bizworkspacefiles.ByWorkspacePath(), bizworkspacefiles.ByFilePath()).
-			First(ctx)
+		fallbackPath, _, err := store.FindLatestWorkspaceFileBySeedHash(ctx, seedHash)
 		if err != nil {
 			return "", nil
 		}
-		return sanitizeRecommendedFileName(filepath.Base(strings.TrimSpace(workspacePathJoin(row.WorkspacePath, row.FilePath)))), nil
+		return sanitizeRecommendedFileName(filepath.Base(strings.TrimSpace(fallbackPath))), nil
 	})
 	if err != nil {
 		return ""

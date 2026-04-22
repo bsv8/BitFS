@@ -9,9 +9,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseeds"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizworkspacefiles"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizseeds"
 )
 
 type liveWorkspaceEntry struct {
@@ -54,32 +53,36 @@ func dbListLiveWorkspaceEntries(ctx context.Context, store *clientDB, pattern st
 	}
 	needle := strings.Trim(pattern, "%")
 	needle = strings.ReplaceAll(needle, "/", string(filepath.Separator))
-	return readEntValue(ctx, store, func(root EntReadRoot) ([]liveWorkspaceEntry, error) {
-		rows, err := root.BizWorkspaceFiles.Query().
-			Order(bizworkspacefiles.ByWorkspacePath(), bizworkspacefiles.ByFilePath()).
-			All(ctx)
-		if err != nil {
-			return nil, err
+	page, err := store.ListWorkspaceFiles(ctx, -1, 0, "")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]liveWorkspaceEntry, 0, len(page.Items))
+	for _, row := range page.Items {
+		absPath := workspacePathJoin(row.WorkspacePath, row.FilePath)
+		fullPath := filepath.Clean(absPath)
+		if needle != "" && !strings.Contains(filepath.ToSlash(fullPath), filepath.ToSlash(needle)) {
+			continue
 		}
-		out := make([]liveWorkspaceEntry, 0, len(rows))
-		for _, row := range rows {
-			absPath := workspacePathJoin(row.WorkspacePath, row.FilePath)
-			fullPath := filepath.Clean(absPath)
-			if needle != "" && !strings.Contains(filepath.ToSlash(fullPath), filepath.ToSlash(needle)) {
-				continue
+		it := liveWorkspaceEntry{Path: fullPath, SeedHash: row.SeedHash}
+		if includeMeta {
+			if st, err := os.Stat(fullPath); err == nil {
+				it.FileSize = st.Size()
+				it.MtimeUnix = st.ModTime().Unix()
+				it.UpdatedAtUnix = it.MtimeUnix
 			}
-			it := liveWorkspaceEntry{Path: fullPath, SeedHash: row.SeedHash}
-			if includeMeta {
-				if st, err := os.Stat(fullPath); err == nil {
-					it.FileSize = st.Size()
-					it.MtimeUnix = st.ModTime().Unix()
-					it.UpdatedAtUnix = it.MtimeUnix
-				}
-			}
-			out = append(out, it)
 		}
-		return out, nil
-	})
+		out = append(out, it)
+	}
+	return out, nil
+}
+
+func dbListLiveSegmentWorkspaceEntries(ctx context.Context, store *clientDB, streamID string) ([]liveWorkspaceEntry, error) {
+	segmentID := strings.ToLower(strings.TrimSpace(streamID))
+	if !isSeedHashHex(segmentID) {
+		return nil, fmt.Errorf("invalid stream_id")
+	}
+	return dbListLiveWorkspaceEntries(ctx, store, "%"+string(filepath.Separator)+"live"+string(filepath.Separator)+segmentID+string(filepath.Separator)+"%", true)
 }
 
 // dbDeleteLiveStreamWorkspaceRows 只做直播流定向清理。
@@ -91,22 +94,7 @@ func dbDeleteLiveStreamWorkspaceRows(ctx context.Context, store *clientDB, strea
 	if store == nil {
 		return 0, fmt.Errorf("client db is nil")
 	}
-	streamID = strings.ToLower(strings.TrimSpace(streamID))
-	if !isSeedHashHex(streamID) {
-		return 0, fmt.Errorf("invalid stream_id")
-	}
-	return writeEntValue(ctx, store, func(tx EntWriteRoot) (int64, error) {
-		pathPrefix := "live/" + streamID + "/"
-		q := tx.BizWorkspaceFiles.Query().Where(bizworkspacefiles.FilePathHasPrefix(pathPrefix))
-		before, err := q.Count(ctx)
-		if err != nil {
-			return 0, err
-		}
-		if _, err := tx.BizWorkspaceFiles.Delete().Where(bizworkspacefiles.FilePathHasPrefix(pathPrefix)).Exec(ctx); err != nil {
-			return 0, err
-		}
-		return int64(before), nil
-	})
+	return store.DeleteLiveStreamWorkspaceRows(ctx, streamID)
 }
 
 func dbListLiveStreamStats(ctx context.Context, store *clientDB) ([]liveStreamStatsItem, error) {

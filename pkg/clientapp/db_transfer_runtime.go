@@ -7,14 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseeds"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizworkspacefiles"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/procdirectdeals"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/procdirecttransferpools"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizseeds"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procdirectdeals"
+	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procdirecttransferpools"
 )
 
 // 设计说明：
@@ -581,38 +581,38 @@ func dbLoadSeedBytesBySeedHash(ctx context.Context, store *clientDB, seedHash st
 }
 
 func dbLoadChunkBytesBySeedHash(ctx context.Context, store *clientDB, seedHash string, chunkIndex uint32) ([]byte, error) {
-	meta, err := readEntValue(ctx, store, func(root EntReadRoot) (struct {
+	var meta struct {
 		workspacePath string
 		filePath      string
 		chunkCount    uint32
-	}, error) {
-		var out struct {
-			workspacePath string
-			filePath      string
-			chunkCount    uint32
-		}
+	}
+	seedCount, err := readEntValue(ctx, store, func(root EntReadRoot) (uint32, error) {
 		seedRow, err := root.BizSeeds.Query().
 			Where(bizseeds.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
 			Only(ctx)
 		if err != nil {
 			if gen.IsNotFound(err) {
-				return out, fmt.Errorf("seed not found")
+				return 0, fmt.Errorf("seed not found")
 			}
-			return out, err
+			return 0, err
 		}
-		out.chunkCount = uint32(seedRow.ChunkCount)
-		fileRow, err := root.BizWorkspaceFiles.Query().
-			Where(bizworkspacefiles.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
-			Order(bizworkspacefiles.ByWorkspacePath(), bizworkspacefiles.ByFilePath()).
-			First(ctx)
-		if err == nil {
-			out.workspacePath = fileRow.WorkspacePath
-			out.filePath = fileRow.FilePath
-		}
-		return out, nil
+		return uint32(seedRow.ChunkCount), nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	absPath, _, err := store.FindLatestWorkspaceFileBySeedHash(ctx, seedHash)
+	if err != nil {
+		return nil, err
+	}
+	meta = struct {
+		workspacePath string
+		filePath      string
+		chunkCount    uint32
+	}{
+		workspacePath: filepath.Dir(absPath),
+		filePath:      filepath.Base(absPath),
+		chunkCount:    seedCount,
 	}
 	if chunkIndex >= meta.chunkCount {
 		return nil, fmt.Errorf("chunk_index out of range")

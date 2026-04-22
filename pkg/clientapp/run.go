@@ -116,6 +116,7 @@ type Config struct {
 	} `yaml:"network" toml:"network"`
 	Storage struct {
 		DataDir      string `yaml:"data_dir" toml:"data_dir"`
+		WorkspaceDir string `yaml:"workspace_dir" toml:"workspace_dir"`
 		MinFreeBytes uint64 `yaml:"min_free_bytes" toml:"min_free_bytes"`
 	} `yaml:"storage" toml:"storage"`
 	Seller struct {
@@ -287,6 +288,7 @@ type Runtime struct {
 	StartedAtUnix   int64
 	HealthyGWs      []peer.AddrInfo
 	HealthyArbiters []peer.AddrInfo
+	Workspace       workspaceRuntime
 	FileStorage     fileStorageRuntime
 	SeedStorage     moduleapi.SeedStorage
 	Catalog         *sellerCatalog
@@ -565,6 +567,9 @@ func Run(ctx context.Context, cfg Config, deps RunDeps, opt RunOptions) (*Runtim
 		}
 	}()
 	if err := phasePlan.Preflight(); err != nil {
+		return nil, err
+	}
+	if err := phasePlan.EnsureSchemas(); err != nil {
 		return nil, err
 	}
 	if err := phasePlan.BuildCore(); err != nil {

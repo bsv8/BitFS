@@ -2,18 +2,13 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
-	"time"
 
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseedpricingpolicy"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseeds"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizworkspacefiles"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizworkspaces"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 )
 
 type workspaceFilesPage struct {
@@ -55,36 +50,20 @@ func dbListWorkspaces(ctx context.Context, store *clientDB) ([]workspaceItem, er
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return readEntValue(ctx, store, func(root EntReadRoot) ([]workspaceItem, error) {
-		var rows []struct {
-			WorkspacePath string `json:"workspace_path,omitempty"`
-			Enabled       int64  `json:"enabled,omitempty"`
-			MaxBytes      int64  `json:"max_bytes,omitempty"`
-			CreatedAtUnix int64  `json:"created_at_unix,omitempty"`
-		}
-		err := root.BizWorkspaces.Query().
-			Order(bizworkspaces.ByWorkspacePath()).
-			Select(
-				bizworkspaces.FieldWorkspacePath,
-				bizworkspaces.FieldEnabled,
-				bizworkspaces.FieldMaxBytes,
-				bizworkspaces.FieldCreatedAtUnix,
-			).
-			Scan(ctx, &rows)
-		if err != nil {
-			return nil, err
-		}
-		out := make([]workspaceItem, 0, len(rows))
-		for _, row := range rows {
-			out = append(out, workspaceItem{
-				WorkspacePath: row.WorkspacePath,
-				Enabled:       row.Enabled != 0,
-				MaxBytes:      uint64(row.MaxBytes),
-				CreatedAtUnix: row.CreatedAtUnix,
-			})
-		}
-		return out, nil
-	})
+	rows, err := store.ListWorkspaces(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]workspaceItem, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, workspaceItem{
+			WorkspacePath: row.WorkspacePath,
+			MaxBytes:      row.MaxBytes,
+			Enabled:       row.Enabled,
+			CreatedAtUnix: row.CreatedAtUnix,
+		})
+	}
+	return out, nil
 }
 
 func dbAddWorkspace(ctx context.Context, store *clientDB, absPath string, maxBytes uint64) (workspaceItem, error) {
@@ -95,31 +74,16 @@ func dbAddWorkspace(ctx context.Context, store *clientDB, absPath string, maxByt
 	if err != nil {
 		return workspaceItem{}, err
 	}
-	now := time.Now().Unix()
-	return writeEntValue(ctx, store, func(tx EntWriteRoot) (workspaceItem, error) {
-		if _, err := dbLoadWorkspaceByPathTx(ctx, tx, absPath); err != nil {
-			if err != sql.ErrNoRows {
-				return workspaceItem{}, err
-			}
-			if _, err := tx.BizWorkspaces.Create().
-				SetWorkspacePath(absPath).
-				SetMaxBytes(int64(maxBytes)).
-				SetEnabled(1).
-				SetCreatedAtUnix(now).
-				Save(ctx); err != nil {
-				return workspaceItem{}, err
-			}
-			return dbLoadWorkspaceByPathTx(ctx, tx, absPath)
-		}
-		if _, err := tx.BizWorkspaces.Update().
-			Where(bizworkspaces.WorkspacePathEQ(absPath)).
-			SetMaxBytes(int64(maxBytes)).
-			SetEnabled(1).
-			Save(ctx); err != nil {
-			return workspaceItem{}, err
-		}
-		return dbLoadWorkspaceByPathTx(ctx, tx, absPath)
-	})
+	row, err := store.UpsertWorkspace(ctx, absPath, maxBytes, true)
+	if err != nil {
+		return workspaceItem{}, err
+	}
+	return workspaceItem{
+		WorkspacePath: row.WorkspacePath,
+		MaxBytes:      row.MaxBytes,
+		Enabled:       row.Enabled,
+		CreatedAtUnix: row.CreatedAtUnix,
+	}, nil
 }
 
 func dbDeleteWorkspaceByPath(ctx context.Context, store *clientDB, workspacePath string) error {
@@ -130,22 +94,7 @@ func dbDeleteWorkspaceByPath(ctx context.Context, store *clientDB, workspacePath
 	if err != nil {
 		return err
 	}
-	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-		cur, err := dbLoadWorkspaceByPathTx(ctx, tx, workspacePath)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return fmt.Errorf("workspace not found")
-			}
-			return err
-		}
-		if _, err := tx.BizWorkspaceFiles.Delete().Where(bizworkspacefiles.WorkspacePathEQ(cur.WorkspacePath)).Exec(ctx); err != nil {
-			return err
-		}
-		if _, err := tx.BizWorkspaces.Delete().Where(bizworkspaces.WorkspacePathEQ(cur.WorkspacePath)).Exec(ctx); err != nil {
-			return err
-		}
-		return nil
-	})
+	return store.DeleteWorkspace(ctx, workspacePath)
 }
 
 func dbUpdateWorkspaceByPath(ctx context.Context, store *clientDB, workspacePath string, maxBytes *uint64, enabled *bool) (workspaceItem, error) {
@@ -156,31 +105,16 @@ func dbUpdateWorkspaceByPath(ctx context.Context, store *clientDB, workspacePath
 	if err != nil {
 		return workspaceItem{}, err
 	}
-	return writeEntValue(ctx, store, func(tx EntWriteRoot) (workspaceItem, error) {
-		cur, err := dbLoadWorkspaceByPathTx(ctx, tx, workspacePath)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return workspaceItem{}, fmt.Errorf("workspace not found")
-			}
-			return workspaceItem{}, err
-		}
-		nextMaxBytes := cur.MaxBytes
-		if maxBytes != nil {
-			nextMaxBytes = *maxBytes
-		}
-		nextEnabled := cur.Enabled
-		if enabled != nil {
-			nextEnabled = *enabled
-		}
-		if _, err := tx.BizWorkspaces.Update().
-			Where(bizworkspaces.WorkspacePathEQ(workspacePath)).
-			SetMaxBytes(int64(nextMaxBytes)).
-			SetEnabled(boolToInt64(nextEnabled)).
-			Save(ctx); err != nil {
-			return workspaceItem{}, err
-		}
-		return dbLoadWorkspaceByPathTx(ctx, tx, workspacePath)
-	})
+	row, err := store.UpdateWorkspace(ctx, workspacePath, maxBytes, enabled)
+	if err != nil {
+		return workspaceItem{}, err
+	}
+	return workspaceItem{
+		WorkspacePath: row.WorkspacePath,
+		MaxBytes:      row.MaxBytes,
+		Enabled:       row.Enabled,
+		CreatedAtUnix: row.CreatedAtUnix,
+	}, nil
 }
 
 func dbWorkspaceUsedBytes(ctx context.Context, store *clientDB, rootPath string) (uint64, error) {
@@ -213,249 +147,167 @@ func dbListLiveCacheFiles(ctx context.Context, store *clientDB) ([]workspaceFile
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return readEntValue(ctx, store, func(root EntReadRoot) ([]workspaceFileRow, error) {
-		rows, err := root.BizWorkspaceFiles.Query().Order(bizworkspacefiles.ByWorkspacePath(), bizworkspacefiles.ByFilePath()).All(ctx)
-		if err != nil {
-			return nil, err
-		}
-		out := make([]workspaceFileRow, 0, len(rows))
-		for _, row := range rows {
-			out = append(out, workspaceFileRow{
-				WorkspacePath: row.WorkspacePath,
-				FilePath:      row.FilePath,
-				SeedHash:      row.SeedHash,
-				SeedLocked:    row.SeedLocked != 0,
-			})
-		}
-		return out, nil
-	})
+	page, err := store.ListWorkspaceFiles(ctx, -1, 0, "")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]workspaceFileRow, 0, len(page.Items))
+	for _, row := range page.Items {
+		out = append(out, workspaceFileRow{
+			WorkspacePath: row.WorkspacePath,
+			FilePath:      row.FilePath,
+			SeedHash:      row.SeedHash,
+			SeedLocked:    row.SeedLocked,
+		})
+	}
+	return out, nil
 }
 
 func dbDeleteLiveStreamCacheRows(ctx context.Context, store *clientDB, streamID string) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	like := "live/" + strings.ToLower(strings.TrimSpace(streamID)) + "/%"
-	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-		_, err := tx.BizWorkspaceFiles.Delete().Where(bizworkspacefiles.FilePathHasPrefix(strings.TrimSuffix(like, "%"))).Exec(ctx)
+	streamID = strings.ToLower(strings.TrimSpace(streamID))
+	if streamID == "" {
+		return nil
+	}
+	rows, err := store.ListWorkspaceFiles(ctx, -1, 0, "live/"+streamID+"/")
+	if err != nil {
 		return err
-	})
+	}
+	for _, row := range rows.Items {
+		if !strings.HasPrefix(strings.ToLower(row.FilePath), "live/"+streamID+"/") {
+			continue
+		}
+		if err := store.DeleteWorkspaceFile(ctx, row.WorkspacePath, row.FilePath); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func dbListWorkspaceRoots(ctx context.Context, store *clientDB) ([]string, error) {
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return readEntValue(ctx, store, func(root EntReadRoot) ([]string, error) {
-		var rows []struct {
-			WorkspacePath string `json:"workspace_path,omitempty"`
-		}
-		err := root.BizWorkspaces.Query().
-			Where(bizworkspaces.EnabledEQ(1)).
-			Order(bizworkspaces.ByWorkspacePath()).
-			Select(bizworkspaces.FieldWorkspacePath).
-			Scan(ctx, &rows)
-		if err != nil {
-			return nil, err
-		}
-		out := make([]string, 0, len(rows))
-		for _, row := range rows {
-			if root, err := normalizeWorkspacePath(row.WorkspacePath); err == nil && root != "" {
-				out = append(out, root)
-			}
-		}
-		return out, nil
-	})
+	return store.ListWorkspaceRoots(ctx)
 }
 
-func dbListWorkspaceRootsTx(ctx context.Context, tx EntWriteRoot) ([]string, error) {
-	if tx == nil {
-		return nil, fmt.Errorf("tx is nil")
-	}
-	var rows []struct {
-		WorkspacePath string `json:"workspace_path,omitempty"`
-	}
-	err := tx.BizWorkspaces.Query().
-		Where(bizworkspaces.EnabledEQ(1)).
-		Order(bizworkspaces.ByWorkspacePath()).
-		Select(bizworkspaces.FieldWorkspacePath).
-		Scan(ctx, &rows)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(rows))
-	for _, row := range rows {
-		if root, err := normalizeWorkspacePath(row.WorkspacePath); err == nil && root != "" {
-			out = append(out, root)
-		}
-	}
-	return out, nil
+func dbListWorkspaceRootsTx(ctx context.Context, store *clientDB) ([]string, error) {
+	return dbListWorkspaceRoots(ctx, store)
 }
 
 func dbListWorkspaceFiles(ctx context.Context, store *clientDB, limit int, offset int, pathLike string) (workspaceFilesPage, error) {
 	if store == nil {
 		return workspaceFilesPage{}, fmt.Errorf("client db is nil")
 	}
-	return readEntValue(ctx, store, func(root EntReadRoot) (workspaceFilesPage, error) {
-		query := root.BizWorkspaceFiles.Query()
-		if pathLike != "" {
-			query = query.Where(bizworkspacefiles.Or(
-				bizworkspacefiles.WorkspacePathContains(pathLike),
-				bizworkspacefiles.FilePathContains(pathLike),
-			))
-		}
-		var out workspaceFilesPage
-		var err error
-		out.Total, err = query.Clone().Count(ctx)
-		if err != nil {
-			return workspaceFilesPage{}, err
-		}
-		rows, err := query.Clone().Order(bizworkspacefiles.ByWorkspacePath(), bizworkspacefiles.ByFilePath()).Limit(limit).Offset(offset).All(ctx)
-		if err != nil {
-			return workspaceFilesPage{}, err
-		}
-		out.Items = make([]workspaceFileItem, 0, len(rows))
-		for _, row := range rows {
-			out.Items = append(out.Items, workspaceFileItem{
-				WorkspacePath: row.WorkspacePath,
-				FilePath:      row.FilePath,
-				SeedHash:      row.SeedHash,
-				SeedLocked:    row.SeedLocked != 0,
-			})
-		}
-		return out, nil
-	})
+	page, err := store.ListWorkspaceFiles(ctx, limit, offset, pathLike)
+	if err != nil {
+		return workspaceFilesPage{}, err
+	}
+	out := workspaceFilesPage{Total: page.Total, Items: make([]workspaceFileItem, 0, len(page.Items))}
+	for _, row := range page.Items {
+		out.Items = append(out.Items, workspaceFileItem{
+			WorkspacePath: row.WorkspacePath,
+			FilePath:      row.FilePath,
+			SeedHash:      row.SeedHash,
+			SeedLocked:    row.SeedLocked,
+		})
+	}
+	return out, nil
 }
 
 func dbListWorkspaceSeeds(ctx context.Context, store *clientDB, limit int, offset int, seedHash string, seedHashLike string) (workspaceSeedsPage, error) {
 	if store == nil {
 		return workspaceSeedsPage{}, fmt.Errorf("client db is nil")
 	}
-	return readEntValue(ctx, store, func(root EntReadRoot) (workspaceSeedsPage, error) {
-		var out workspaceSeedsPage
-		q := root.BizSeeds.Query()
-		switch {
-		case seedHash != "":
-			q = q.Where(bizseeds.SeedHashEQ(normalizeSeedHashHex(seedHash)))
-		case seedHashLike != "":
-			q = q.Where(bizseeds.SeedHashContains(strings.ToLower(strings.TrimSpace(seedHashLike))))
+	page, err := store.ListWorkspaceFiles(ctx, -1, 0, "")
+	if err != nil {
+		return workspaceSeedsPage{}, err
+	}
+	seedSet := make(map[string]struct{}, len(page.Items))
+	for _, row := range page.Items {
+		seed := normalizeSeedHashHex(row.SeedHash)
+		if seed == "" {
+			continue
 		}
-		total, err := q.Clone().Count(ctx)
+		seedSet[seed] = struct{}{}
+	}
+	hashes := make([]string, 0, len(seedSet))
+	for h := range seedSet {
+		if seedHash != "" && h != normalizeSeedHashHex(seedHash) {
+			continue
+		}
+		if seedHashLike != "" && !strings.Contains(strings.ToLower(h), strings.ToLower(strings.TrimSpace(seedHashLike))) {
+			continue
+		}
+		hashes = append(hashes, h)
+	}
+	sort.Strings(hashes)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > len(hashes) {
+		offset = len(hashes)
+	}
+	hashes = hashes[offset:]
+	if limit >= 0 && limit < len(hashes) {
+		hashes = hashes[:limit]
+	}
+	out := workspaceSeedsPage{Total: len(hashes), Items: make([]workspaceSeedItem, 0, len(hashes))}
+	for _, h := range hashes {
+		record, ok, err := store.LoadSeedSnapshot(ctx, h)
 		if err != nil {
 			return workspaceSeedsPage{}, err
 		}
-		out.Total = total
-		rows, err := q.Clone().Order(bizseeds.BySeedHash()).Limit(limit).Offset(offset).All(ctx)
-		if err != nil {
-			return workspaceSeedsPage{}, err
+		if !ok {
+			continue
 		}
-		out.Items = make([]workspaceSeedItem, 0, len(rows))
-		for _, seed := range rows {
-			item := workspaceSeedItem{
-				SeedHash:      seed.SeedHash,
-				SeedFilePath:  seed.SeedFilePath,
-				ChunkCount:    uint32(seed.ChunkCount),
-				FileSize:      seed.FileSize,
-				PricingSource: "system",
-			}
-			policy, err := root.BizSeedPricingPolicy.Query().Where(bizseedpricingpolicy.SeedHashEQ(seed.SeedHash)).Only(ctx)
-			if err != nil {
-				if !gen.IsNotFound(err) {
-					return workspaceSeedsPage{}, err
-				}
-			} else {
-				item.FloorPriceSatPer64K = uint64(policy.FloorUnitPriceSatPer64k)
-				item.ResaleDiscountBPS = uint64(policy.ResaleDiscountBps)
-				if strings.TrimSpace(policy.PricingSource) != "" {
-					item.PricingSource = policy.PricingSource
-				}
-				item.PriceUpdatedAtUnix = policy.UpdatedAtUnix
-			}
-			out.Items = append(out.Items, item)
+		item := workspaceSeedItem{
+			SeedHash:           record.SeedHash,
+			SeedFilePath:       record.SeedFilePath,
+			ChunkCount:         record.ChunkCount,
+			FileSize:           int64(record.FileSize),
+			PricingSource:      record.PricingSource,
+			PriceUpdatedAtUnix: record.PriceUpdatedAtUnix,
 		}
-		return out, nil
-	})
+		item.FloorPriceSatPer64K = record.FloorPriceSatPer64K
+		item.ResaleDiscountBPS = record.ResaleDiscountBPS
+		out.Items = append(out.Items, item)
+	}
+	return out, nil
 }
 
-func dbLoadWorkspaceByPathTx(ctx context.Context, tx EntWriteRoot, absPath string) (workspaceItem, error) {
-	if tx == nil {
-		return workspaceItem{}, fmt.Errorf("tx is nil")
+func dbLoadWorkspaceByPathTx(ctx context.Context, store *clientDB, absPath string) (workspaceItem, error) {
+	if store == nil {
+		return workspaceItem{}, fmt.Errorf("client db is nil")
 	}
 	absPath, err := normalizeWorkspacePath(absPath)
 	if err != nil {
 		return workspaceItem{}, err
 	}
-	var rows []struct {
-		WorkspacePath string `json:"workspace_path,omitempty"`
-		Enabled       int64  `json:"enabled,omitempty"`
-		MaxBytes      int64  `json:"max_bytes,omitempty"`
-		CreatedAtUnix int64  `json:"created_at_unix,omitempty"`
-	}
-	err = tx.BizWorkspaces.Query().
-		Where(bizworkspaces.WorkspacePathEQ(absPath)).
-		Limit(1).
-		Select(
-			bizworkspaces.FieldWorkspacePath,
-			bizworkspaces.FieldEnabled,
-			bizworkspaces.FieldMaxBytes,
-			bizworkspaces.FieldCreatedAtUnix,
-		).
-		Scan(ctx, &rows)
+	rows, err := store.ListWorkspaces(ctx)
 	if err != nil {
-		if gen.IsNotFound(err) {
-			return workspaceItem{}, sql.ErrNoRows
-		}
 		return workspaceItem{}, err
 	}
-	if len(rows) == 0 {
-		return workspaceItem{}, sql.ErrNoRows
+	for _, row := range rows {
+		if row.WorkspacePath == absPath {
+			return workspaceItem{
+				WorkspacePath: row.WorkspacePath,
+				MaxBytes:      row.MaxBytes,
+				Enabled:       row.Enabled,
+				CreatedAtUnix: row.CreatedAtUnix,
+			}, nil
+		}
 	}
-	row := rows[0]
-	return workspaceItem{
-		WorkspacePath: row.WorkspacePath,
-		Enabled:       row.Enabled != 0,
-		MaxBytes:      uint64(row.MaxBytes),
-		CreatedAtUnix: row.CreatedAtUnix,
-	}, nil
+	return workspaceItem{}, fmt.Errorf("workspace not found")
 }
 
-func dbUpsertWorkspaceFileTx(ctx context.Context, tx EntWriteRoot, workspacePath string, filePath string, seedHash string, lockedValue int64) error {
-	if tx == nil {
-		return fmt.Errorf("tx is nil")
+func dbUpsertWorkspaceFileTx(ctx context.Context, store *clientDB, workspacePath string, filePath string, seedHash string, lockedValue int64) error {
+	if store == nil {
+		return fmt.Errorf("client db is nil")
 	}
-	workspacePath, err := normalizeWorkspacePath(workspacePath)
-	if err != nil {
-		return err
-	}
-	filePath, err = normalizeWorkspaceFilePath(filePath)
-	if err != nil {
-		return err
-	}
-	seedHash = normalizeSeedHashHex(seedHash)
-	if seedHash == "" {
-		return fmt.Errorf("seed_hash required")
-	}
-	row, err := tx.BizWorkspaceFiles.Query().Where(
-		bizworkspacefiles.WorkspacePathEQ(workspacePath),
-		bizworkspacefiles.FilePathEQ(filePath),
-	).Only(ctx)
-	if err != nil {
-		if !gen.IsNotFound(err) {
-			return err
-		}
-		_, err = tx.BizWorkspaceFiles.Create().
-			SetWorkspacePath(workspacePath).
-			SetFilePath(filePath).
-			SetSeedHash(seedHash).
-			SetSeedLocked(lockedValue).
-			Save(ctx)
-		return err
-	}
-	_, err = row.Update().
-		SetSeedHash(seedHash).
-		SetSeedLocked(lockedValue).
-		Save(ctx)
-	return err
+	return store.UpsertWorkspaceFile(ctx, workspacePath, filePath, seedHash, lockedValue != 0)
 }
 
 func boolToInt64(v bool) int64 {
@@ -465,7 +317,7 @@ func boolToInt64(v bool) int64 {
 	return 0
 }
 
-func policyValueOrZero[T any](policy *gen.BizSeedPricingPolicy, fn func(*gen.BizSeedPricingPolicy) T) T {
+func policyValueOrZero[T any](policy *moduleapi.SeedRecord, fn func(*moduleapi.SeedRecord) T) T {
 	var zero T
 	if policy == nil || fn == nil {
 		return zero
@@ -473,7 +325,7 @@ func policyValueOrZero[T any](policy *gen.BizSeedPricingPolicy, fn func(*gen.Biz
 	return fn(policy)
 }
 
-func policyStringOrDefault(policy *gen.BizSeedPricingPolicy, fn func(*gen.BizSeedPricingPolicy) string, fallback string) string {
+func policyStringOrDefault(policy *moduleapi.SeedRecord, fn func(*moduleapi.SeedRecord) string, fallback string) string {
 	if policy == nil || fn == nil {
 		return fallback
 	}
