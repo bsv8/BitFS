@@ -2,7 +2,6 @@ package managedclient
 
 import (
 	"context"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -25,6 +24,7 @@ import (
 	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 	"github.com/bsv8/WOCProxy/pkg/wocproxy"
 	crypto "github.com/libp2p/go-libp2p/core/crypto"
@@ -1763,28 +1763,22 @@ func (d *managedDaemon) prepareSystemHomepage() error {
 	return nil
 }
 
-func (d *managedDaemon) systemHomepageBootstrapHook() func(ctx context.Context, store clientapp.ClientStore) error {
+func (d *managedDaemon) systemHomepageBootstrapHook() func(ctx context.Context, store moduleapi.SeedStore) error {
 	if d == nil || d.systemHomepage == nil {
 		return nil
 	}
 	resaleDiscountBPS := d.cfg.Seller.Pricing.ResaleDiscountBPS
-	return func(ctx context.Context, store clientapp.ClientStore) error {
+	return func(ctx context.Context, store moduleapi.SeedStore) error {
 		if ctx == nil {
 			return fmt.Errorf("ctx is required")
 		}
 		if store == nil {
 			return fmt.Errorf("runtime db not ready for system homepage bootstrap")
 		}
-		return store.Do(ctx, func(db clientapp.SQLConn) error {
-			rawDB, ok := db.(*sql.DB)
-			if !ok {
-				return fmt.Errorf("runtime db must be *sql.DB")
-			}
-			if err := d.systemHomepage.ApplySeedMetadata(rawDB); err != nil {
-				return err
-			}
-			return d.systemHomepage.EnsureSeedPrices(rawDB, resaleDiscountBPS)
-		})
+		if err := d.systemHomepage.ApplySeedMetadata(ctx, store); err != nil {
+			return err
+		}
+		return d.systemHomepage.EnsureSeedPrices(ctx, store, resaleDiscountBPS)
 	}
 }
 

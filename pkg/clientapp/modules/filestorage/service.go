@@ -43,9 +43,9 @@ func (s *service) syncAll(ctx context.Context) error {
 	if s == nil || s.host == nil {
 		return fmt.Errorf("file storage service is not ready")
 	}
-	store := s.host.Store()
+	store := s.host.WorkspaceStore()
 	if store == nil {
-		return fmt.Errorf("store is required")
+		return fmt.Errorf("workspace store is required")
 	}
 	if s.seed == nil {
 		return fmt.Errorf("seed storage is required")
@@ -115,9 +115,9 @@ func (s *service) syncDir(ctx context.Context, dir string) error {
 	if absDir == "" {
 		return s.syncAll(ctx)
 	}
-	store := s.host.Store()
+	store := s.host.WorkspaceStore()
 	if store == nil {
-		return fmt.Errorf("store is required")
+		return fmt.Errorf("workspace store is required")
 	}
 	roots, err := dbListWorkspaceRoots(ctx, store)
 	if err != nil {
@@ -155,9 +155,9 @@ func (s *service) updateFileIfStable(ctx context.Context, path string) error {
 	if s == nil || s.host == nil {
 		return fmt.Errorf("file storage service is not ready")
 	}
-	store := s.host.Store()
+	store := s.host.WorkspaceStore()
 	if store == nil {
-		return fmt.Errorf("store is required")
+		return fmt.Errorf("workspace store is required")
 	}
 	abs := filepath.Clean(strings.TrimSpace(path))
 	if abs == "" {
@@ -182,18 +182,16 @@ func (s *service) updateFileIfStable(ctx context.Context, path string) error {
 	if !ok {
 		return nil
 	}
-	return store.WriteTx(ctx, func(tx moduleapi.WriteTx) error {
-		return dbUpsertWorkspaceFileTx(ctx, tx, root, rel, seedRec.SeedHash, false)
-	})
+	return store.UpsertWorkspaceFile(ctx, root, rel, seedRec.SeedHash, false)
 }
 
 func (s *service) deleteFile(ctx context.Context, path string) error {
 	if s == nil || s.host == nil {
 		return fmt.Errorf("file storage service is not ready")
 	}
-	store := s.host.Store()
+	store := s.host.WorkspaceStore()
 	if store == nil {
-		return fmt.Errorf("store is required")
+		return fmt.Errorf("workspace store is required")
 	}
 	abs := filepath.Clean(strings.TrimSpace(path))
 	if abs == "" {
@@ -203,9 +201,7 @@ func (s *service) deleteFile(ctx context.Context, path string) error {
 	if !ok {
 		return nil
 	}
-	if err := store.WriteTx(ctx, func(tx moduleapi.WriteTx) error {
-		return dbDeleteWorkspaceFileTx(ctx, tx, root, rel)
-	}); err != nil {
+	if err := store.DeleteWorkspaceFile(ctx, root, rel); err != nil {
 		return err
 	}
 	return s.seed.CleanupOrphanSeeds(ctx)
@@ -215,9 +211,9 @@ func (s *service) registerDownloadedFile(ctx context.Context, absPath string, se
 	if s == nil || s.host == nil {
 		return fmt.Errorf("file storage service is not ready")
 	}
-	store := s.host.Store()
+	store := s.host.WorkspaceStore()
 	if store == nil {
-		return fmt.Errorf("store is required")
+		return fmt.Errorf("workspace store is required")
 	}
 	absPath = filepath.Clean(strings.TrimSpace(absPath))
 	if absPath == "" {
@@ -231,58 +227,54 @@ func (s *service) registerDownloadedFile(ctx context.Context, absPath string, se
 	if !ok {
 		return fmt.Errorf("output path is outside registered biz_workspaces")
 	}
-	if err := store.WriteTx(ctx, func(tx moduleapi.WriteTx) error {
-		return dbUpsertWorkspaceFileTx(ctx, tx, relRoot, relPath, seedHash, seedLocked)
-	}); err != nil {
+	if err := store.UpsertWorkspaceFile(ctx, relRoot, relPath, seedHash, seedLocked); err != nil {
 		return err
 	}
 	return nil
 }
 
 func (s *service) ensureWorkspace(ctx context.Context, path string, maxBytes uint64) error {
-	_, err := dbUpsertWorkspace(ctx, s.host.Store(), path, maxBytes, true)
+	_, err := dbUpsertWorkspace(ctx, s.host.WorkspaceStore(), path, maxBytes, true)
 	return err
 }
 
 func (s *service) deleteWorkspace(ctx context.Context, path string) error {
-	return dbDeleteWorkspace(ctx, s.host.Store(), path)
+	return dbDeleteWorkspace(ctx, s.host.WorkspaceStore(), path)
 }
 
 func (s *service) updateWorkspace(ctx context.Context, path string, maxBytes *uint64, enabled *bool) error {
-	_, err := dbUpdateWorkspace(ctx, s.host.Store(), path, maxBytes, enabled)
+	_, err := dbUpdateWorkspace(ctx, s.host.WorkspaceStore(), path, maxBytes, enabled)
 	return err
 }
 
 func (s *service) listWorkspaces(ctx context.Context) ([]workspaceItem, error) {
-	return dbListWorkspaces(ctx, s.host.Store())
+	return dbListWorkspaces(ctx, s.host.WorkspaceStore())
 }
 
-func cleanupMissingWorkspaceFiles(ctx context.Context, store moduleapi.Store, roots []string, seen map[string]struct{}, absDir string) error {
+func cleanupMissingWorkspaceFiles(ctx context.Context, store moduleapi.WorkspaceStore, roots []string, seen map[string]struct{}, absDir string) error {
 	files, _, err := dbListWorkspaceFiles(ctx, store, -1, 0, "")
 	if err != nil {
 		return err
 	}
-	return store.WriteTx(ctx, func(tx moduleapi.WriteTx) error {
-		for _, row := range files {
-			abs := filepath.Clean(filepath.Join(row.WorkspacePath, filepath.FromSlash(row.FilePath)))
-			if absDir != "" {
-				if rel, err := filepath.Rel(absDir, abs); err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-					continue
-				}
-			}
-			key := filepath.Clean(row.WorkspacePath) + "\x00" + filepath.ToSlash(filepath.Clean(row.FilePath))
-			if _, ok := seen[key]; ok {
+	for _, row := range files {
+		abs := filepath.Clean(filepath.Join(row.WorkspacePath, filepath.FromSlash(row.FilePath)))
+		if absDir != "" {
+			if rel, err := filepath.Rel(absDir, abs); err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 				continue
 			}
-			if err := dbDeleteWorkspaceFileTx(ctx, tx, row.WorkspacePath, row.FilePath); err != nil {
-				return err
-			}
 		}
-		return nil
-	})
+		key := filepath.Clean(row.WorkspacePath) + "\x00" + filepath.ToSlash(filepath.Clean(row.FilePath))
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		if err := store.DeleteWorkspaceFile(ctx, row.WorkspacePath, row.FilePath); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func mustWorkspaceRoots(ctx context.Context, store moduleapi.Store) []string {
+func mustWorkspaceRoots(ctx context.Context, store moduleapi.WorkspaceStore) []string {
 	roots, _ := dbListWorkspaceRoots(ctx, store)
 	return roots
 }

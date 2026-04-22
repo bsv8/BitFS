@@ -1,7 +1,7 @@
 package managedclient
 
 import (
-	"database/sql"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 )
 
 const systemHomepageFloorPriceSatPer64K uint64 = 1
@@ -152,62 +153,49 @@ func (s *systemHomepageState) InstallIntoWorkspace() error {
 	return nil
 }
 
-func (s *systemHomepageState) EnsureSeedPrices(db *sql.DB, resaleDiscountBPS uint64) error {
-	if s == nil || db == nil {
+func (s *systemHomepageState) EnsureSeedPrices(ctx context.Context, store moduleapi.SeedStore, resaleDiscountBPS uint64) error {
+	if s == nil || store == nil {
 		return nil
 	}
 	for _, seedHash := range s.SeedHashes {
-		var seedPath string
-		if err := db.QueryRow(`SELECT seed_file_path FROM biz_seeds WHERE seed_hash=?`, seedHash).Scan(&seedPath); err != nil {
-			if err == sql.ErrNoRows {
-				return fmt.Errorf("system homepage seed not found after workspace sync: %s", seedHash)
-			}
+		seed, ok, err := store.LoadSeedSnapshot(ctx, seedHash)
+		if err != nil {
 			return err
 		}
-		var existingFloor sql.NullInt64
-		if err := db.QueryRow(`SELECT floor_unit_price_sat_per_64k FROM biz_seed_pricing_policy WHERE seed_hash=?`, seedHash).Scan(&existingFloor); err != nil && err != sql.ErrNoRows {
-			return err
+		if !ok {
+			return fmt.Errorf("system homepage seed not found after workspace sync: %s", seedHash)
 		}
-		// 设计说明：
-		// - 系统首页需要一个极低的默认售价，便于客户端开箱即用地分享首页资源；
-		// - 但如果用户后来已经手动设置过价格，这里不再覆盖，避免每次启动偷偷改回去。
-		if existingFloor.Valid && existingFloor.Int64 > 0 {
+		if seed.FloorPriceSatPer64K > 0 {
 			continue
 		}
-		if _, _, err := upsertSystemHomepageSeedPricingPolicy(db, seedHash, systemHomepageFloorPriceSatPer64K, resaleDiscountBPS, seedPath); err != nil {
+		if err := store.UpsertSeedPricingPolicy(ctx, seed.SeedHash, systemHomepageFloorPriceSatPer64K, resaleDiscountBPS, "system", time.Now().Unix()); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *systemHomepageState) ApplySeedMetadata(db *sql.DB) error {
-	if s == nil || db == nil {
+func (s *systemHomepageState) ApplySeedMetadata(ctx context.Context, store moduleapi.SeedStore) error {
+	if s == nil || store == nil {
 		return nil
 	}
 	for _, seedHash := range s.SeedHashes {
 		meta := s.FileMetaBySeed[seedHash]
-		normalizedSeedHash := normalizeSeedHashHex(seedHash)
-		if _, err := db.Exec(
-			`UPDATE biz_seeds
-			    SET recommended_file_name=CASE
-			          WHEN TRIM(COALESCE(recommended_file_name,''))='' THEN ?
-			          WHEN LOWER(TRIM(COALESCE(recommended_file_name,'')))=LOWER(?) THEN ?
-			          ELSE recommended_file_name
-			        END,
-			        mime_hint=CASE
-			          WHEN TRIM(COALESCE(mime_hint,''))='' THEN ?
-			          WHEN LOWER(TRIM(COALESCE(mime_hint,'')))='application/octet-stream' THEN ?
-			          ELSE mime_hint
-			        END
-			  WHERE seed_hash=?`,
-			meta.OriginalName,
-			normalizedSeedHash,
-			meta.OriginalName,
-			meta.MIME,
-			meta.MIME,
-			seedHash,
-		); err != nil {
+		snap, ok, err := store.LoadSeedSnapshot(ctx, seedHash)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			continue
+		}
+		updated := snap
+		if strings.TrimSpace(updated.RecommendedFileName) == "" || strings.EqualFold(strings.TrimSpace(updated.RecommendedFileName), normalizeSeedHashHex(seedHash)) {
+			updated.RecommendedFileName = meta.OriginalName
+		}
+		if strings.TrimSpace(updated.MimeHint) == "" || strings.EqualFold(strings.TrimSpace(updated.MimeHint), "application/octet-stream") {
+			updated.MimeHint = meta.MIME
+		}
+		if err := store.UpsertSeedRecord(ctx, updated); err != nil {
 			return err
 		}
 	}
@@ -261,64 +249,10 @@ func sanitizeHomepageFileName(name string) string {
 		return ""
 	}
 	name = filepath.Base(name)
-	if name == "." || name == string(filepath.Separator) {
-		return ""
-	}
+	name = strings.ReplaceAll(name, "\x00", "")
 	return name
 }
 
 func sanitizeHomepageMIMEHint(raw string) string {
-	value := strings.TrimSpace(strings.ToLower(raw))
-	if value == "" {
-		return ""
-	}
-	if !strings.Contains(value, "/") {
-		return ""
-	}
-	return value
-}
-
-func upsertSystemHomepageSeedPricingPolicy(db *sql.DB, seedHash string, floorUnit, discountBPS uint64, seedPath string) (uint64, uint64, error) {
-	if db == nil {
-		return 0, 0, fmt.Errorf("db is nil")
-	}
-	seedHash = normalizeSeedHashHex(seedHash)
-	if seedHash == "" {
-		return 0, 0, fmt.Errorf("invalid seed hash")
-	}
-	var chunkCount uint64
-	if err := db.QueryRow(`SELECT chunk_count FROM biz_seeds WHERE seed_hash=?`, seedHash).Scan(&chunkCount); err != nil {
-		return 0, 0, err
-	}
-	if chunkCount == 0 {
-		if strings.TrimSpace(seedPath) == "" {
-			return 0, 0, fmt.Errorf("seed path is empty")
-		}
-		stat, err := os.Stat(seedPath)
-		if err != nil {
-			return 0, 0, err
-		}
-		size := uint64(stat.Size())
-		if size == 0 {
-			chunkCount = 1
-		} else {
-			chunkCount = (size + seedBlockSizeBytes - 1) / seedBlockSizeBytes
-		}
-	}
-	unitPrice := floorUnit
-	now := time.Now().Unix()
-	if _, err := db.Exec(
-		`INSERT INTO biz_seed_pricing_policy(seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix)
-		 VALUES(?,?,?,?,?)
-		 ON CONFLICT(seed_hash) DO UPDATE SET
-		   floor_unit_price_sat_per_64k=excluded.floor_unit_price_sat_per_64k,
-		   resale_discount_bps=excluded.resale_discount_bps,
-		   pricing_source=excluded.pricing_source,
-		   updated_at_unix=excluded.updated_at_unix
-		 WHERE COALESCE(biz_seed_pricing_policy.pricing_source,'')!='user'`,
-		seedHash, floorUnit, discountBPS, "system", now,
-	); err != nil {
-		return 0, 0, err
-	}
-	return unitPrice, chunkCount, nil
+	return strings.TrimSpace(raw)
 }

@@ -2,6 +2,7 @@ package clientapp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -103,22 +104,22 @@ func (r *Runtime) loadPricingStateForSeed(ctx context.Context, seedHash string) 
 	return pricingStateSeedSnapshot(seed, base), true, nil
 }
 
-func loadPricingStateForSeedOnConn(ctx context.Context, conn SQLConn, seedHash string, base uint64, nowUnix int64) (PricingState, bool, error) {
-	if conn == nil {
-		return PricingState{}, false, fmt.Errorf("sql conn is nil")
+func loadPricingStateForSeedOnWriteRoot(ctx context.Context, root EntWriteRoot, seedHash string, base uint64, nowUnix int64) (PricingState, bool, error) {
+	if root == nil {
+		return PricingState{}, false, fmt.Errorf("root is nil")
 	}
 	seedHash = strings.ToLower(strings.TrimSpace(seedHash))
 	if seedHash == "" {
 		return PricingState{}, false, fmt.Errorf("seed_hash is required")
 	}
-	state, ok, err := dbLoadPricingAutopilotStateOnConn(ctx, conn, seedHash)
+	state, ok, err := dbLoadPricingAutopilotStateOnWriteRoot(ctx, root, seedHash)
 	if err != nil {
 		return PricingState{}, false, err
 	}
 	if ok {
 		return pricingNormalizeStateForBase(state, base, nowUnix), true, nil
 	}
-	seed, ok, err := dbLoadSellerSeedSnapshotOnConn(ctx, conn, seedHash)
+	seed, ok, err := dbLoadSellerSeedSnapshotOnWriteRoot(ctx, root, seedHash)
 	if err != nil {
 		return PricingState{}, false, err
 	}
@@ -205,16 +206,20 @@ func TriggerPricingSetBase(ctx context.Context, rt *Runtime, base uint64) (Prici
 		}
 	}
 	now := time.Now()
-	if err := store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
-		seedHashes, err := dbListAllPricingSeedHashesOnConn(ctx, wtx)
+	if err := store.WriteEntTx(ctx, func(wtx EntWriteRoot) error {
+		seedHashes, err := dbListAllPricingSeedHashesOnWriteRoot(ctx, wtx)
 		if err != nil {
 			return err
 		}
-		if err := dbUpsertPricingAutopilotConfigOnConn(ctx, wtx, PricingConfig{BasePriceSatPer64K: base}, now.Unix()); err != nil {
+		cfgPayload, err := json.Marshal(PricingConfig{BasePriceSatPer64K: base})
+		if err != nil {
+			return err
+		}
+		if err := dbUpsertPricingAutopilotConfigOnRoot(ctx, wtx, PricingConfig{BasePriceSatPer64K: base}, now.Unix(), string(cfgPayload)); err != nil {
 			return err
 		}
 		for _, seedHash := range seedHashes {
-			state, ok, err := loadPricingStateForSeedOnConn(ctx, wtx, seedHash, base, now.Unix())
+			state, ok, err := loadPricingStateForSeedOnWriteRoot(ctx, wtx, seedHash, base, now.Unix())
 			if err != nil {
 				return err
 			}
@@ -222,7 +227,11 @@ func TriggerPricingSetBase(ctx context.Context, rt *Runtime, base uint64) (Prici
 				continue
 			}
 			nextState := pricingAutopilotSetBaseState(state, base, now)
-			if err := dbUpsertPricingAutopilotStateOnConn(ctx, wtx, nextState, now.Unix()); err != nil {
+			statePayload, err := json.Marshal(nextState)
+			if err != nil {
+				return err
+			}
+			if err := dbUpsertPricingAutopilotStateOnRoot(ctx, wtx, nextState, now.Unix(), string(statePayload)); err != nil {
 				return err
 			}
 		}

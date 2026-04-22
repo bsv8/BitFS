@@ -159,7 +159,7 @@ func (d *clientDB) Do(ctx context.Context, fn func(SQLConn) error) error {
 	})
 }
 
-// WriteEntTx 先进入 writer 队列，再把当前事务包成只暴露实体 client 的壳。
+// WriteEntTx 先进入 writer 队列，再把当前事务包成只暴露实体壳。
 func (d *clientDB) WriteEntTx(ctx context.Context, fn func(EntWriteRoot) error) error {
 	if d == nil {
 		return fmt.Errorf("client db is nil")

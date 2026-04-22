@@ -6,6 +6,20 @@ import (
 	"strings"
 )
 
+func normalizeSeedHashHex(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	if len(s) != 64 {
+		return ""
+	}
+	for _, ch := range s {
+		if (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') {
+			continue
+		}
+		return ""
+	}
+	return s
+}
+
 func normalizeRootPath(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

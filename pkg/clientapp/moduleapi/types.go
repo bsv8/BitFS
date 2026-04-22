@@ -69,6 +69,51 @@ type Store interface {
 	WriteTx(ctx context.Context, fn func(WriteTx) error) error
 }
 
+// SeedStore 是种子业务需要的最小持久化能力。
+type SeedStore interface {
+	LoadSeedSnapshot(context.Context, string) (SeedRecord, bool, error)
+	UpsertSeedRecord(context.Context, SeedRecord) error
+	UpsertSeedPricingPolicy(context.Context, string, uint64, uint64, string, int64) error
+	ReplaceSeedChunkSupply(context.Context, string, []uint32) error
+	DeleteSeedRecords(context.Context, []string) error
+	CleanupOrphanSeeds(context.Context) error
+}
+
+// WorkspaceItem 是工作区的单条业务记录。
+type WorkspaceItem struct {
+	WorkspacePath string `json:"workspace_path"`
+	MaxBytes      uint64 `json:"max_bytes"`
+	Enabled       bool   `json:"enabled"`
+	CreatedAtUnix int64  `json:"created_at_unix"`
+}
+
+// WorkspaceFileItem 是工作区文件的单条业务记录。
+type WorkspaceFileItem struct {
+	WorkspacePath string `json:"workspace_path"`
+	FilePath      string `json:"file_path"`
+	SeedHash      string `json:"seed_hash"`
+	SeedLocked    bool   `json:"seed_locked"`
+}
+
+// WorkspaceFilesPage 是工作区文件列表返回壳。
+type WorkspaceFilesPage struct {
+	Total int
+	Items []WorkspaceFileItem
+}
+
+// WorkspaceStore 是文件存储业务需要的最小持久化能力。
+type WorkspaceStore interface {
+	ListWorkspaces(context.Context) ([]WorkspaceItem, error)
+	UpsertWorkspace(context.Context, string, uint64, bool) (WorkspaceItem, error)
+	DeleteWorkspace(context.Context, string) error
+	UpdateWorkspace(context.Context, string, *uint64, *bool) (WorkspaceItem, error)
+	ListWorkspaceFiles(context.Context, int, int, string) (WorkspaceFilesPage, error)
+	UpsertWorkspaceFile(context.Context, string, string, string, bool) error
+	DeleteWorkspaceFile(context.Context, string, string) error
+	ListWorkspaceRoots(context.Context) ([]string, error)
+	GetWorkspaceFileSeedHashByAbsPath(context.Context, string) (string, error)
+}
+
 // HTTPHandler 是模块注册 HTTP 路由时的处理函数。
 type HTTPHandler func(http.ResponseWriter, *http.Request)
 
@@ -208,6 +253,8 @@ type Installer func(context.Context, Host) (func(), error)
 // - 注册和执行分开，避免模块直接摸主干内部结构。
 type Host interface {
 	Store() Store
+	SeedStore() SeedStore
+	WorkspaceStore() WorkspaceStore
 	ConfigPath() string
 	NodePubkeyHex() string
 	ClientPubkeyHex() string

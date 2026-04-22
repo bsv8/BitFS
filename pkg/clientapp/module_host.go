@@ -94,6 +94,32 @@ func (h *moduleHost) SeedStorage() moduleapi.SeedStorage {
 	return h.seed
 }
 
+func (h *moduleHost) SeedStore() moduleapi.SeedStore {
+	if h == nil {
+		return nil
+	}
+	if h.rt != nil && h.rt.store != nil {
+		return h.rt.store
+	}
+	if store, ok := h.store.(*clientDB); ok {
+		return store
+	}
+	return nil
+}
+
+func (h *moduleHost) WorkspaceStore() moduleapi.WorkspaceStore {
+	if h == nil {
+		return nil
+	}
+	if h.rt != nil && h.rt.store != nil {
+		return h.rt.store
+	}
+	if store, ok := h.store.(*clientDB); ok {
+		return store
+	}
+	return nil
+}
+
 func (h *moduleHost) FSWatchEnabled() bool {
 	if h == nil || h.rt == nil || h.rt.RuntimeConfigService() == nil {
 		return false

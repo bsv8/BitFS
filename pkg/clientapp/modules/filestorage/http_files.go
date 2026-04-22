@@ -36,7 +36,7 @@ func handleFiles(svc *service) moduleapi.HTTPHandler {
 			}
 		}
 		pathLike := strings.TrimSpace(r.URL.Query().Get("q"))
-		items, total, err := dbListWorkspaceFiles(r.Context(), svc.host.Store(), limit, offset, pathLike)
+		items, total, err := dbListWorkspaceFiles(r.Context(), svc.host.WorkspaceStore(), limit, offset, pathLike)
 		if err != nil {
 			writeModuleError(w, httpStatusFromErr(err), moduleapi.CodeOf(err), err.Error())
 			return
@@ -55,7 +55,7 @@ func handleSeeds(svc *service) moduleapi.HTTPHandler {
 			writeModuleError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 			return
 		}
-		items, total, err := dbListSeeds(r.Context(), svc.host.Store(), svc.host.SeedStorage(), r.URL.Query())
+		items, total, err := dbListSeeds(r.Context(), svc.host.WorkspaceStore(), svc.host.SeedStorage(), r.URL.Query())
 		if err != nil {
 			writeModuleError(w, httpStatusFromErr(err), moduleapi.CodeOf(err), err.Error())
 			return
@@ -64,58 +64,47 @@ func handleSeeds(svc *service) moduleapi.HTTPHandler {
 	}
 }
 
-func dbListSeeds(ctx context.Context, store moduleapi.Store, seedStorage moduleapi.SeedStorage, q map[string][]string) ([]map[string]any, int, error) {
+func dbListSeeds(ctx context.Context, store moduleapi.WorkspaceStore, seedStorage moduleapi.SeedStorage, q map[string][]string) ([]map[string]any, int, error) {
 	if store == nil {
-		return nil, 0, nil
+		return nil, 0, moduleapi.NewError("ENT_STORE_REQUIRED", "workspace store is required")
 	}
 	items := []map[string]any{}
 	total := 0
-	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
-		where := ``
-		args := []any{}
+	page, err := store.ListWorkspaceFiles(ctx, -1, 0, "")
+	if err != nil {
+		return nil, 0, err
+	}
+	for _, row := range page.Items {
 		if v := strings.TrimSpace(firstQueryValue(q, "seed_hash_like")); v != "" {
-			where = ` WHERE seed_hash LIKE ?`
-			args = append(args, "%"+v+"%")
+			if !strings.Contains(strings.ToLower(row.SeedHash), strings.ToLower(v)) {
+				continue
+			}
 		} else if v := strings.TrimSpace(firstQueryValue(q, "seed_hash")); v != "" {
-			where = ` WHERE seed_hash = ?`
-			args = append(args, strings.ToLower(v))
+			if strings.ToLower(row.SeedHash) != strings.ToLower(v) {
+				continue
+			}
 		}
-		rows, err := rc.QueryContext(ctx, `
-			SELECT DISTINCT seed_hash
-			  FROM biz_workspace_files`+where+`
-			 ORDER BY seed_hash ASC`, args...)
+		if seedStorage == nil {
+			continue
+		}
+		snap, ok, err := seedStorage.LoadSeedSnapshot(ctx, row.SeedHash)
 		if err != nil {
-			return err
+			return nil, 0, err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var seedHash string
-			if err := rows.Scan(&seedHash); err != nil {
-				return err
-			}
-			if seedStorage == nil {
-				continue
-			}
-			snap, ok, err := seedStorage.LoadSeedSnapshot(ctx, seedHash)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				continue
-			}
-			items = append(items, map[string]any{
-				"seed_hash":             snap.SeedHash,
-				"chunk_count":           snap.ChunkCount,
-				"file_size":             snap.FileSize,
-				"seed_file_path":        snap.SeedFilePath,
-				"recommended_file_name": snap.RecommendedFileName,
-				"mime_hint":             snap.MimeHint,
-			})
+		if !ok {
+			continue
 		}
-		total = len(items)
-		return rows.Err()
-	})
-	return items, total, err
+		items = append(items, map[string]any{
+			"seed_hash":             snap.SeedHash,
+			"chunk_count":           snap.ChunkCount,
+			"file_size":             snap.FileSize,
+			"seed_file_path":        snap.SeedFilePath,
+			"recommended_file_name": snap.RecommendedFileName,
+			"mime_hint":             snap.MimeHint,
+		})
+	}
+	total = len(items)
+	return items, total, nil
 }
 
 func firstQueryValue(q map[string][]string, key string) string {

@@ -2,7 +2,6 @@ package filestorage
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,7 +32,7 @@ func handleAdminStaticTree(svc *service) moduleapi.HTTPHandler {
 			writeModuleError(w, http.StatusBadRequest, "BAD_REQUEST", "workspace_path is required")
 			return
 		}
-		abs, rel, err := resolveStaticWorkspacePath(r.Context(), svc.host.Store(), workspacePath, r.URL.Query().Get("path"))
+		abs, rel, err := resolveStaticWorkspacePath(r.Context(), svc.host.WorkspaceStore(), workspacePath, r.URL.Query().Get("path"))
 		if err != nil {
 			writeModuleError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 			return
@@ -99,7 +98,7 @@ func handleAdminStaticMkdir(svc *service) moduleapi.HTTPHandler {
 			writeModuleError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json")
 			return
 		}
-		abs, rel, err := resolveStaticWorkspacePath(r.Context(), svc.host.Store(), req.WorkspacePath, req.Path)
+		abs, rel, err := resolveStaticWorkspacePath(r.Context(), svc.host.WorkspaceStore(), req.WorkspacePath, req.Path)
 		if err != nil {
 			writeModuleError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 			return
@@ -138,7 +137,7 @@ func handleAdminStaticUpload(svc *service) moduleapi.HTTPHandler {
 		if targetDirRaw == "" {
 			targetDirRaw = "/"
 		}
-		targetAbs, targetRel, err := resolveStaticWorkspacePath(r.Context(), svc.host.Store(), workspacePath, targetDirRaw)
+		targetAbs, targetRel, err := resolveStaticWorkspacePath(r.Context(), svc.host.WorkspaceStore(), workspacePath, targetDirRaw)
 		if err != nil {
 			writeModuleError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 			return
@@ -191,7 +190,7 @@ func handleAdminStaticUpload(svc *service) moduleapi.HTTPHandler {
 			writeModuleError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 			return
 		}
-		if err := dbUpsertWorkspaceFileByAbsPath(r.Context(), svc.host.Store(), dst, seedRec.SeedHash, false); err != nil {
+		if err := dbUpsertWorkspaceFileByAbsPath(r.Context(), svc.host.WorkspaceStore(), dst, seedRec.SeedHash, false); err != nil {
 			writeModuleError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 			return
 		}
@@ -241,7 +240,7 @@ func handleAdminStaticMove(svc *service) moduleapi.HTTPHandler {
 			writeModuleError(w, http.StatusBadRequest, "BAD_REQUEST", "workspace_path is required")
 			return
 		}
-		fromAbs, fromRel, err := resolveStaticWorkspacePath(r.Context(), svc.host.Store(), req.WorkspacePath, sourcePath)
+		fromAbs, fromRel, err := resolveStaticWorkspacePath(r.Context(), svc.host.WorkspaceStore(), req.WorkspacePath, sourcePath)
 		if err != nil {
 			writeModuleError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 			return
@@ -265,7 +264,7 @@ func handleAdminStaticMove(svc *service) moduleapi.HTTPHandler {
 			writeModuleError(w, http.StatusBadRequest, "BAD_REQUEST", "target path is required")
 			return
 		}
-		toAbs, toRel, err := resolveStaticWorkspacePath(r.Context(), svc.host.Store(), req.WorkspacePath, targetPath)
+		toAbs, toRel, err := resolveStaticWorkspacePath(r.Context(), svc.host.WorkspaceStore(), req.WorkspacePath, targetPath)
 		if err != nil {
 			writeModuleError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 			return
@@ -289,7 +288,7 @@ func handleAdminStaticMove(svc *service) moduleapi.HTTPHandler {
 					writeModuleError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 					return
 				}
-				if err := dbUpsertWorkspaceFileByAbsPath(r.Context(), svc.host.Store(), toAbs, seedRec.SeedHash, false); err != nil {
+				if err := dbUpsertWorkspaceFileByAbsPath(r.Context(), svc.host.WorkspaceStore(), toAbs, seedRec.SeedHash, false); err != nil {
 					writeModuleError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 					return
 				}
@@ -326,12 +325,12 @@ func handleAdminStaticMove(svc *service) moduleapi.HTTPHandler {
 			return
 		}
 		if fromAbs != toAbs {
-			if err := dbDeleteWorkspaceFileByAbsPath(r.Context(), svc.host.Store(), fromAbs); err != nil {
+			if err := dbDeleteWorkspaceFileByAbsPath(r.Context(), svc.host.WorkspaceStore(), fromAbs); err != nil {
 				writeModuleError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 				return
 			}
 		}
-		if err := dbUpsertWorkspaceFileByAbsPath(r.Context(), svc.host.Store(), toAbs, seedRec.SeedHash, false); err != nil {
+		if err := dbUpsertWorkspaceFileByAbsPath(r.Context(), svc.host.WorkspaceStore(), toAbs, seedRec.SeedHash, false); err != nil {
 			writeModuleError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 			return
 		}
@@ -358,7 +357,7 @@ func handleAdminStaticEntry(svc *service) moduleapi.HTTPHandler {
 			writeModuleError(w, http.StatusBadRequest, "BAD_REQUEST", "workspace_path is required")
 			return
 		}
-		abs, rel, err := resolveStaticWorkspacePath(r.Context(), svc.host.Store(), workspacePath, r.URL.Query().Get("path"))
+		abs, rel, err := resolveStaticWorkspacePath(r.Context(), svc.host.WorkspaceStore(), workspacePath, r.URL.Query().Get("path"))
 		if err != nil {
 			writeModuleError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 			return
@@ -393,7 +392,7 @@ func handleAdminStaticEntry(svc *service) moduleapi.HTTPHandler {
 				return
 			}
 		}
-		if err := deleteWorkspaceFilesByAbsPath(r.Context(), svc.host.Store(), abs); err != nil {
+		if err := deleteWorkspaceFilesByAbsPath(r.Context(), svc.host.WorkspaceStore(), abs); err != nil {
 			writeModuleError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 			return
 		}
@@ -439,7 +438,7 @@ func handleAdminStaticPriceSet(svc *service) moduleapi.HTTPHandler {
 			writeModuleError(w, http.StatusBadRequest, "BAD_REQUEST", "resale_discount_bps must be <= 10000")
 			return
 		}
-		abs, rel, err := resolveStaticWorkspacePath(r.Context(), svc.host.Store(), req.WorkspacePath, req.Path)
+		abs, rel, err := resolveStaticWorkspacePath(r.Context(), svc.host.WorkspaceStore(), req.WorkspacePath, req.Path)
 		if err != nil {
 			writeModuleError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 			return
@@ -457,7 +456,7 @@ func handleAdminStaticPriceSet(svc *service) moduleapi.HTTPHandler {
 			writeModuleError(w, http.StatusBadRequest, "BAD_REQUEST", "path is directory")
 			return
 		}
-		seedHash, err := dbGetWorkspaceFileSeedHashByAbsPath(r.Context(), svc.host.Store(), abs)
+		seedHash, err := dbGetWorkspaceFileSeedHashByAbsPath(r.Context(), svc.host.WorkspaceStore(), abs)
 		if err != nil {
 			writeModuleError(w, httpStatusFromErr(err), moduleapi.CodeOf(err), err.Error())
 			return
@@ -475,7 +474,7 @@ func handleAdminStaticPriceSet(svc *service) moduleapi.HTTPHandler {
 			writeModuleError(w, http.StatusNotFound, "NOT_FOUND", "seed snapshot not found")
 			return
 		}
-		if err := dbUpsertSeedPricingPolicy(r.Context(), svc.host.Store(), seedHash, req.FloorPriceSatPer64K, req.ResaleDiscountBPS, "user", time.Now().Unix()); err != nil {
+		if err := dbUpsertSeedPricingPolicy(r.Context(), svc.host.SeedStore(), seedHash, req.FloorPriceSatPer64K, req.ResaleDiscountBPS, "user", time.Now().Unix()); err != nil {
 			writeModuleError(w, httpStatusFromErr(err), moduleapi.CodeOf(err), err.Error())
 			return
 		}
@@ -507,12 +506,12 @@ func handleAdminStaticPriceGet(svc *service) moduleapi.HTTPHandler {
 			writeModuleError(w, http.StatusBadRequest, "BAD_REQUEST", "workspace_path is required")
 			return
 		}
-		abs, rel, err := resolveStaticWorkspacePath(r.Context(), svc.host.Store(), workspacePath, r.URL.Query().Get("path"))
+		abs, rel, err := resolveStaticWorkspacePath(r.Context(), svc.host.WorkspaceStore(), workspacePath, r.URL.Query().Get("path"))
 		if err != nil {
 			writeModuleError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 			return
 		}
-		seedHash, err := dbGetWorkspaceFileSeedHashByAbsPath(r.Context(), svc.host.Store(), abs)
+		seedHash, err := dbGetWorkspaceFileSeedHashByAbsPath(r.Context(), svc.host.WorkspaceStore(), abs)
 		if err != nil {
 			writeModuleError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 			return
@@ -593,7 +592,7 @@ func buildStaticTree(ctx context.Context, svc *service, abs string, rel string, 
 			}
 		} else {
 			node.Type = "file"
-			seedHash, err := dbGetWorkspaceFileSeedHashByAbsPath(ctx, svc.host.Store(), full)
+			seedHash, err := dbGetWorkspaceFileSeedHashByAbsPath(ctx, svc.host.WorkspaceStore(), full)
 			if err == nil && seedHash != "" && svc.seed != nil {
 				node.SeedHash = seedHash
 				if snap, ok, err := svc.seed.LoadSeedSnapshot(ctx, seedHash); err == nil && ok {
@@ -614,13 +613,13 @@ func buildStaticTree(ctx context.Context, svc *service, abs string, rel string, 
 	return out, nil
 }
 
-func resolveStaticWorkspacePath(ctx context.Context, store moduleapi.Store, workspacePath, input string) (string, string, error) {
+func resolveStaticWorkspacePath(ctx context.Context, store moduleapi.WorkspaceStore, workspacePath, input string) (string, string, error) {
 	workspacePath, err := normalizeRootPath(workspacePath)
 	if err != nil {
 		return "", "", err
 	}
 	if store == nil {
-		return "", "", fmt.Errorf("store is required")
+		return "", "", fmt.Errorf("workspace store is required")
 	}
 	roots, err := dbListWorkspaceRoots(ctx, store)
 	if err != nil {
@@ -671,36 +670,16 @@ func normalizeStaticInputPath(raw string) string {
 	return clean
 }
 
-func dbGetWorkspaceFileSeedHashByAbsPath(ctx context.Context, store moduleapi.Store, absPath string) (string, error) {
-	absPath = filepath.Clean(strings.TrimSpace(absPath))
-	if absPath == "" {
-		return "", nil
+func dbGetWorkspaceFileSeedHashByAbsPath(ctx context.Context, store moduleapi.WorkspaceStore, absPath string) (string, error) {
+	if store == nil {
+		return "", fmt.Errorf("workspace store is required")
 	}
-	roots, err := dbListWorkspaceRoots(ctx, store)
-	if err != nil {
-		return "", err
-	}
-	root, rel, ok := resolveWorkspaceRelativePath(absPath, roots)
-	if !ok {
-		return "", nil
-	}
-	var seedHash string
-	err = store.Read(ctx, func(rc moduleapi.ReadConn) error {
-		row := rc.QueryRowContext(ctx, `SELECT seed_hash FROM biz_workspace_files WHERE workspace_path=? AND file_path=?`, root, rel)
-		if err := row.Scan(&seedHash); err != nil {
-			if errorsIsNoRows(err) {
-				return nil
-			}
-			return err
-		}
-		return nil
-	})
-	return seedHash, err
+	return store.GetWorkspaceFileSeedHashByAbsPath(ctx, absPath)
 }
 
-func dbUpsertWorkspaceFileByAbsPath(ctx context.Context, store moduleapi.Store, absPath, seedHash string, locked bool) error {
+func dbUpsertWorkspaceFileByAbsPath(ctx context.Context, store moduleapi.WorkspaceStore, absPath, seedHash string, locked bool) error {
 	if store == nil {
-		return fmt.Errorf("store is required")
+		return fmt.Errorf("workspace store is required")
 	}
 	absPath = filepath.Clean(strings.TrimSpace(absPath))
 	if absPath == "" {
@@ -714,14 +693,12 @@ func dbUpsertWorkspaceFileByAbsPath(ctx context.Context, store moduleapi.Store, 
 	if !ok {
 		return fmt.Errorf("output path is outside registered biz_workspaces")
 	}
-	return store.WriteTx(ctx, func(tx moduleapi.WriteTx) error {
-		return dbUpsertWorkspaceFileTx(ctx, tx, root, rel, seedHash, locked)
-	})
+	return store.UpsertWorkspaceFile(ctx, root, rel, seedHash, locked)
 }
 
-func dbDeleteWorkspaceFileByAbsPath(ctx context.Context, store moduleapi.Store, absPath string) error {
+func dbDeleteWorkspaceFileByAbsPath(ctx context.Context, store moduleapi.WorkspaceStore, absPath string) error {
 	if store == nil {
-		return fmt.Errorf("store is required")
+		return fmt.Errorf("workspace store is required")
 	}
 	absPath = filepath.Clean(strings.TrimSpace(absPath))
 	if absPath == "" {
@@ -735,14 +712,12 @@ func dbDeleteWorkspaceFileByAbsPath(ctx context.Context, store moduleapi.Store, 
 	if !ok {
 		return nil
 	}
-	return store.WriteTx(ctx, func(tx moduleapi.WriteTx) error {
-		return dbDeleteWorkspaceFileTx(ctx, tx, root, rel)
-	})
+	return store.DeleteWorkspaceFile(ctx, root, rel)
 }
 
-func deleteWorkspaceFilesByAbsPath(ctx context.Context, store moduleapi.Store, absPath string) error {
+func deleteWorkspaceFilesByAbsPath(ctx context.Context, store moduleapi.WorkspaceStore, absPath string) error {
 	if store == nil {
-		return fmt.Errorf("store is required")
+		return fmt.Errorf("workspace store is required")
 	}
 	absPath = filepath.Clean(strings.TrimSpace(absPath))
 	if absPath == "" {
@@ -752,57 +727,26 @@ func deleteWorkspaceFilesByAbsPath(ctx context.Context, store moduleapi.Store, a
 	if err != nil {
 		return err
 	}
-	return store.WriteTx(ctx, func(tx moduleapi.WriteTx) error {
-		for _, row := range files {
-			full := filepath.Clean(workspacePathJoin(row.WorkspacePath, row.FilePath))
-			if full != absPath {
-				rel, err := filepath.Rel(absPath, full)
-				if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-					continue
-				}
-			}
-			if err := dbDeleteWorkspaceFileTx(ctx, tx, row.WorkspacePath, row.FilePath); err != nil {
-				return err
+	for _, row := range files {
+		full := filepath.Clean(workspacePathJoin(row.WorkspacePath, row.FilePath))
+		if full != absPath {
+			rel, err := filepath.Rel(absPath, full)
+			if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				continue
 			}
 		}
-		return nil
-	})
+		if err := store.DeleteWorkspaceFile(ctx, row.WorkspacePath, row.FilePath); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func dbUpsertSeedPricingPolicy(ctx context.Context, store moduleapi.Store, seedHash string, floor uint64, bps uint64, source string, updatedAtUnix int64) error {
+func dbUpsertSeedPricingPolicy(ctx context.Context, store moduleapi.SeedStore, seedHash string, floor uint64, bps uint64, source string, updatedAtUnix int64) error {
 	if store == nil {
-		return fmt.Errorf("store is required")
+		return fmt.Errorf("seed store is required")
 	}
-	return store.WriteTx(ctx, func(tx moduleapi.WriteTx) error {
-		return upsertSeedPricingPolicyTx(ctx, tx, seedHash, floor, bps, source, updatedAtUnix)
-	})
-}
-
-func upsertSeedPricingPolicyTx(ctx context.Context, tx moduleapi.WriteTx, seedHash string, floor uint64, bps uint64, source string, updatedAtUnix int64) error {
-	if tx == nil {
-		return fmt.Errorf("tx is nil")
-	}
-	seedHash = normalizeSeedHashHex(seedHash)
-	if seedHash == "" {
-		return fmt.Errorf("seed_hash is required")
-	}
-	source = strings.ToLower(strings.TrimSpace(source))
-	if source != "user" && source != "system" {
-		source = "system"
-	}
-	_, err := tx.ExecContext(ctx, `
-		INSERT INTO biz_seed_pricing_policy(seed_hash, floor_unit_price_sat_per_64k, resale_discount_bps, pricing_source, updated_at_unix)
-		VALUES(?,?,?,?,?)
-		ON CONFLICT(seed_hash) DO UPDATE SET
-			floor_unit_price_sat_per_64k=excluded.floor_unit_price_sat_per_64k,
-			resale_discount_bps=excluded.resale_discount_bps,
-			pricing_source=CASE
-				WHEN biz_seed_pricing_policy.pricing_source='user' AND excluded.pricing_source='system' THEN biz_seed_pricing_policy.pricing_source
-				ELSE excluded.pricing_source
-			END,
-			updated_at_unix=excluded.updated_at_unix`,
-		seedHash, int64(floor), int64(bps), source, updatedAtUnix)
-	return err
+	return store.UpsertSeedPricingPolicy(ctx, seedHash, floor, bps, source, updatedAtUnix)
 }
 
 func parseBoundInt(raw string, def int, min int, max int) int {
@@ -825,10 +769,6 @@ func parseBoundInt(raw string, def int, min int, max int) int {
 
 func errorsIsNotExist(err error) bool {
 	return err != nil && os.IsNotExist(err)
-}
-
-func errorsIsNoRows(err error) bool {
-	return err == sql.ErrNoRows
 }
 
 func guessContentType(path string, head []byte) string {

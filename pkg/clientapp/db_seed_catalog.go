@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseeds"
 )
 
 // 设计说明：
@@ -175,44 +175,31 @@ func dbLoadSeedCatalogSnapshot(ctx context.Context, store *clientDB) (map[string
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	type result struct {
-		seeds map[string]sellerSeed
-	}
-	var out result
-	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
-		rows, err := rc.QueryContext(ctx, `
-			SELECT seed_hash,chunk_count,file_size,recommended_file_name,mime_hint
-			  FROM biz_seeds
-			 ORDER BY seed_hash ASC`)
+	seeds, err := readEntValue(ctx, store, func(root EntReadRoot) (map[string]sellerSeed, error) {
+		rows, err := root.BizSeeds.Query().
+			Order(bizseeds.BySeedHash()).
+			All(ctx)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		defer rows.Close()
-
-		seeds := map[string]sellerSeed{}
-		for rows.Next() {
-			var seed sellerSeed
-			if err := rows.Scan(&seed.SeedHash, &seed.ChunkCount, &seed.FileSize, &seed.RecommendedFileName, &seed.MIMEHint); err != nil {
-				return err
-			}
-			seed.SeedHash = strings.ToLower(strings.TrimSpace(seed.SeedHash))
-			if seed.SeedHash == "" {
+		seeds := make(map[string]sellerSeed, len(rows))
+		for _, seed := range rows {
+			seedHash := strings.ToLower(strings.TrimSpace(seed.SeedHash))
+			if seedHash == "" {
 				continue
 			}
-			seed.SeedPrice = 0
-			seed.ChunkPrice = 0
-			seed.RecommendedFileName = sanitizeRecommendedFileName(seed.RecommendedFileName)
-			seed.MIMEHint = sanitizeMIMEHint(seed.MIMEHint)
-			seeds[seed.SeedHash] = seed
+			seeds[seedHash] = sellerSeed{
+				SeedHash:            seedHash,
+				ChunkCount:          uint32(seed.ChunkCount),
+				FileSize:            uint64(seed.FileSize),
+				RecommendedFileName: sanitizeRecommendedFileName(seed.RecommendedFileName),
+				MIMEHint:            sanitizeMIMEHint(seed.MimeHint),
+			}
 		}
-		out.seeds = seeds
-		return rows.Err()
+		return seeds, nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	if out.seeds == nil {
-		out.seeds = map[string]sellerSeed{}
-	}
-	return out.seeds, nil
+	return seeds, nil
 }

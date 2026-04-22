@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"errors"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	"github.com/bsv8/BitFS/pkg/clientapp/seedstorage"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -93,6 +94,8 @@ func newTestHost(db *sql.DB, configPath string, pubkey string) *testHost {
 }
 
 func (h *testHost) Store() moduleapi.Store            { return h.store }
+func (h *testHost) WorkspaceStore() moduleapi.WorkspaceStore { return h }
+func (h *testHost) SeedStore() moduleapi.SeedStore            { return h }
 func (h *testHost) ConfigPath() string                { return h.config }
 func (h *testHost) NodePubkeyHex() string             { return h.pubkey }
 func (h *testHost) ClientPubkeyHex() string           { return h.pubkey }
@@ -147,6 +150,210 @@ func (h *testHost) RegisterOpenHook(hook moduleapi.OpenHook) (func(), error) {
 func (h *testHost) RegisterCloseHook(hook moduleapi.CloseHook) (func(), error) {
 	h.closeHooks = append(h.closeHooks, hook)
 	return func() {}, nil
+}
+
+func (h *testHost) ListWorkspaces(ctx context.Context) ([]moduleapi.WorkspaceItem, error) {
+	rows, err := h.store.db.QueryContext(ctx, `SELECT workspace_path, max_bytes, enabled, created_at_unix FROM biz_workspaces ORDER BY workspace_path`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []moduleapi.WorkspaceItem
+	for rows.Next() {
+		var row moduleapi.WorkspaceItem
+		var enabled int64
+		if err := rows.Scan(&row.WorkspacePath, &row.MaxBytes, &enabled, &row.CreatedAtUnix); err != nil {
+			return nil, err
+		}
+		row.Enabled = enabled != 0
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func (h *testHost) UpsertWorkspace(ctx context.Context, workspacePath string, maxBytes uint64, enabled bool) (moduleapi.WorkspaceItem, error) {
+	_, err := h.store.db.ExecContext(ctx, `INSERT INTO biz_workspaces(workspace_path,max_bytes,enabled,created_at_unix) VALUES(?,?,?,?)
+		ON CONFLICT(workspace_path) DO UPDATE SET max_bytes=excluded.max_bytes, enabled=excluded.enabled`, workspacePath, maxBytes, boolToInt64(enabled), time.Now().Unix())
+	if err != nil {
+		return moduleapi.WorkspaceItem{}, err
+	}
+	return moduleapi.WorkspaceItem{WorkspacePath: workspacePath, MaxBytes: maxBytes, Enabled: enabled}, nil
+}
+
+func (h *testHost) DeleteWorkspace(ctx context.Context, workspacePath string) error {
+	if _, err := h.store.db.ExecContext(ctx, `DELETE FROM biz_workspace_files WHERE workspace_path=?`, workspacePath); err != nil {
+		return err
+	}
+	_, err := h.store.db.ExecContext(ctx, `DELETE FROM biz_workspaces WHERE workspace_path=?`, workspacePath)
+	return err
+}
+
+func (h *testHost) UpdateWorkspace(ctx context.Context, workspacePath string, maxBytes *uint64, enabled *bool) (moduleapi.WorkspaceItem, error) {
+	current := moduleapi.WorkspaceItem{WorkspacePath: workspacePath}
+	if maxBytes != nil {
+		current.MaxBytes = *maxBytes
+	}
+	if enabled != nil {
+		current.Enabled = *enabled
+	}
+	if _, err := h.store.db.ExecContext(ctx, `UPDATE biz_workspaces SET max_bytes=?, enabled=? WHERE workspace_path=?`, current.MaxBytes, boolToInt64(current.Enabled), workspacePath); err != nil {
+		return moduleapi.WorkspaceItem{}, err
+	}
+	return current, nil
+}
+
+func (h *testHost) ListWorkspaceFiles(ctx context.Context, limit, offset int, pathLike string) (moduleapi.WorkspaceFilesPage, error) {
+	query := `SELECT workspace_path, file_path, seed_hash, seed_locked FROM biz_workspace_files`
+	args := []any{}
+	if strings.TrimSpace(pathLike) != "" {
+		query += ` WHERE workspace_path LIKE ? OR file_path LIKE ?`
+		args = append(args, "%"+pathLike+"%", "%"+pathLike+"%")
+	}
+	query += ` ORDER BY workspace_path, file_path`
+	if limit > 0 {
+		query += ` LIMIT ? OFFSET ?`
+		args = append(args, limit, offset)
+	}
+	rows, err := h.store.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return moduleapi.WorkspaceFilesPage{}, err
+	}
+	defer rows.Close()
+	var items []moduleapi.WorkspaceFileItem
+	for rows.Next() {
+		var item moduleapi.WorkspaceFileItem
+		var locked int64
+		if err := rows.Scan(&item.WorkspacePath, &item.FilePath, &item.SeedHash, &locked); err != nil {
+			return moduleapi.WorkspaceFilesPage{}, err
+		}
+		item.SeedLocked = locked != 0
+		items = append(items, item)
+	}
+	return moduleapi.WorkspaceFilesPage{Total: len(items), Items: items}, rows.Err()
+}
+
+func (h *testHost) UpsertWorkspaceFile(ctx context.Context, workspacePath, filePath, seedHash string, locked bool) error {
+	_, err := h.store.db.ExecContext(ctx, `INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)
+		ON CONFLICT(workspace_path, file_path) DO UPDATE SET seed_hash=excluded.seed_hash, seed_locked=excluded.seed_locked`, workspacePath, filePath, seedHash, boolToInt64(locked))
+	return err
+}
+
+func (h *testHost) DeleteWorkspaceFile(ctx context.Context, workspacePath, filePath string) error {
+	_, err := h.store.db.ExecContext(ctx, `DELETE FROM biz_workspace_files WHERE workspace_path=? AND file_path=?`, workspacePath, filePath)
+	return err
+}
+
+func (h *testHost) ListWorkspaceRoots(ctx context.Context) ([]string, error) {
+	rows, err := h.store.db.QueryContext(ctx, `SELECT workspace_path FROM biz_workspaces WHERE enabled<>0 ORDER BY workspace_path`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		out = append(out, path)
+	}
+	return out, rows.Err()
+}
+
+func (h *testHost) GetWorkspaceFileSeedHashByAbsPath(ctx context.Context, absPath string) (string, error) {
+	roots, err := h.ListWorkspaceRoots(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, root := range roots {
+		if !strings.HasPrefix(absPath, root) {
+			continue
+		}
+		rel, err := filepath.Rel(root, absPath)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			continue
+		}
+		var seedHash string
+		err = h.store.db.QueryRowContext(ctx, `SELECT seed_hash FROM biz_workspace_files WHERE workspace_path=? AND file_path=?`, root, filepath.ToSlash(rel)).Scan(&seedHash)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return "", nil
+			}
+			return "", err
+		}
+		return seedHash, nil
+	}
+	return "", nil
+}
+
+func (h *testHost) LoadSeedSnapshot(ctx context.Context, seedHash string) (moduleapi.SeedRecord, bool, error) {
+	var rec moduleapi.SeedRecord
+	row := h.store.db.QueryRowContext(ctx, `SELECT seed_hash, chunk_count, file_size, seed_file_path, recommended_file_name, mime_hint FROM biz_seeds WHERE seed_hash=?`, seedHash)
+	var chunkCount int64
+	if err := row.Scan(&rec.SeedHash, &chunkCount, &rec.FileSize, &rec.SeedFilePath, &rec.RecommendedFileName, &rec.MimeHint); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return moduleapi.SeedRecord{}, false, nil
+		}
+		return moduleapi.SeedRecord{}, false, err
+	}
+	rec.ChunkCount = uint32(chunkCount)
+	row = h.store.db.QueryRowContext(ctx, `SELECT floor_unit_price_sat_per_64k, resale_discount_bps, pricing_source, updated_at_unix FROM biz_seed_pricing_policy WHERE seed_hash=?`, seedHash)
+	if err := row.Scan(&rec.FloorPriceSatPer64K, &rec.ResaleDiscountBPS, &rec.PricingSource, &rec.PriceUpdatedAtUnix); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return moduleapi.SeedRecord{}, false, err
+	}
+	return rec, true, nil
+}
+
+func (h *testHost) UpsertSeedRecord(ctx context.Context, record moduleapi.SeedRecord) error {
+	_, err := h.store.db.ExecContext(ctx, `INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)
+		ON CONFLICT(seed_hash) DO UPDATE SET chunk_count=excluded.chunk_count, file_size=excluded.file_size, seed_file_path=excluded.seed_file_path, recommended_file_name=excluded.recommended_file_name, mime_hint=excluded.mime_hint`,
+		record.SeedHash, record.ChunkCount, record.FileSize, record.SeedFilePath, record.RecommendedFileName, record.MimeHint)
+	return err
+}
+
+func (h *testHost) UpsertSeedPricingPolicy(ctx context.Context, seedHash string, floorUnit, discountBPS uint64, source string, updatedAtUnix int64) error {
+	_, err := h.store.db.ExecContext(ctx, `INSERT INTO biz_seed_pricing_policy(seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix) VALUES(?,?,?,?,?)
+		ON CONFLICT(seed_hash) DO UPDATE SET floor_unit_price_sat_per_64k=excluded.floor_unit_price_sat_per_64k, resale_discount_bps=excluded.resale_discount_bps, pricing_source=excluded.pricing_source, updated_at_unix=excluded.updated_at_unix`,
+		seedHash, floorUnit, discountBPS, source, updatedAtUnix)
+	return err
+}
+
+func (h *testHost) ReplaceSeedChunkSupply(ctx context.Context, seedHash string, indexes []uint32) error {
+	if _, err := h.store.db.ExecContext(ctx, `DELETE FROM biz_seed_chunk_supply WHERE seed_hash=?`, seedHash); err != nil {
+		return err
+	}
+	for _, idx := range indexes {
+		if _, err := h.store.db.ExecContext(ctx, `INSERT INTO biz_seed_chunk_supply(seed_hash,chunk_index) VALUES(?,?)`, seedHash, idx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *testHost) DeleteSeedRecords(ctx context.Context, seedHashes []string) error {
+	for _, seedHash := range seedHashes {
+		if _, err := h.store.db.ExecContext(ctx, `DELETE FROM biz_seed_pricing_policy WHERE seed_hash=?`, seedHash); err != nil {
+			return err
+		}
+		if _, err := h.store.db.ExecContext(ctx, `DELETE FROM biz_seed_chunk_supply WHERE seed_hash=?`, seedHash); err != nil {
+			return err
+		}
+		if _, err := h.store.db.ExecContext(ctx, `DELETE FROM biz_seeds WHERE seed_hash=?`, seedHash); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *testHost) CleanupOrphanSeeds(ctx context.Context) error {
+	return nil
+}
+
+func boolToInt64(v bool) int64 {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 func (h *testHost) ServeHTTP(req *http.Request) *httptest.ResponseRecorder {

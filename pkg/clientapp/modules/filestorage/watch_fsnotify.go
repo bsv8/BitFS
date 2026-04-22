@@ -41,7 +41,7 @@ func (w *watchService) start(ctx context.Context) error {
 	w.watcher = watcher
 	runCtx, cancel := context.WithCancel(ctx)
 	w.cancel = cancel
-	roots, err := dbListWorkspaceRoots(ctx, w.svc.host.Store())
+	roots, err := dbListWorkspaceRoots(ctx, w.svc.host.WorkspaceStore())
 	if err != nil {
 		_ = watcher.Close()
 		w.watcher = nil

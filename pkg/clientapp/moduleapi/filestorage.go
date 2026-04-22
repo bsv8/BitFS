@@ -9,6 +9,8 @@ type FileStorageHost interface {
 	Store() Store
 	ConfigPath() string
 	NodePubkeyHex() string
+	WorkspaceStore() WorkspaceStore
+	SeedStore() SeedStore
 	SeedStorage() SeedStorage
 	FSWatchEnabled() bool
 	FSRescanIntervalSeconds() uint32

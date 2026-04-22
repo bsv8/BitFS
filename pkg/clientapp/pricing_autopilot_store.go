@@ -2,15 +2,27 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
+	entsql "entgo.io/ent/dialect/sql"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizpricingautopilotaudit"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizpricingautopilotconfig"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizpricingautopilotstate"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseedpricingpolicy"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseeds"
 )
+
+func entWriteRootFromSQLConn(conn SQLConn) (EntWriteRoot, error) {
+	tx, ok := conn.(*writeTxConn)
+	if !ok || tx == nil || tx.tx == nil {
+		return nil, fmt.Errorf("ent write tx is required")
+	}
+	return newEntWriteRoot(tx.tx), nil
+}
 
 // 设计说明：
 // - 这里只放定价引擎需要的最小 DB 能力；
@@ -23,33 +35,21 @@ func dbListPricingSeedHashes(ctx context.Context, store *clientDB, limit int) ([
 		return nil, fmt.Errorf("limit is required")
 	}
 	var out []string
-	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
-		rows, err := rc.QueryContext(ctx, `
-			SELECT seed_hash
-			  FROM biz_seeds
-			 ORDER BY seed_hash ASC
-			 LIMIT ?`,
-			limit,
-		)
+	err := store.ReadEnt(ctx, func(root EntReadRoot) error {
+		rows, err := root.BizSeeds.Query().
+			Order(bizseeds.BySeedHash()).
+			Limit(limit).
+			All(ctx)
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
-
-		out = make([]string, 0, limit)
-		for rows.Next() {
-			var seedHash string
-			if err := rows.Scan(&seedHash); err != nil {
-				return err
-			}
-			seedHash = strings.ToLower(strings.TrimSpace(seedHash))
+		out = make([]string, 0, len(rows))
+		for _, row := range rows {
+			seedHash := strings.ToLower(strings.TrimSpace(row.SeedHash))
 			if seedHash == "" {
 				continue
 			}
 			out = append(out, seedHash)
-		}
-		if err := rows.Err(); err != nil {
-			return err
 		}
 		if len(out) == 0 {
 			return fmt.Errorf("no seed found")
@@ -67,29 +67,22 @@ func dbListAllPricingSeedHashes(ctx context.Context, store *clientDB) ([]string,
 		return nil, fmt.Errorf("client db is nil")
 	}
 	var out []string
-	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
-		rows, err := rc.QueryContext(ctx, `
-			SELECT seed_hash
-			  FROM biz_seeds
-			 ORDER BY seed_hash ASC`)
+	err := store.ReadEnt(ctx, func(root EntReadRoot) error {
+		rows, err := root.BizSeeds.Query().
+			Order(bizseeds.BySeedHash()).
+			All(ctx)
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
-
-		out = []string{}
-		for rows.Next() {
-			var seedHash string
-			if err := rows.Scan(&seedHash); err != nil {
-				return err
-			}
-			seedHash = strings.ToLower(strings.TrimSpace(seedHash))
+		out = make([]string, 0, len(rows))
+		for _, row := range rows {
+			seedHash := strings.ToLower(strings.TrimSpace(row.SeedHash))
 			if seedHash == "" {
 				continue
 			}
 			out = append(out, seedHash)
 		}
-		return rows.Err()
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -164,8 +157,8 @@ func dbLoadPricingAutopilotConfig(ctx context.Context, store *clientDB) (Pricing
 		ok  bool
 	}
 	var out result
-	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
-		cfg, ok, err := dbLoadPricingAutopilotConfigOnConn(ctx, rc)
+	err := store.ReadEnt(ctx, func(root EntReadRoot) error {
+		cfg, ok, err := dbLoadPricingAutopilotConfigOnReadRoot(ctx, root)
 		if err != nil {
 			return err
 		}
@@ -178,30 +171,58 @@ func dbLoadPricingAutopilotConfig(ctx context.Context, store *clientDB) (Pricing
 	return out.cfg, out.ok, nil
 }
 
-func dbLoadPricingAutopilotConfigOnConn(ctx context.Context, rc moduleapi.ReadConn) (PricingConfig, bool, error) {
-	if rc == nil {
-		return PricingConfig{}, false, fmt.Errorf("sql conn is nil")
+func dbLoadPricingAutopilotConfigOnReadRoot(ctx context.Context, root EntReadRoot) (PricingConfig, bool, error) {
+	if root == nil {
+		return PricingConfig{}, false, fmt.Errorf("root is nil")
 	}
-	var payloadJSON string
-	if err := rc.QueryRowContext(ctx, `
-		SELECT payload_json
-		  FROM biz_pricing_autopilot_config
-		 WHERE config_key=?`,
-		pricingAutopilotConfigKey,
-	).Scan(&payloadJSON); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+	row, err := root.BizPricingAutopilotConfig.Query().
+		Where(bizpricingautopilotconfig.ConfigKeyEQ(pricingAutopilotConfigKey)).
+		Only(ctx)
+	if err != nil {
+		if gen.IsNotFound(err) {
 			return PricingConfig{}, false, nil
 		}
 		return PricingConfig{}, false, err
 	}
 	var cfg PricingConfig
-	if err := json.Unmarshal([]byte(strings.TrimSpace(payloadJSON)), &cfg); err != nil {
+	if err := json.Unmarshal([]byte(strings.TrimSpace(row.PayloadJSON)), &cfg); err != nil {
 		return PricingConfig{}, false, err
 	}
 	if cfg.BasePriceSatPer64K == 0 {
 		cfg.BasePriceSatPer64K = 1000
 	}
 	return cfg, true, nil
+}
+
+func dbLoadPricingAutopilotConfigOnWriteRoot(ctx context.Context, root EntWriteRoot) (PricingConfig, bool, error) {
+	if root == nil {
+		return PricingConfig{}, false, fmt.Errorf("root is nil")
+	}
+	row, err := root.BizPricingAutopilotConfig.Query().
+		Where(bizpricingautopilotconfig.ConfigKeyEQ(pricingAutopilotConfigKey)).
+		Only(ctx)
+	if err != nil {
+		if gen.IsNotFound(err) {
+			return PricingConfig{}, false, nil
+		}
+		return PricingConfig{}, false, err
+	}
+	var cfg PricingConfig
+	if err := json.Unmarshal([]byte(strings.TrimSpace(row.PayloadJSON)), &cfg); err != nil {
+		return PricingConfig{}, false, err
+	}
+	if cfg.BasePriceSatPer64K == 0 {
+		cfg.BasePriceSatPer64K = 1000
+	}
+	return cfg, true, nil
+}
+
+func dbLoadPricingAutopilotConfigOnConn(ctx context.Context, conn SQLConn) (PricingConfig, bool, error) {
+	root, err := entWriteRootFromSQLConn(conn)
+	if err != nil {
+		return PricingConfig{}, false, err
+	}
+	return dbLoadPricingAutopilotConfigOnWriteRoot(ctx, root)
 }
 
 func dbUpsertPricingAutopilotConfig(ctx context.Context, store *clientDB, cfg PricingConfig, updatedAtUnix int64) error {
@@ -215,43 +236,53 @@ func dbUpsertPricingAutopilotConfig(ctx context.Context, store *clientDB, cfg Pr
 	if err != nil {
 		return err
 	}
-	return store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
-		_, err = wtx.ExecContext(ctx, `
-			INSERT INTO biz_pricing_autopilot_config(config_key,payload_json,updated_at_unix)
-			VALUES(?,?,?)
-			ON CONFLICT(config_key) DO UPDATE SET
-				payload_json=excluded.payload_json,
-				updated_at_unix=excluded.updated_at_unix`,
-			pricingAutopilotConfigKey, string(payload), updatedAtUnix,
-		)
-		return err
+	return store.WriteEntTx(ctx, func(root EntWriteRoot) error {
+		return dbUpsertPricingAutopilotConfigOnRoot(ctx, root, cfg, updatedAtUnix, string(payload))
 	})
 }
 
-// dbUpsertPricingAutopilotConfigOnConn 只负责把全局 base 写进目标 SQL 连接。
-// 设计说明：
-// - set_base 需要先把配置和状态放进同一个事务入口里；
-// - 所以这里拆出 conn 版本，给事务闭包直接复用；
-// - 业务层不要自己拼 SQL，只走这一个收口。
-func dbUpsertPricingAutopilotConfigOnConn(ctx context.Context, wtx moduleapi.WriteTx, cfg PricingConfig, updatedAtUnix int64) error {
-	if wtx == nil {
-		return fmt.Errorf("sql conn is nil")
-	}
-	if updatedAtUnix <= 0 {
-		updatedAtUnix = time.Now().Unix()
+func dbUpsertPricingAutopilotConfigOnConn(ctx context.Context, conn SQLConn, cfg PricingConfig, updatedAtUnix int64) error {
+	root, err := entWriteRootFromSQLConn(conn)
+	if err != nil {
+		return err
 	}
 	payload, err := json.Marshal(cfg)
 	if err != nil {
 		return err
 	}
-	_, err = wtx.ExecContext(ctx, `
-		INSERT INTO biz_pricing_autopilot_config(config_key,payload_json,updated_at_unix)
-		VALUES(?,?,?)
-		ON CONFLICT(config_key) DO UPDATE SET
-			payload_json=excluded.payload_json,
-			updated_at_unix=excluded.updated_at_unix`,
-		pricingAutopilotConfigKey, string(payload), updatedAtUnix,
-	)
+	return dbUpsertPricingAutopilotConfigOnRoot(ctx, root, cfg, updatedAtUnix, string(payload))
+}
+
+// dbUpsertPricingAutopilotConfigOnRoot 只负责把全局 base 写进目标 ent 事务。
+// 设计说明：
+// - set_base 需要先把配置和状态放进同一个事务入口里；
+// - 所以这里拆出 root 版本，给事务闭包直接复用；
+// - 业务层不要自己拼 SQL，只走这一个收口。
+func dbUpsertPricingAutopilotConfigOnRoot(ctx context.Context, root EntWriteRoot, cfg PricingConfig, updatedAtUnix int64, payloadJSON string) error {
+	if root == nil {
+		return fmt.Errorf("root is nil")
+	}
+	if updatedAtUnix <= 0 {
+		updatedAtUnix = time.Now().Unix()
+	}
+	existing, err := root.BizPricingAutopilotConfig.Query().
+		Where(bizpricingautopilotconfig.ConfigKeyEQ(pricingAutopilotConfigKey)).
+		Only(ctx)
+	if err == nil {
+		_, err = existing.Update().
+			SetPayloadJSON(payloadJSON).
+			SetUpdatedAtUnix(updatedAtUnix).
+			Save(ctx)
+		return err
+	}
+	if !gen.IsNotFound(err) {
+		return err
+	}
+	_, err = root.BizPricingAutopilotConfig.Create().
+		SetConfigKey(pricingAutopilotConfigKey).
+		SetPayloadJSON(payloadJSON).
+		SetUpdatedAtUnix(updatedAtUnix).
+		Save(ctx)
 	return err
 }
 
@@ -264,8 +295,8 @@ func dbLoadPricingAutopilotState(ctx context.Context, store *clientDB, seedHash 
 		ok    bool
 	}
 	var out result
-	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
-		state, ok, err := dbLoadPricingAutopilotStateOnConn(ctx, rc, seedHash)
+	err := store.ReadEnt(ctx, func(root EntReadRoot) error {
+		state, ok, err := dbLoadPricingAutopilotStateOnReadRoot(ctx, root, seedHash)
 		if err != nil {
 			return err
 		}
@@ -278,31 +309,199 @@ func dbLoadPricingAutopilotState(ctx context.Context, store *clientDB, seedHash 
 	return out.state, out.ok, nil
 }
 
-func dbLoadPricingAutopilotStateOnConn(ctx context.Context, rc moduleapi.ReadConn, seedHash string) (PricingState, bool, error) {
-	if rc == nil {
-		return PricingState{}, false, fmt.Errorf("sql conn is nil")
+func dbLoadPricingAutopilotStateOnConn(ctx context.Context, conn SQLConn, seedHash string) (PricingState, bool, error) {
+	root, err := entWriteRootFromSQLConn(conn)
+	if err != nil {
+		return PricingState{}, false, err
+	}
+	return dbLoadPricingAutopilotStateOnWriteRoot(ctx, root, seedHash)
+}
+
+func loadPricingStateForSeedOnConn(ctx context.Context, conn SQLConn, seedHash string, base uint64, nowUnix int64) (PricingState, bool, error) {
+	state, ok, err := dbLoadPricingAutopilotStateOnConn(ctx, conn, seedHash)
+	if err != nil {
+		return PricingState{}, false, err
+	}
+	if ok {
+		return pricingNormalizeStateForBase(state, base, nowUnix), true, nil
+	}
+	seed, ok, err := dbLoadSellerSeedSnapshotOnConn(ctx, conn, seedHash)
+	if err != nil {
+		return PricingState{}, false, err
+	}
+	if !ok {
+		return PricingState{}, false, nil
+	}
+	state = pricingStateSeedSnapshot(seed, base)
+	return pricingNormalizeStateForBase(state, base, nowUnix), true, nil
+}
+
+func dbLoadPricingAutopilotStateOnReadRoot(ctx context.Context, root EntReadRoot, seedHash string) (PricingState, bool, error) {
+	if root == nil {
+		return PricingState{}, false, fmt.Errorf("root is nil")
 	}
 	seedHash = normalizeSeedHashHex(seedHash)
 	if seedHash == "" {
 		return PricingState{}, false, nil
 	}
-	var payloadJSON string
-	if err := rc.QueryRowContext(ctx, `
-		SELECT payload_json
-		  FROM biz_pricing_autopilot_state
-		 WHERE seed_hash=?`,
-		seedHash,
-	).Scan(&payloadJSON); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+	row, err := root.BizPricingAutopilotState.Query().
+		Where(bizpricingautopilotstate.SeedHashEQ(seedHash)).
+		Only(ctx)
+	if err != nil {
+		if gen.IsNotFound(err) {
 			return PricingState{}, false, nil
 		}
 		return PricingState{}, false, err
 	}
 	var state PricingState
-	if err := json.Unmarshal([]byte(strings.TrimSpace(payloadJSON)), &state); err != nil {
+	if err := json.Unmarshal([]byte(strings.TrimSpace(row.PayloadJSON)), &state); err != nil {
 		return PricingState{}, false, err
 	}
 	return state, true, nil
+}
+
+func dbLoadPricingAutopilotStateOnWriteRoot(ctx context.Context, root EntWriteRoot, seedHash string) (PricingState, bool, error) {
+	if root == nil {
+		return PricingState{}, false, fmt.Errorf("root is nil")
+	}
+	seedHash = normalizeSeedHashHex(seedHash)
+	if seedHash == "" {
+		return PricingState{}, false, nil
+	}
+	row, err := root.BizPricingAutopilotState.Query().
+		Where(bizpricingautopilotstate.SeedHashEQ(seedHash)).
+		Only(ctx)
+	if err != nil {
+		if gen.IsNotFound(err) {
+			return PricingState{}, false, nil
+		}
+		return PricingState{}, false, err
+	}
+	var state PricingState
+	if err := json.Unmarshal([]byte(strings.TrimSpace(row.PayloadJSON)), &state); err != nil {
+		return PricingState{}, false, err
+	}
+	return state, true, nil
+}
+
+func dbListAllPricingSeedHashesOnReadRoot(ctx context.Context, root EntReadRoot) ([]string, error) {
+	if root == nil {
+		return nil, fmt.Errorf("root is nil")
+	}
+	rows, err := root.BizSeeds.Query().
+		Order(bizseeds.BySeedHash()).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		seedHash := strings.ToLower(strings.TrimSpace(row.SeedHash))
+		if seedHash == "" {
+			continue
+		}
+		out = append(out, seedHash)
+	}
+	return out, nil
+}
+
+func dbListAllPricingSeedHashesOnWriteRoot(ctx context.Context, root EntWriteRoot) ([]string, error) {
+	if root == nil {
+		return nil, fmt.Errorf("root is nil")
+	}
+	rows, err := root.BizSeeds.Query().
+		Order(bizseeds.BySeedHash()).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		seedHash := strings.ToLower(strings.TrimSpace(row.SeedHash))
+		if seedHash == "" {
+			continue
+		}
+		out = append(out, seedHash)
+	}
+	return out, nil
+}
+
+func dbLoadSellerSeedSnapshotOnReadRoot(ctx context.Context, root EntReadRoot, seedHash string) (sellerSeed, bool, error) {
+	if root == nil {
+		return sellerSeed{}, false, fmt.Errorf("root is nil")
+	}
+	seedHash = strings.ToLower(strings.TrimSpace(seedHash))
+	if seedHash == "" {
+		return sellerSeed{}, false, nil
+	}
+	var unitPrice uint64
+	var policyFound bool
+	if policy, err := root.BizSeedPricingPolicy.Query().Where(bizseedpricingpolicy.SeedHashEQ(seedHash)).Only(ctx); err == nil {
+		unitPrice = uint64(policy.FloorUnitPriceSatPer64k)
+		policyFound = true
+	} else if !gen.IsNotFound(err) {
+		return sellerSeed{}, false, err
+	}
+	row, err := root.BizSeeds.Query().Where(bizseeds.SeedHashEQ(seedHash)).Only(ctx)
+	if err != nil {
+		if gen.IsNotFound(err) {
+			return sellerSeed{}, false, nil
+		}
+		return sellerSeed{}, false, err
+	}
+	seed := sellerSeed{
+		SeedHash:            seedHash,
+		ChunkCount:          uint32(row.ChunkCount),
+		FileSize:            uint64(row.FileSize),
+		ChunkPrice:          unitPrice,
+		SeedPrice:           unitPrice * uint64(row.ChunkCount),
+		RecommendedFileName: sanitizeRecommendedFileName(row.RecommendedFileName),
+		MIMEHint:            sanitizeMIMEHint(row.MimeHint),
+	}
+	if !policyFound {
+		seed.ChunkPrice = 0
+		seed.SeedPrice = 0
+	}
+	return seed, true, nil
+}
+
+func dbLoadSellerSeedSnapshotOnWriteRoot(ctx context.Context, root EntWriteRoot, seedHash string) (sellerSeed, bool, error) {
+	if root == nil {
+		return sellerSeed{}, false, fmt.Errorf("root is nil")
+	}
+	seedHash = strings.ToLower(strings.TrimSpace(seedHash))
+	if seedHash == "" {
+		return sellerSeed{}, false, nil
+	}
+	var unitPrice uint64
+	var policyFound bool
+	if policy, err := root.BizSeedPricingPolicy.Query().Where(bizseedpricingpolicy.SeedHashEQ(seedHash)).Only(ctx); err == nil {
+		unitPrice = uint64(policy.FloorUnitPriceSatPer64k)
+		policyFound = true
+	} else if !gen.IsNotFound(err) {
+		return sellerSeed{}, false, err
+	}
+	row, err := root.BizSeeds.Query().Where(bizseeds.SeedHashEQ(seedHash)).Only(ctx)
+	if err != nil {
+		if gen.IsNotFound(err) {
+			return sellerSeed{}, false, nil
+		}
+		return sellerSeed{}, false, err
+	}
+	seed := sellerSeed{
+		SeedHash:            seedHash,
+		ChunkCount:          uint32(row.ChunkCount),
+		FileSize:            uint64(row.FileSize),
+		ChunkPrice:          unitPrice,
+		SeedPrice:           unitPrice * uint64(row.ChunkCount),
+		RecommendedFileName: sanitizeRecommendedFileName(row.RecommendedFileName),
+		MIMEHint:            sanitizeMIMEHint(row.MimeHint),
+	}
+	if !policyFound {
+		seed.ChunkPrice = 0
+		seed.SeedPrice = 0
+	}
+	return seed, true, nil
 }
 
 func dbListPricingAutopilotStates(ctx context.Context, store *clientDB, limit int) ([]PricingState, error) {
@@ -310,8 +509,8 @@ func dbListPricingAutopilotStates(ctx context.Context, store *clientDB, limit in
 		return nil, fmt.Errorf("client db is nil")
 	}
 	var out []PricingState
-	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
-		states, err := dbListPricingAutopilotStatesOnConn(ctx, rc, limit)
+	err := store.ReadEnt(ctx, func(root EntReadRoot) error {
+		states, err := dbListPricingAutopilotStatesOnRoot(ctx, root, limit)
 		if err != nil {
 			return err
 		}
@@ -324,27 +523,20 @@ func dbListPricingAutopilotStates(ctx context.Context, store *clientDB, limit in
 	return out, nil
 }
 
-func dbListPricingAutopilotStatesOnConn(ctx context.Context, rc moduleapi.ReadConn, limit int) ([]PricingState, error) {
-	if rc == nil {
-		return nil, fmt.Errorf("sql conn is nil")
+func dbListPricingAutopilotStatesOnRoot(ctx context.Context, root EntReadRoot, limit int) ([]PricingState, error) {
+	if root == nil {
+		return nil, fmt.Errorf("root is nil")
 	}
-	rows, err := rc.QueryContext(ctx, `
-		SELECT payload_json
-		  FROM biz_pricing_autopilot_state
-		 ORDER BY seed_hash ASC`)
+	rows, err := root.BizPricingAutopilotState.Query().
+		Order(bizpricingautopilotstate.BySeedHash()).
+		All(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
 	out := make([]PricingState, 0, 8)
-	for rows.Next() {
-		var payload string
-		if err := rows.Scan(&payload); err != nil {
-			return nil, err
-		}
+	for _, row := range rows {
 		var state PricingState
-		if err := json.Unmarshal([]byte(strings.TrimSpace(payload)), &state); err != nil {
+		if err := json.Unmarshal([]byte(strings.TrimSpace(row.PayloadJSON)), &state); err != nil {
 			return nil, err
 		}
 		if strings.TrimSpace(state.SeedHash) == "" {
@@ -355,7 +547,7 @@ func dbListPricingAutopilotStatesOnConn(ctx context.Context, rc moduleapi.ReadCo
 			break
 		}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func dbUpsertPricingAutopilotState(ctx context.Context, store *clientDB, state PricingState, updatedAtUnix int64) error {
@@ -372,26 +564,30 @@ func dbUpsertPricingAutopilotState(ctx context.Context, store *clientDB, state P
 	if err != nil {
 		return err
 	}
-	return store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
-		_, err = wtx.ExecContext(ctx, `
-			INSERT INTO biz_pricing_autopilot_state(seed_hash,payload_json,updated_at_unix)
-			VALUES(?,?,?)
-			ON CONFLICT(seed_hash) DO UPDATE SET
-				payload_json=excluded.payload_json,
-				updated_at_unix=excluded.updated_at_unix`,
-			state.SeedHash, string(payload), updatedAtUnix,
-		)
-		return err
+	return store.WriteEntTx(ctx, func(root EntWriteRoot) error {
+		return dbUpsertPricingAutopilotStateOnRoot(ctx, root, state, updatedAtUnix, string(payload))
 	})
 }
 
-// dbUpsertPricingAutopilotStateOnConn 负责把单个种子的自动定价状态写进指定 SQL 连接。
+func dbUpsertPricingAutopilotStateOnConn(ctx context.Context, conn SQLConn, state PricingState, updatedAtUnix int64) error {
+	root, err := entWriteRootFromSQLConn(conn)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return dbUpsertPricingAutopilotStateOnRoot(ctx, root, state, updatedAtUnix, string(payload))
+}
+
+// dbUpsertPricingAutopilotStateOnRoot 负责把单个种子的自动定价状态写进指定 ent 事务。
 // 设计说明：
 // - set_base 需要在事务里批量回写状态，所以这里提供 conn 版本；
 // - 其它路径仍然可以直接走 store 版本，调用面不扩散。
-func dbUpsertPricingAutopilotStateOnConn(ctx context.Context, wtx sqlConn, state PricingState, updatedAtUnix int64) error {
-	if wtx == nil {
-		return fmt.Errorf("sql conn is nil")
+func dbUpsertPricingAutopilotStateOnRoot(ctx context.Context, root EntWriteRoot, state PricingState, updatedAtUnix int64, payloadJSON string) error {
+	if root == nil {
+		return fmt.Errorf("root is nil")
 	}
 	if strings.TrimSpace(state.SeedHash) == "" {
 		return fmt.Errorf("seed_hash required")
@@ -399,24 +595,30 @@ func dbUpsertPricingAutopilotStateOnConn(ctx context.Context, wtx sqlConn, state
 	if updatedAtUnix <= 0 {
 		updatedAtUnix = time.Now().Unix()
 	}
-	payload, err := json.Marshal(state)
-	if err != nil {
+	existing, err := root.BizPricingAutopilotState.Query().
+		Where(bizpricingautopilotstate.SeedHashEQ(state.SeedHash)).
+		Only(ctx)
+	if err == nil {
+		_, err = existing.Update().
+			SetPayloadJSON(payloadJSON).
+			SetUpdatedAtUnix(updatedAtUnix).
+			Save(ctx)
 		return err
 	}
-	_, err = wtx.ExecContext(ctx, `
-		INSERT INTO biz_pricing_autopilot_state(seed_hash,payload_json,updated_at_unix)
-		VALUES(?,?,?)
-		ON CONFLICT(seed_hash) DO UPDATE SET
-			payload_json=excluded.payload_json,
-			updated_at_unix=excluded.updated_at_unix`,
-		state.SeedHash, string(payload), updatedAtUnix,
-	)
+	if !gen.IsNotFound(err) {
+		return err
+	}
+	_, err = root.BizPricingAutopilotState.Create().
+		SetSeedHash(state.SeedHash).
+		SetPayloadJSON(payloadJSON).
+		SetUpdatedAtUnix(updatedAtUnix).
+		Save(ctx)
 	return err
 }
 
-func dbAppendPricingAutopilotAuditOnConn(ctx context.Context, wtx sqlConn, item PricingAuditItem) error {
-	if wtx == nil {
-		return fmt.Errorf("sql conn is nil")
+func dbAppendPricingAutopilotAuditOnRoot(ctx context.Context, root EntWriteRoot, item PricingAuditItem) error {
+	if root == nil {
+		return fmt.Errorf("root is nil")
 	}
 	if strings.TrimSpace(item.SeedHash) == "" {
 		return fmt.Errorf("seed_hash required")
@@ -431,12 +633,20 @@ func dbAppendPricingAutopilotAuditOnConn(ctx context.Context, wtx sqlConn, item 
 	if err != nil {
 		return err
 	}
-	_, err = wtx.ExecContext(ctx, `
-		INSERT INTO biz_pricing_autopilot_audit(seed_hash,payload_json,ticked_at_unix)
-		VALUES(?,?,?)`,
-		item.SeedHash, string(payload), item.TickedAtUnix,
-	)
+	_, err = root.BizPricingAutopilotAudit.Create().
+		SetSeedHash(item.SeedHash).
+		SetPayloadJSON(string(payload)).
+		SetTickedAtUnix(item.TickedAtUnix).
+		Save(ctx)
 	return err
+}
+
+func dbAppendPricingAutopilotAuditOnConn(ctx context.Context, conn SQLConn, item PricingAuditItem) error {
+	root, err := entWriteRootFromSQLConn(conn)
+	if err != nil {
+		return err
+	}
+	return dbAppendPricingAutopilotAuditOnRoot(ctx, root, item)
 }
 
 // dbPersistPricingAutopilotBase 以一个事务把全局 base 和相关种子状态一起写回去。
@@ -451,15 +661,23 @@ func dbPersistPricingAutopilotBase(ctx context.Context, store *clientDB, cfg Pri
 	if updatedAtUnix <= 0 {
 		updatedAtUnix = time.Now().Unix()
 	}
-	return store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
-		if err := dbUpsertPricingAutopilotConfigOnConn(ctx, wtx, cfg, updatedAtUnix); err != nil {
+	payload, err := json.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	return store.WriteEntTx(ctx, func(root EntWriteRoot) error {
+		if err := dbUpsertPricingAutopilotConfigOnRoot(ctx, root, cfg, updatedAtUnix, string(payload)); err != nil {
 			return err
 		}
 		for _, state := range states {
 			if strings.TrimSpace(state.SeedHash) == "" {
 				continue
 			}
-			if err := dbUpsertPricingAutopilotStateOnConn(ctx, wtx, state, updatedAtUnix); err != nil {
+			statePayload, err := json.Marshal(state)
+			if err != nil {
+				return err
+			}
+			if err := dbUpsertPricingAutopilotStateOnRoot(ctx, root, state, updatedAtUnix, string(statePayload)); err != nil {
 				return err
 			}
 		}
@@ -479,27 +697,22 @@ func dbListPricingAutopilotAudits(ctx context.Context, store *clientDB, seedHash
 		limit = 20
 	}
 	var out []PricingAuditItem
-	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
-		rows, err := rc.QueryContext(ctx, `
-			SELECT payload_json
-			  FROM biz_pricing_autopilot_audit
-			 WHERE seed_hash=?
-			 ORDER BY ticked_at_unix DESC, id DESC
-			 LIMIT ?`,
-			seedHash, limit,
-		)
+	err := store.ReadEnt(ctx, func(root EntReadRoot) error {
+		rows, err := root.BizPricingAutopilotAudit.Query().
+			Where(bizpricingautopilotaudit.SeedHashEQ(seedHash)).
+			Order(
+				bizpricingautopilotaudit.ByTickedAtUnix(entsql.OrderDesc()),
+				bizpricingautopilotaudit.ByID(entsql.OrderDesc()),
+			).
+			Limit(limit).
+			All(ctx)
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
-		out = make([]PricingAuditItem, 0, limit)
-		for rows.Next() {
-			var payload string
-			if err := rows.Scan(&payload); err != nil {
-				return err
-			}
+		out = make([]PricingAuditItem, 0, len(rows))
+		for _, row := range rows {
 			var item PricingAuditItem
-			if err := json.Unmarshal([]byte(strings.TrimSpace(payload)), &item); err != nil {
+			if err := json.Unmarshal([]byte(strings.TrimSpace(row.PayloadJSON)), &item); err != nil {
 				return err
 			}
 			if strings.TrimSpace(item.SeedHash) == "" {
@@ -507,7 +720,7 @@ func dbListPricingAutopilotAudits(ctx context.Context, store *clientDB, seedHash
 			}
 			out = append(out, item)
 		}
-		return rows.Err()
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -515,80 +728,20 @@ func dbListPricingAutopilotAudits(ctx context.Context, store *clientDB, seedHash
 	return out, nil
 }
 
-func dbListAllPricingSeedHashesOnConn(ctx context.Context, rc moduleapi.ReadConn) ([]string, error) {
-	if rc == nil {
-		return nil, fmt.Errorf("sql conn is nil")
-	}
-	rows, err := rc.QueryContext(ctx, `
-		SELECT seed_hash
-		  FROM biz_seeds
-		 ORDER BY seed_hash ASC`)
+func dbListAllPricingSeedHashesOnConn(ctx context.Context, conn SQLConn) ([]string, error) {
+	root, err := entWriteRootFromSQLConn(conn)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	out := []string{}
-	for rows.Next() {
-		var seedHash string
-		if err := rows.Scan(&seedHash); err != nil {
-			return nil, err
-		}
-		seedHash = strings.ToLower(strings.TrimSpace(seedHash))
-		if seedHash == "" {
-			continue
-		}
-		out = append(out, seedHash)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return dbListAllPricingSeedHashesOnWriteRoot(ctx, root)
 }
 
-func dbLoadSellerSeedSnapshotOnConn(ctx context.Context, rc moduleapi.ReadConn, seedHash string) (sellerSeed, bool, error) {
-	if rc == nil {
-		return sellerSeed{}, false, fmt.Errorf("sql conn is nil")
-	}
-	seedHash = strings.ToLower(strings.TrimSpace(seedHash))
-	if seedHash == "" {
-		return sellerSeed{}, false, nil
-	}
-	var unitPrice uint64
-	var policyFound bool
-	if err := rc.QueryRowContext(ctx,
-		`SELECT floor_unit_price_sat_per_64k
-		   FROM biz_seed_pricing_policy
-		  WHERE seed_hash=?`,
-		seedHash,
-	).Scan(&unitPrice); err == nil {
-		policyFound = true
-	} else if !errors.Is(err, sql.ErrNoRows) {
+func dbLoadSellerSeedSnapshotOnConn(ctx context.Context, conn SQLConn, seedHash string) (sellerSeed, bool, error) {
+	root, err := entWriteRootFromSQLConn(conn)
+	if err != nil {
 		return sellerSeed{}, false, err
 	}
-
-	var seed sellerSeed
-	if err := rc.QueryRowContext(ctx,
-		`SELECT seed_hash,chunk_count,file_size,recommended_file_name,mime_hint
-		   FROM biz_seeds
-		  WHERE seed_hash=?`,
-		seedHash,
-	).Scan(&seed.SeedHash, &seed.ChunkCount, &seed.FileSize, &seed.RecommendedFileName, &seed.MIMEHint); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return sellerSeed{}, false, nil
-		}
-		return sellerSeed{}, false, err
-	}
-	seed.SeedHash = seedHash
-	seed.ChunkPrice = unitPrice
-	seed.SeedPrice = unitPrice * uint64(seed.ChunkCount)
-	seed.RecommendedFileName = sanitizeRecommendedFileName(seed.RecommendedFileName)
-	seed.MIMEHint = sanitizeMIMEHint(seed.MIMEHint)
-	if !policyFound {
-		seed.ChunkPrice = 0
-		seed.SeedPrice = 0
-	}
-	return seed, true, nil
+	return dbLoadSellerSeedSnapshotOnWriteRoot(ctx, root, seedHash)
 }
 
 func dbPersistPricingAutopilotStateAndAudits(ctx context.Context, store *clientDB, state PricingState, audits []PricingAuditItem, updatedAtUnix int64) error {
@@ -598,12 +751,16 @@ func dbPersistPricingAutopilotStateAndAudits(ctx context.Context, store *clientD
 	if updatedAtUnix <= 0 {
 		updatedAtUnix = time.Now().Unix()
 	}
-	return store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
-		if err := dbUpsertPricingAutopilotStateOnConn(ctx, wtx, state, updatedAtUnix); err != nil {
+	payload, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return store.WriteEntTx(ctx, func(root EntWriteRoot) error {
+		if err := dbUpsertPricingAutopilotStateOnRoot(ctx, root, state, updatedAtUnix, string(payload)); err != nil {
 			return err
 		}
 		for _, item := range audits {
-			if err := dbAppendPricingAutopilotAuditOnConn(ctx, wtx, item); err != nil {
+			if err := dbAppendPricingAutopilotAuditOnRoot(ctx, root, item); err != nil {
 				return err
 			}
 		}
@@ -618,17 +775,21 @@ func dbPersistPricingAutopilotStatesAndAudits(ctx context.Context, store *client
 	if updatedAtUnix <= 0 {
 		updatedAtUnix = time.Now().Unix()
 	}
-	return store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
+	return store.WriteEntTx(ctx, func(root EntWriteRoot) error {
 		for _, state := range states {
 			if strings.TrimSpace(state.SeedHash) == "" {
 				continue
 			}
-			if err := dbUpsertPricingAutopilotStateOnConn(ctx, wtx, state, updatedAtUnix); err != nil {
+			payload, err := json.Marshal(state)
+			if err != nil {
+				return err
+			}
+			if err := dbUpsertPricingAutopilotStateOnRoot(ctx, root, state, updatedAtUnix, string(payload)); err != nil {
 				return err
 			}
 		}
 		for _, item := range audits {
-			if err := dbAppendPricingAutopilotAuditOnConn(ctx, wtx, item); err != nil {
+			if err := dbAppendPricingAutopilotAuditOnRoot(ctx, root, item); err != nil {
 				return err
 			}
 		}

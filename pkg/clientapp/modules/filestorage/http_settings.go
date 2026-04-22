@@ -37,7 +37,7 @@ func handleWorkspaces(svc *service) moduleapi.HTTPHandler {
 			if req.Enabled != nil {
 				enabled = *req.Enabled
 			}
-			item, err := dbUpsertWorkspace(r.Context(), svc.host.Store(), req.WorkspacePath, req.MaxBytes, enabled)
+			item, err := dbUpsertWorkspace(r.Context(), svc.host.WorkspaceStore(), req.WorkspacePath, req.MaxBytes, enabled)
 			if err != nil {
 				writeModuleError(w, httpStatusFromErr(err), moduleapi.CodeOf(err), err.Error())
 				return
@@ -71,7 +71,7 @@ func handleWorkspaceDetail(svc *service) moduleapi.HTTPHandler {
 				writeModuleError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json")
 				return
 			}
-			item, err := dbUpdateWorkspace(r.Context(), svc.host.Store(), path, req.MaxBytes, req.Enabled)
+			item, err := dbUpdateWorkspace(r.Context(), svc.host.WorkspaceStore(), path, req.MaxBytes, req.Enabled)
 			if err != nil {
 				writeModuleError(w, httpStatusFromErr(err), moduleapi.CodeOf(err), err.Error())
 				return
@@ -79,7 +79,7 @@ func handleWorkspaceDetail(svc *service) moduleapi.HTTPHandler {
 			_ = svc.reloadWatcher(r.Context())
 			writeModuleOK(w, map[string]any{"workspace": item})
 		case http.MethodDelete:
-			if err := dbDeleteWorkspace(r.Context(), svc.host.Store(), path); err != nil {
+			if err := dbDeleteWorkspace(r.Context(), svc.host.WorkspaceStore(), path); err != nil {
 				writeModuleError(w, httpStatusFromErr(err), moduleapi.CodeOf(err), err.Error())
 				return
 			}
@@ -144,7 +144,7 @@ func handleSettingsAdd(svc *service) moduleapi.SettingsHook {
 				maxBytes = uint64(t)
 			}
 		}
-		item, err := dbUpsertWorkspace(ctx, svc.host.Store(), path, maxBytes, true)
+		item, err := dbUpsertWorkspace(ctx, svc.host.WorkspaceStore(), path, maxBytes, true)
 		if err != nil {
 			return nil, err
 		}
@@ -173,7 +173,7 @@ func handleSettingsUpdate(svc *service) moduleapi.SettingsHook {
 		if v, ok := payload["enabled"].(bool); ok {
 			enabled = &v
 		}
-		item, err := dbUpdateWorkspace(ctx, svc.host.Store(), path, maxBytes, enabled)
+		item, err := dbUpdateWorkspace(ctx, svc.host.WorkspaceStore(), path, maxBytes, enabled)
 		if err != nil {
 			return nil, err
 		}
@@ -184,7 +184,7 @@ func handleSettingsUpdate(svc *service) moduleapi.SettingsHook {
 func handleSettingsDelete(svc *service) moduleapi.SettingsHook {
 	return func(ctx context.Context, action string, payload map[string]any) (map[string]any, error) {
 		path, _ := payload["workspace_path"].(string)
-		if err := dbDeleteWorkspace(ctx, svc.host.Store(), path); err != nil {
+		if err := dbDeleteWorkspace(ctx, svc.host.WorkspaceStore(), path); err != nil {
 			return nil, err
 		}
 		return map[string]any{"workspace_path": strings.TrimSpace(path)}, nil
