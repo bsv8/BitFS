@@ -33,7 +33,7 @@ func dbUpsertDirectQuote(ctx context.Context, store *clientDB, req directQuoteSu
 	if err != nil {
 		return err
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		existing, err := tx.BizDemandQuotes.Query().
 			Where(bizdemandquotes.DemandIDEQ(demandID), bizdemandquotes.SellerPubHexEQ(sellerPubHex)).
 			Only(ctx)
@@ -96,7 +96,7 @@ func dbRecordDemand(ctx context.Context, store ClientStore, demandID string, see
 	if !ok {
 		return fmt.Errorf("client store type unsupported")
 	}
-	return clientDBEntTx(ctx, db, func(tx *gen.Tx) error {
+	return db.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		demandID = strings.TrimSpace(demandID)
 		seedHash = strings.ToLower(strings.TrimSpace(seedHash))
 		if demandID == "" || seedHash == "" {
@@ -124,7 +124,7 @@ func dbInsertDirectDeal(ctx context.Context, store *clientDB, dealID string, req
 	// - 只保存协议协商上下文（buyer/seller/seed_hash/price 等）
 	// - 不承载支付事实语义，不决定业务是否完成
 	// - 业务完成状态统一看 order_settlements
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		dealID = strings.TrimSpace(dealID)
 		if dealID == "" {
 			return fmt.Errorf("deal_id is required")

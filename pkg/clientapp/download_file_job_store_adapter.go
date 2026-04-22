@@ -20,7 +20,7 @@ import (
 // 它不拥有 DB，不创建 DB。
 // 设计约束：
 // - 只接收已准备好的 store 能力，不自己 newClientDB；
-// - 写操作用 ent 事务，读操作走统一 clientDBEntQuery；
+// - 写操作用 ent 事务，读操作走统一 ReadEnt；
 // - seed_hash 唯一约束保证并发下去重，冲突时查回已有 job（get-or-create）。
 type downloadFileJobStoreAdapter struct {
 	store *clientDB
@@ -75,7 +75,7 @@ func (s *downloadFileJobStoreAdapter) CreateJob(ctx context.Context, job *filedo
 	var created bool
 	var resultJob filedownload.Job
 
-	err := clientDBEntTx(ctx, s.store, func(tx *gen.Tx) error {
+	err := s.store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		createdEnt, err := tx.ProcGetFileByHashJobs.Create().
 			SetJobID(job.JobID).
 			SetSeedHash(job.SeedHash).
@@ -134,8 +134,8 @@ func (s *downloadFileJobStoreAdapter) GetJob(ctx context.Context, jobID string) 
 	if jobID == "" {
 		return filedownload.Job{}, false
 	}
-	result, err := clientDBEntQuery(ctx, s.store, func(c *gen.Client) (filedownload.Job, error) {
-		entJob, err := c.ProcGetFileByHashJobs.Query().
+	result, err := readEntValue(ctx, s.store, func(root EntReadRoot) (filedownload.Job, error) {
+		entJob, err := root.ProcGetFileByHashJobs.Query().
 			Where(procgetfilebyhashjobs.JobIDEQ(jobID)).
 			Only(ctx)
 		if err != nil {
@@ -163,8 +163,8 @@ func (s *downloadFileJobStoreAdapter) FindJobBySeedHash(ctx context.Context, see
 	if seedHash == "" {
 		return filedownload.Job{}, false, fmt.Errorf("seed_hash is required")
 	}
-	result, err := clientDBEntQuery(ctx, s.store, func(c *gen.Client) (filedownload.Job, error) {
-		entJob, err := c.ProcGetFileByHashJobs.Query().
+	result, err := readEntValue(ctx, s.store, func(root EntReadRoot) (filedownload.Job, error) {
+		entJob, err := root.ProcGetFileByHashJobs.Query().
 			Where(procgetfilebyhashjobs.SeedHashEQ(seedHash)).
 			Only(ctx)
 		if err != nil {
@@ -196,7 +196,7 @@ func (s *downloadFileJobStoreAdapter) UpdateJobState(ctx context.Context, jobID 
 		return filedownload.NewError(filedownload.CodeBadRequest, "state is required")
 	}
 
-	return clientDBEntTx(ctx, s.store, func(tx *gen.Tx) error {
+	return s.store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		updated, err := tx.ProcGetFileByHashJobs.Update().
 			Where(procgetfilebyhashjobs.JobIDEQ(jobID)).
 			SetState(state).
@@ -217,7 +217,7 @@ func (s *downloadFileJobStoreAdapter) SetChunkCount(ctx context.Context, jobID s
 		return filedownload.NewError(filedownload.CodeBadRequest, "job_id is required")
 	}
 
-	return clientDBEntTx(ctx, s.store, func(tx *gen.Tx) error {
+	return s.store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		updated, err := tx.ProcGetFileByHashJobs.Update().
 			Where(procgetfilebyhashjobs.JobIDEQ(jobID)).
 			SetChunkCount(int64(chunkCount)).
@@ -238,7 +238,7 @@ func (s *downloadFileJobStoreAdapter) SetDemandID(ctx context.Context, jobID str
 		return filedownload.NewError(filedownload.CodeBadRequest, "job_id is required")
 	}
 
-	return clientDBEntTx(ctx, s.store, func(tx *gen.Tx) error {
+	return s.store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		updated, err := tx.ProcGetFileByHashJobs.Update().
 			Where(procgetfilebyhashjobs.JobIDEQ(jobID)).
 			SetDemandID(demandID).
@@ -263,7 +263,7 @@ func (s *downloadFileJobStoreAdapter) SetFrontOrderID(ctx context.Context, jobID
 		return filedownload.NewError(filedownload.CodeBadRequest, "front_order_id is required")
 	}
 
-	return clientDBEntTx(ctx, s.store, func(tx *gen.Tx) error {
+	return s.store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		entJob, err := tx.ProcGetFileByHashJobs.Query().
 			Where(procgetfilebyhashjobs.JobIDEQ(jobID)).
 			Only(ctx)
@@ -303,7 +303,7 @@ func (s *downloadFileJobStoreAdapter) SetError(ctx context.Context, jobID string
 		return filedownload.NewError(filedownload.CodeBadRequest, "job_id is required")
 	}
 
-	return clientDBEntTx(ctx, s.store, func(tx *gen.Tx) error {
+	return s.store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		updated, err := tx.ProcGetFileByHashJobs.Update().
 			Where(procgetfilebyhashjobs.JobIDEQ(jobID)).
 			SetError(message).
@@ -324,7 +324,7 @@ func (s *downloadFileJobStoreAdapter) SetPartFilePath(ctx context.Context, jobID
 		return filedownload.NewError(filedownload.CodeBadRequest, "job_id is required")
 	}
 
-	return clientDBEntTx(ctx, s.store, func(tx *gen.Tx) error {
+	return s.store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		updated, err := tx.ProcGetFileByHashJobs.Update().
 			Where(procgetfilebyhashjobs.JobIDEQ(jobID)).
 			SetPartFilePath(partFilePath).
@@ -347,7 +347,7 @@ func (s *downloadFileJobStoreAdapter) AppendChunkReport(ctx context.Context, job
 
 	now := time.Now().Unix()
 
-	return clientDBEntTx(ctx, s.store, func(tx *gen.Tx) error {
+	return s.store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		entJob, err := tx.ProcGetFileByHashJobs.Query().
 			Where(procgetfilebyhashjobs.JobIDEQ(jobID)).
 			Only(ctx)
@@ -441,7 +441,7 @@ func (s *downloadFileJobStoreAdapter) AppendQuote(ctx context.Context, jobID str
 		availableChunksJSON = string(b)
 	}
 
-	return clientDBEntTx(ctx, s.store, func(tx *gen.Tx) error {
+	return s.store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		entJob, err := tx.ProcGetFileByHashJobs.Query().
 			Where(procgetfilebyhashjobs.JobIDEQ(jobID)).
 			Only(ctx)
@@ -513,7 +513,7 @@ func (s *downloadFileJobStoreAdapter) SetOutputPath(ctx context.Context, jobID s
 		return filedownload.NewError(filedownload.CodeBadRequest, "job_id is required")
 	}
 
-	return clientDBEntTx(ctx, s.store, func(tx *gen.Tx) error {
+	return s.store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		updated, err := tx.ProcGetFileByHashJobs.Update().
 			Where(procgetfilebyhashjobs.JobIDEQ(jobID)).
 			SetOutputFilePath(path).
@@ -535,8 +535,8 @@ func (s *downloadFileJobStoreAdapter) ListChunks(ctx context.Context, jobID stri
 	}
 
 	// 先验证 job 存在
-	_, err := clientDBEntQuery(ctx, s.store, func(c *gen.Client) (struct{}, error) {
-		_, err := c.ProcGetFileByHashJobs.Query().
+	_, err := readEntValue(ctx, s.store, func(root EntReadRoot) (struct{}, error) {
+		_, err := root.ProcGetFileByHashJobs.Query().
 			Where(procgetfilebyhashjobs.JobIDEQ(jobID)).
 			Only(ctx)
 		if err != nil {
@@ -558,8 +558,8 @@ func (s *downloadFileJobStoreAdapter) ListChunks(ctx context.Context, jobID stri
 		return nil, false
 	}
 
-	result, err := clientDBEntQuery(ctx, s.store, func(c *gen.Client) ([]filedownload.ChunkReport, error) {
-		entChunks, err := c.ProcGetFileByHashChunks.Query().
+	result, err := readEntValue(ctx, s.store, func(root EntReadRoot) ([]filedownload.ChunkReport, error) {
+		entChunks, err := root.ProcGetFileByHashChunks.Query().
 			Where(procgetfilebyhashchunks.JobIDEQ(jobID)).
 			All(ctx)
 		if err != nil {
@@ -601,8 +601,8 @@ func (s *downloadFileJobStoreAdapter) ListQuotes(ctx context.Context, jobID stri
 		return nil, false
 	}
 
-	_, err := clientDBEntQuery(ctx, s.store, func(c *gen.Client) (struct{}, error) {
-		_, err := c.ProcGetFileByHashJobs.Query().
+	_, err := readEntValue(ctx, s.store, func(root EntReadRoot) (struct{}, error) {
+		_, err := root.ProcGetFileByHashJobs.Query().
 			Where(procgetfilebyhashjobs.JobIDEQ(jobID)).
 			Only(ctx)
 		if err != nil {
@@ -624,8 +624,8 @@ func (s *downloadFileJobStoreAdapter) ListQuotes(ctx context.Context, jobID stri
 		return nil, false
 	}
 
-	result, err := clientDBEntQuery(ctx, s.store, func(c *gen.Client) ([]filedownload.QuoteReport, error) {
-		entQuotes, err := c.ProcGetFileByHashQuotes.Query().
+	result, err := readEntValue(ctx, s.store, func(root EntReadRoot) ([]filedownload.QuoteReport, error) {
+		entQuotes, err := root.ProcGetFileByHashQuotes.Query().
 			Where(procgetfilebyhashquotes.JobIDEQ(jobID)).
 			All(ctx)
 		if err != nil {
@@ -668,8 +668,8 @@ func (s *downloadFileJobStoreAdapter) ListQuotes(ctx context.Context, jobID stri
 }
 
 func (s *downloadFileJobStoreAdapter) ListJobs(ctx context.Context) []filedownload.Job {
-	result, err := clientDBEntQuery(ctx, s.store, func(c *gen.Client) ([]filedownload.Job, error) {
-		entJobs, err := c.ProcGetFileByHashJobs.Query().All(ctx)
+	result, err := readEntValue(ctx, s.store, func(root EntReadRoot) ([]filedownload.Job, error) {
+		entJobs, err := root.ProcGetFileByHashJobs.Query().All(ctx)
 		if err != nil {
 			obs.Error("getfilebyhash", "list_jobs_db_failed", map[string]any{
 				"error": err.Error(),

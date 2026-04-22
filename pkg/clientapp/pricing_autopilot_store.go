@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 )
 
 // 设计说明：
@@ -20,8 +22,9 @@ func dbListPricingSeedHashes(ctx context.Context, store *clientDB, limit int) ([
 	if limit <= 0 {
 		return nil, fmt.Errorf("limit is required")
 	}
-	return clientDBValue(ctx, store, func(db SQLConn) ([]string, error) {
-		rows, err := QueryContext(ctx, db, `
+	var out []string
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
+		rows, err := rc.QueryContext(ctx, `
 			SELECT seed_hash
 			  FROM biz_seeds
 			 ORDER BY seed_hash ASC
@@ -29,15 +32,15 @@ func dbListPricingSeedHashes(ctx context.Context, store *clientDB, limit int) ([
 			limit,
 		)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		defer rows.Close()
 
-		out := make([]string, 0, limit)
+		out = make([]string, 0, limit)
 		for rows.Next() {
 			var seedHash string
 			if err := rows.Scan(&seedHash); err != nil {
-				return nil, err
+				return err
 			}
 			seedHash = strings.ToLower(strings.TrimSpace(seedHash))
 			if seedHash == "" {
@@ -46,34 +49,39 @@ func dbListPricingSeedHashes(ctx context.Context, store *clientDB, limit int) ([
 			out = append(out, seedHash)
 		}
 		if err := rows.Err(); err != nil {
-			return nil, err
+			return err
 		}
 		if len(out) == 0 {
-			return nil, fmt.Errorf("no seed found")
+			return fmt.Errorf("no seed found")
 		}
-		return out, nil
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func dbListAllPricingSeedHashes(ctx context.Context, store *clientDB) ([]string, error) {
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db SQLConn) ([]string, error) {
-		rows, err := QueryContext(ctx, db, `
+	var out []string
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
+		rows, err := rc.QueryContext(ctx, `
 			SELECT seed_hash
 			  FROM biz_seeds
 			 ORDER BY seed_hash ASC`)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		defer rows.Close()
 
-		out := []string{}
+		out = []string{}
 		for rows.Next() {
 			var seedHash string
 			if err := rows.Scan(&seedHash); err != nil {
-				return nil, err
+				return err
 			}
 			seedHash = strings.ToLower(strings.TrimSpace(seedHash))
 			if seedHash == "" {
@@ -81,11 +89,12 @@ func dbListAllPricingSeedHashes(ctx context.Context, store *clientDB) ([]string,
 			}
 			out = append(out, seedHash)
 		}
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		return out, nil
+		return rows.Err()
 	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 const pricingAutopilotConfigKey = "live_base_price_sat_per_64k"
@@ -154,12 +163,14 @@ func dbLoadPricingAutopilotConfig(ctx context.Context, store *clientDB) (Pricing
 		cfg PricingConfig
 		ok  bool
 	}
-	out, err := clientDBValue(ctx, store, func(db SQLConn) (result, error) {
-		cfg, ok, err := dbLoadPricingAutopilotConfigOnConn(ctx, db)
+	var out result
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
+		cfg, ok, err := dbLoadPricingAutopilotConfigOnConn(ctx, rc)
 		if err != nil {
-			return result{}, err
+			return err
 		}
-		return result{cfg: cfg, ok: ok}, nil
+		out = result{cfg: cfg, ok: ok}
+		return nil
 	})
 	if err != nil {
 		return PricingConfig{}, false, err
@@ -167,12 +178,12 @@ func dbLoadPricingAutopilotConfig(ctx context.Context, store *clientDB) (Pricing
 	return out.cfg, out.ok, nil
 }
 
-func dbLoadPricingAutopilotConfigOnConn(ctx context.Context, conn SQLConn) (PricingConfig, bool, error) {
-	if conn == nil {
+func dbLoadPricingAutopilotConfigOnConn(ctx context.Context, rc moduleapi.ReadConn) (PricingConfig, bool, error) {
+	if rc == nil {
 		return PricingConfig{}, false, fmt.Errorf("sql conn is nil")
 	}
 	var payloadJSON string
-	if err := QueryRowContext(ctx, conn, `
+	if err := rc.QueryRowContext(ctx, `
 		SELECT payload_json
 		  FROM biz_pricing_autopilot_config
 		 WHERE config_key=?`,
@@ -204,15 +215,17 @@ func dbUpsertPricingAutopilotConfig(ctx context.Context, store *clientDB, cfg Pr
 	if err != nil {
 		return err
 	}
-	_, err = store.ExecContext(ctx, `
-		INSERT INTO biz_pricing_autopilot_config(config_key,payload_json,updated_at_unix)
-		VALUES(?,?,?)
-		ON CONFLICT(config_key) DO UPDATE SET
-			payload_json=excluded.payload_json,
-			updated_at_unix=excluded.updated_at_unix`,
-		pricingAutopilotConfigKey, string(payload), updatedAtUnix,
-	)
-	return err
+	return store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
+		_, err = wtx.ExecContext(ctx, `
+			INSERT INTO biz_pricing_autopilot_config(config_key,payload_json,updated_at_unix)
+			VALUES(?,?,?)
+			ON CONFLICT(config_key) DO UPDATE SET
+				payload_json=excluded.payload_json,
+				updated_at_unix=excluded.updated_at_unix`,
+			pricingAutopilotConfigKey, string(payload), updatedAtUnix,
+		)
+		return err
+	})
 }
 
 // dbUpsertPricingAutopilotConfigOnConn 只负责把全局 base 写进目标 SQL 连接。
@@ -220,8 +233,8 @@ func dbUpsertPricingAutopilotConfig(ctx context.Context, store *clientDB, cfg Pr
 // - set_base 需要先把配置和状态放进同一个事务入口里；
 // - 所以这里拆出 conn 版本，给事务闭包直接复用；
 // - 业务层不要自己拼 SQL，只走这一个收口。
-func dbUpsertPricingAutopilotConfigOnConn(ctx context.Context, conn SQLConn, cfg PricingConfig, updatedAtUnix int64) error {
-	if conn == nil {
+func dbUpsertPricingAutopilotConfigOnConn(ctx context.Context, wtx moduleapi.WriteTx, cfg PricingConfig, updatedAtUnix int64) error {
+	if wtx == nil {
 		return fmt.Errorf("sql conn is nil")
 	}
 	if updatedAtUnix <= 0 {
@@ -231,7 +244,7 @@ func dbUpsertPricingAutopilotConfigOnConn(ctx context.Context, conn SQLConn, cfg
 	if err != nil {
 		return err
 	}
-	_, err = conn.ExecContext(ctx, `
+	_, err = wtx.ExecContext(ctx, `
 		INSERT INTO biz_pricing_autopilot_config(config_key,payload_json,updated_at_unix)
 		VALUES(?,?,?)
 		ON CONFLICT(config_key) DO UPDATE SET
@@ -250,12 +263,14 @@ func dbLoadPricingAutopilotState(ctx context.Context, store *clientDB, seedHash 
 		state PricingState
 		ok    bool
 	}
-	out, err := clientDBValue(ctx, store, func(db SQLConn) (result, error) {
-		state, ok, err := dbLoadPricingAutopilotStateOnConn(ctx, db, seedHash)
+	var out result
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
+		state, ok, err := dbLoadPricingAutopilotStateOnConn(ctx, rc, seedHash)
 		if err != nil {
-			return result{}, err
+			return err
 		}
-		return result{state: state, ok: ok}, nil
+		out = result{state: state, ok: ok}
+		return nil
 	})
 	if err != nil {
 		return PricingState{}, false, err
@@ -263,8 +278,8 @@ func dbLoadPricingAutopilotState(ctx context.Context, store *clientDB, seedHash 
 	return out.state, out.ok, nil
 }
 
-func dbLoadPricingAutopilotStateOnConn(ctx context.Context, conn SQLConn, seedHash string) (PricingState, bool, error) {
-	if conn == nil {
+func dbLoadPricingAutopilotStateOnConn(ctx context.Context, rc moduleapi.ReadConn, seedHash string) (PricingState, bool, error) {
+	if rc == nil {
 		return PricingState{}, false, fmt.Errorf("sql conn is nil")
 	}
 	seedHash = normalizeSeedHashHex(seedHash)
@@ -272,7 +287,7 @@ func dbLoadPricingAutopilotStateOnConn(ctx context.Context, conn SQLConn, seedHa
 		return PricingState{}, false, nil
 	}
 	var payloadJSON string
-	if err := QueryRowContext(ctx, conn, `
+	if err := rc.QueryRowContext(ctx, `
 		SELECT payload_json
 		  FROM biz_pricing_autopilot_state
 		 WHERE seed_hash=?`,
@@ -294,16 +309,26 @@ func dbListPricingAutopilotStates(ctx context.Context, store *clientDB, limit in
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db SQLConn) ([]PricingState, error) {
-		return dbListPricingAutopilotStatesOnConn(ctx, db, limit)
+	var out []PricingState
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
+		states, err := dbListPricingAutopilotStatesOnConn(ctx, rc, limit)
+		if err != nil {
+			return err
+		}
+		out = states
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
-func dbListPricingAutopilotStatesOnConn(ctx context.Context, conn SQLConn, limit int) ([]PricingState, error) {
-	if conn == nil {
+func dbListPricingAutopilotStatesOnConn(ctx context.Context, rc moduleapi.ReadConn, limit int) ([]PricingState, error) {
+	if rc == nil {
 		return nil, fmt.Errorf("sql conn is nil")
 	}
-	rows, err := QueryContext(ctx, conn, `
+	rows, err := rc.QueryContext(ctx, `
 		SELECT payload_json
 		  FROM biz_pricing_autopilot_state
 		 ORDER BY seed_hash ASC`)
@@ -347,23 +372,25 @@ func dbUpsertPricingAutopilotState(ctx context.Context, store *clientDB, state P
 	if err != nil {
 		return err
 	}
-	_, err = store.ExecContext(ctx, `
-		INSERT INTO biz_pricing_autopilot_state(seed_hash,payload_json,updated_at_unix)
-		VALUES(?,?,?)
-		ON CONFLICT(seed_hash) DO UPDATE SET
-			payload_json=excluded.payload_json,
-			updated_at_unix=excluded.updated_at_unix`,
-		state.SeedHash, string(payload), updatedAtUnix,
-	)
-	return err
+	return store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
+		_, err = wtx.ExecContext(ctx, `
+			INSERT INTO biz_pricing_autopilot_state(seed_hash,payload_json,updated_at_unix)
+			VALUES(?,?,?)
+			ON CONFLICT(seed_hash) DO UPDATE SET
+				payload_json=excluded.payload_json,
+				updated_at_unix=excluded.updated_at_unix`,
+			state.SeedHash, string(payload), updatedAtUnix,
+		)
+		return err
+	})
 }
 
 // dbUpsertPricingAutopilotStateOnConn 负责把单个种子的自动定价状态写进指定 SQL 连接。
 // 设计说明：
 // - set_base 需要在事务里批量回写状态，所以这里提供 conn 版本；
 // - 其它路径仍然可以直接走 store 版本，调用面不扩散。
-func dbUpsertPricingAutopilotStateOnConn(ctx context.Context, conn SQLConn, state PricingState, updatedAtUnix int64) error {
-	if conn == nil {
+func dbUpsertPricingAutopilotStateOnConn(ctx context.Context, wtx sqlConn, state PricingState, updatedAtUnix int64) error {
+	if wtx == nil {
 		return fmt.Errorf("sql conn is nil")
 	}
 	if strings.TrimSpace(state.SeedHash) == "" {
@@ -376,7 +403,7 @@ func dbUpsertPricingAutopilotStateOnConn(ctx context.Context, conn SQLConn, stat
 	if err != nil {
 		return err
 	}
-	_, err = conn.ExecContext(ctx, `
+	_, err = wtx.ExecContext(ctx, `
 		INSERT INTO biz_pricing_autopilot_state(seed_hash,payload_json,updated_at_unix)
 		VALUES(?,?,?)
 		ON CONFLICT(seed_hash) DO UPDATE SET
@@ -387,8 +414,8 @@ func dbUpsertPricingAutopilotStateOnConn(ctx context.Context, conn SQLConn, stat
 	return err
 }
 
-func dbAppendPricingAutopilotAuditOnConn(ctx context.Context, conn SQLConn, item PricingAuditItem) error {
-	if conn == nil {
+func dbAppendPricingAutopilotAuditOnConn(ctx context.Context, wtx sqlConn, item PricingAuditItem) error {
+	if wtx == nil {
 		return fmt.Errorf("sql conn is nil")
 	}
 	if strings.TrimSpace(item.SeedHash) == "" {
@@ -404,7 +431,7 @@ func dbAppendPricingAutopilotAuditOnConn(ctx context.Context, conn SQLConn, item
 	if err != nil {
 		return err
 	}
-	_, err = conn.ExecContext(ctx, `
+	_, err = wtx.ExecContext(ctx, `
 		INSERT INTO biz_pricing_autopilot_audit(seed_hash,payload_json,ticked_at_unix)
 		VALUES(?,?,?)`,
 		item.SeedHash, string(payload), item.TickedAtUnix,
@@ -416,7 +443,7 @@ func dbAppendPricingAutopilotAuditOnConn(ctx context.Context, conn SQLConn, item
 // 设计说明：
 // - 这是 set_base 的数据库落点，不给别的流程复用；
 // - 如果事务失败，调用方负责把配置文件和内存回滚到旧值；
-// - 这里不做“局部成功”处理，避免留下半新半旧的状态。
+// - 这里不做"局部成功"处理，避免留下半新半旧的状态。
 func dbPersistPricingAutopilotBase(ctx context.Context, store *clientDB, cfg PricingConfig, states []PricingState, updatedAtUnix int64) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
@@ -424,15 +451,15 @@ func dbPersistPricingAutopilotBase(ctx context.Context, store *clientDB, cfg Pri
 	if updatedAtUnix <= 0 {
 		updatedAtUnix = time.Now().Unix()
 	}
-	return store.Tx(ctx, func(conn SQLConn) error {
-		if err := dbUpsertPricingAutopilotConfigOnConn(ctx, conn, cfg, updatedAtUnix); err != nil {
+	return store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
+		if err := dbUpsertPricingAutopilotConfigOnConn(ctx, wtx, cfg, updatedAtUnix); err != nil {
 			return err
 		}
 		for _, state := range states {
 			if strings.TrimSpace(state.SeedHash) == "" {
 				continue
 			}
-			if err := dbUpsertPricingAutopilotStateOnConn(ctx, conn, state, updatedAtUnix); err != nil {
+			if err := dbUpsertPricingAutopilotStateOnConn(ctx, wtx, state, updatedAtUnix); err != nil {
 				return err
 			}
 		}
@@ -451,8 +478,9 @@ func dbListPricingAutopilotAudits(ctx context.Context, store *clientDB, seedHash
 	if limit <= 0 {
 		limit = 20
 	}
-	return clientDBValue(ctx, store, func(db SQLConn) ([]PricingAuditItem, error) {
-		rows, err := QueryContext(ctx, db, `
+	var out []PricingAuditItem
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
+		rows, err := rc.QueryContext(ctx, `
 			SELECT payload_json
 			  FROM biz_pricing_autopilot_audit
 			 WHERE seed_hash=?
@@ -461,36 +489,37 @@ func dbListPricingAutopilotAudits(ctx context.Context, store *clientDB, seedHash
 			seedHash, limit,
 		)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		defer rows.Close()
-		out := make([]PricingAuditItem, 0, limit)
+		out = make([]PricingAuditItem, 0, limit)
 		for rows.Next() {
 			var payload string
 			if err := rows.Scan(&payload); err != nil {
-				return nil, err
+				return err
 			}
 			var item PricingAuditItem
 			if err := json.Unmarshal([]byte(strings.TrimSpace(payload)), &item); err != nil {
-				return nil, err
+				return err
 			}
 			if strings.TrimSpace(item.SeedHash) == "" {
 				continue
 			}
 			out = append(out, item)
 		}
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		return out, nil
+		return rows.Err()
 	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
-func dbListAllPricingSeedHashesOnConn(ctx context.Context, conn SQLConn) ([]string, error) {
-	if conn == nil {
+func dbListAllPricingSeedHashesOnConn(ctx context.Context, rc moduleapi.ReadConn) ([]string, error) {
+	if rc == nil {
 		return nil, fmt.Errorf("sql conn is nil")
 	}
-	rows, err := QueryContext(ctx, conn, `
+	rows, err := rc.QueryContext(ctx, `
 		SELECT seed_hash
 		  FROM biz_seeds
 		 ORDER BY seed_hash ASC`)
@@ -517,8 +546,8 @@ func dbListAllPricingSeedHashesOnConn(ctx context.Context, conn SQLConn) ([]stri
 	return out, nil
 }
 
-func dbLoadSellerSeedSnapshotOnConn(ctx context.Context, conn SQLConn, seedHash string) (sellerSeed, bool, error) {
-	if conn == nil {
+func dbLoadSellerSeedSnapshotOnConn(ctx context.Context, rc moduleapi.ReadConn, seedHash string) (sellerSeed, bool, error) {
+	if rc == nil {
 		return sellerSeed{}, false, fmt.Errorf("sql conn is nil")
 	}
 	seedHash = strings.ToLower(strings.TrimSpace(seedHash))
@@ -527,7 +556,7 @@ func dbLoadSellerSeedSnapshotOnConn(ctx context.Context, conn SQLConn, seedHash 
 	}
 	var unitPrice uint64
 	var policyFound bool
-	if err := QueryRowContext(ctx, conn,
+	if err := rc.QueryRowContext(ctx,
 		`SELECT floor_unit_price_sat_per_64k
 		   FROM biz_seed_pricing_policy
 		  WHERE seed_hash=?`,
@@ -539,7 +568,7 @@ func dbLoadSellerSeedSnapshotOnConn(ctx context.Context, conn SQLConn, seedHash 
 	}
 
 	var seed sellerSeed
-	if err := QueryRowContext(ctx, conn,
+	if err := rc.QueryRowContext(ctx,
 		`SELECT seed_hash,chunk_count,file_size,recommended_file_name,mime_hint
 		   FROM biz_seeds
 		  WHERE seed_hash=?`,
@@ -569,12 +598,12 @@ func dbPersistPricingAutopilotStateAndAudits(ctx context.Context, store *clientD
 	if updatedAtUnix <= 0 {
 		updatedAtUnix = time.Now().Unix()
 	}
-	return store.Tx(ctx, func(conn SQLConn) error {
-		if err := dbUpsertPricingAutopilotStateOnConn(ctx, conn, state, updatedAtUnix); err != nil {
+	return store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
+		if err := dbUpsertPricingAutopilotStateOnConn(ctx, wtx, state, updatedAtUnix); err != nil {
 			return err
 		}
 		for _, item := range audits {
-			if err := dbAppendPricingAutopilotAuditOnConn(ctx, conn, item); err != nil {
+			if err := dbAppendPricingAutopilotAuditOnConn(ctx, wtx, item); err != nil {
 				return err
 			}
 		}
@@ -589,17 +618,17 @@ func dbPersistPricingAutopilotStatesAndAudits(ctx context.Context, store *client
 	if updatedAtUnix <= 0 {
 		updatedAtUnix = time.Now().Unix()
 	}
-	return store.Tx(ctx, func(conn SQLConn) error {
+	return store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
 		for _, state := range states {
 			if strings.TrimSpace(state.SeedHash) == "" {
 				continue
 			}
-			if err := dbUpsertPricingAutopilotStateOnConn(ctx, conn, state, updatedAtUnix); err != nil {
+			if err := dbUpsertPricingAutopilotStateOnConn(ctx, wtx, state, updatedAtUnix); err != nil {
 				return err
 			}
 		}
 		for _, item := range audits {
-			if err := dbAppendPricingAutopilotAuditOnConn(ctx, conn, item); err != nil {
+			if err := dbAppendPricingAutopilotAuditOnConn(ctx, wtx, item); err != nil {
 				return err
 			}
 		}

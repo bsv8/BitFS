@@ -176,19 +176,19 @@ func LoadRuntimeConfigOrInit(configPath, initNetwork string) (clientapp.Config, 
 		}
 	}
 	defaultCfg := NewDefaultConfig(initNetwork)
-	res, err := clientapp.LoadOrInitConfigFileForMode(configPath, defaultCfg, clientapp.StartupModeProduct)
+	res, err := clientapp.LoadOrInitConfigFile(configPath, defaultCfg)
 	if err != nil {
 		return clientapp.Config{}, false, err
 	}
 	cfg := res.Config
-	if err := clientapp.ApplyConfigDefaultsForMode(&cfg, clientapp.StartupModeProduct); err != nil {
+	if err := clientapp.ApplyConfigDefaults(&cfg); err != nil {
 		return clientapp.Config{}, false, err
 	}
 	cfg.Index.Backend = "sqlite"
 	if strings.TrimSpace(cfg.Index.SQLitePath) == "" {
 		cfg.Index.SQLitePath = filepath.Clean(filepath.Join(filepath.Dir(configPath), "data", "client-index.sqlite"))
 	}
-	if err := clientapp.SaveConfigFileForMode(configPath, cfg, clientapp.StartupModeProduct); err != nil {
+	if err := clientapp.SaveConfigFile(configPath, cfg); err != nil {
 		return clientapp.Config{}, false, err
 	}
 	configExistsAfterSave := false

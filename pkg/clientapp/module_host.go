@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -305,28 +304,28 @@ type moduleStoreAdapter struct {
 	store moduleBootstrapStore
 }
 
-func (a moduleStoreAdapter) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	return a.store.ExecContext(ctx, query, args...)
-}
-
-func (a moduleStoreAdapter) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	return a.store.QueryContext(ctx, query, args...)
-}
-
-func (a moduleStoreAdapter) Do(ctx context.Context, fn func(moduleapi.Conn) error) error {
+func (a moduleStoreAdapter) Read(ctx context.Context, fn func(moduleapi.ReadConn) error) error {
 	if a.store == nil {
-		return fmt.Errorf("store is required")
+		return fmt.Errorf("store is nil")
 	}
 	if fn == nil {
-		return fmt.Errorf("store fn is required")
+		return fmt.Errorf("read func is nil")
 	}
-	return a.store.Do(ctx, func(conn SQLConn) error {
-		return fn(conn)
+	return a.store.Read(ctx, func(rc moduleapi.ReadConn) error {
+		return fn(rc)
 	})
 }
 
-func (a moduleStoreAdapter) SerialAccess() bool {
-	return a.store != nil && a.store.SerialAccess()
+func (a moduleStoreAdapter) WriteTx(ctx context.Context, fn func(moduleapi.WriteTx) error) error {
+	if a.store == nil {
+		return fmt.Errorf("store is nil")
+	}
+	if fn == nil {
+		return fmt.Errorf("write tx func is nil")
+	}
+	return a.store.WriteTx(ctx, func(wtc moduleapi.WriteTx) error {
+		return fn(wtc)
+	})
 }
 
 func normalizeModuleHTTPPath(path string) string {

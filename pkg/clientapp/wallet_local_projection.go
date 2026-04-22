@@ -13,7 +13,7 @@ import (
 // 设计说明：
 // - 这里不碰 sql，只把业务输入转给 db 层；
 // - 本地广播投影和费用池回填共用同一条显式 store 路径。
-func applyLocalBroadcastWalletTx(ctx context.Context, store ClientStore, rt transferRuntimeCaps, txHex string, trigger string) error {
+func applyLocalBroadcastWalletTx(ctx context.Context, store moduleBootstrapStore, rt transferRuntimeCaps, txHex string, trigger string) error {
 	if store == nil {
 		return fmt.Errorf("store not initialized")
 	}
@@ -24,7 +24,7 @@ func applyLocalBroadcastWalletTx(ctx context.Context, store ClientStore, rt tran
 	return applyLocalBroadcastWalletProjection(ctx, store, rt, parsed, trigger)
 }
 
-func applyLocalBroadcastWalletTxBytes(ctx context.Context, store ClientStore, rt transferRuntimeCaps, rawTx []byte, trigger string) error {
+func applyLocalBroadcastWalletTxBytes(ctx context.Context, store moduleBootstrapStore, rt transferRuntimeCaps, rawTx []byte, trigger string) error {
 	if len(rawTx) == 0 {
 		return fmt.Errorf("raw tx is empty")
 	}
@@ -32,6 +32,6 @@ func applyLocalBroadcastWalletTxBytes(ctx context.Context, store ClientStore, rt
 }
 
 // applyLocalBroadcastWalletProjection 只保留业务入口，真正的落库细节放到 db 文件里。
-func applyLocalBroadcastWalletProjection(ctx context.Context, store ClientStore, rt transferRuntimeCaps, tx *txsdk.Transaction, trigger string) error {
+func applyLocalBroadcastWalletProjection(ctx context.Context, store moduleBootstrapStore, rt transferRuntimeCaps, tx *txsdk.Transaction, trigger string) error {
 	return dbApplyLocalBroadcastWalletProjection(ctx, store, rt, tx, trigger)
 }

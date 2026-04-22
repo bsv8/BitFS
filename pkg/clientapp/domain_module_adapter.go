@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	"github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlements"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -217,7 +216,7 @@ func (a domainModuleAdapter) UpsertFrontOrder(ctx context.Context, entry domain.
 }
 
 func (a domainModuleAdapter) UpsertBusiness(ctx context.Context, entry domain.BusinessEntry) error {
-	return clientDBEntTx(ctx, a.store, func(tx *gen.Tx) error {
+	return a.store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		return dbUpsertSettleRecordTx(ctx, tx, finBusinessEntry{
 			OrderID:                entry.BusinessID,
 			BusinessRole:           entry.BusinessRole,
@@ -244,7 +243,7 @@ func (a domainModuleAdapter) UpsertBusiness(ctx context.Context, entry domain.Bu
 }
 
 func (a domainModuleAdapter) UpsertBusinessSettlement(ctx context.Context, entry domain.BusinessSettlementEntry) error {
-	return clientDBEntTx(ctx, a.store, func(tx *gen.Tx) error {
+	return a.store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		return dbUpsertSettleRecordSettlementTx(ctx, tx, businessSettlementEntry{
 			SettlementID:     entry.SettlementID,
 			OrderID:          entry.BusinessID,
@@ -261,7 +260,7 @@ func (a domainModuleAdapter) UpsertBusinessSettlement(ctx context.Context, entry
 }
 
 func (a domainModuleAdapter) AppendBusinessTrigger(ctx context.Context, entry domain.BusinessTriggerEntry) error {
-	return clientDBEntTx(ctx, a.store, func(tx *gen.Tx) error {
+	return a.store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		return dbAppendBusinessTriggerTx(ctx, tx, businessTriggerEntry{
 			TriggerID:      entry.TriggerID,
 			OrderID:        entry.BusinessID,
@@ -284,7 +283,7 @@ func (a domainModuleAdapter) UpdateOrderSettlement(ctx context.Context, settleme
 	if a.store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(ctx, a.store, func(tx *gen.Tx) error {
+	return a.store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		_, err := tx.OrderSettlements.Update().
 			Where(ordersettlements.SettlementIDEQ(strings.TrimSpace(settlementID))).
 			SetSettlementStatus(strings.TrimSpace(status)).

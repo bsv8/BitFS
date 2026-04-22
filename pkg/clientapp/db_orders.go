@@ -78,7 +78,7 @@ func dbUpsertFrontOrder(ctx context.Context, store *clientDB, e frontOrderEntry)
 	if e.UpdatedAtUnix <= 0 {
 		e.UpdatedAtUnix = now
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		existing, err := tx.Orders.Query().
 			Where(orders.OrderIDEQ(e.FrontOrderID)).
 			Only(ctx)
@@ -125,9 +125,9 @@ func dbGetFrontOrder(ctx context.Context, store *clientDB, frontOrderID string) 
 	if frontOrderID == "" {
 		return frontOrderItem{}, fmt.Errorf("order_id is required")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (frontOrderItem, error) {
+	return readEntValue(ctx, store, func(root EntReadRoot) (frontOrderItem, error) {
 		var item frontOrderItem
-		row, err := tx.Orders.Query().
+		row, err := root.Orders.Query().
 			Where(orders.OrderIDEQ(frontOrderID)).
 			Only(ctx)
 		if err != nil {
@@ -159,7 +159,7 @@ func dbUpdateFrontOrderStatus(ctx context.Context, store *clientDB, frontOrderID
 	if frontOrderID == "" {
 		return fmt.Errorf("order_id is required")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		affected, err := tx.Orders.Update().
 			Where(orders.OrderIDEQ(frontOrderID)).
 			SetStatus(strings.TrimSpace(status)).

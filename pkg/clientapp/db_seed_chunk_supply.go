@@ -18,7 +18,7 @@ func dbReplaceSeedChunkSupply(ctx context.Context, store *clientDB, seedHash str
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		return dbReplaceSeedChunkSupplyTx(ctx, tx, seedHash, availableChunkIndexes)
 	})
 }
@@ -27,8 +27,8 @@ func dbListSeedChunkSupply(ctx context.Context, store *clientDB, seedHash string
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]uint32, error) {
-		return dbListSeedChunkSupplyTx(ctx, tx, seedHash)
+	return readEntValue(ctx, store, func(root EntReadRoot) ([]uint32, error) {
+		return dbListSeedChunkSupplyRoot(ctx, root, seedHash)
 	})
 }
 
@@ -36,12 +36,12 @@ func dbIsSeedChunkAvailable(ctx context.Context, store *clientDB, seedHash strin
 	if store == nil {
 		return false, fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (bool, error) {
-		return dbIsSeedChunkAvailableTx(ctx, tx, seedHash, chunkIndex)
+	return readEntValue(ctx, store, func(root EntReadRoot) (bool, error) {
+		return dbIsSeedChunkAvailableRoot(ctx, root, seedHash, chunkIndex)
 	})
 }
 
-func dbReplaceSeedChunkSupplyTx(ctx context.Context, tx *gen.Tx, seedHash string, indexes []uint32) error {
+func dbReplaceSeedChunkSupplyTx(ctx context.Context, tx EntWriteRoot, seedHash string, indexes []uint32) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -67,15 +67,15 @@ func dbReplaceSeedChunkSupplyTx(ctx context.Context, tx *gen.Tx, seedHash string
 	return err
 }
 
-func dbListSeedChunkSupplyTx(ctx context.Context, tx *gen.Tx, seedHash string) ([]uint32, error) {
-	if tx == nil {
-		return nil, fmt.Errorf("tx is nil")
+func dbListSeedChunkSupplyRoot(ctx context.Context, root EntReadRoot, seedHash string) ([]uint32, error) {
+	if root == nil {
+		return nil, fmt.Errorf("root is nil")
 	}
 	seedHash = normalizeSeedHashHex(seedHash)
 	if seedHash == "" {
 		return nil, fmt.Errorf("seed_hash required")
 	}
-	rows, err := tx.BizSeedChunkSupply.Query().
+	rows, err := root.BizSeedChunkSupply.Query().
 		Where(bizseedchunksupply.SeedHashEQ(seedHash)).
 		Order(bizseedchunksupply.ByChunkIndex()).
 		All(ctx)
@@ -89,15 +89,15 @@ func dbListSeedChunkSupplyTx(ctx context.Context, tx *gen.Tx, seedHash string) (
 	return out, nil
 }
 
-func dbIsSeedChunkAvailableTx(ctx context.Context, tx *gen.Tx, seedHash string, chunkIndex uint32) (bool, error) {
-	if tx == nil {
-		return false, fmt.Errorf("tx is nil")
+func dbIsSeedChunkAvailableRoot(ctx context.Context, root EntReadRoot, seedHash string, chunkIndex uint32) (bool, error) {
+	if root == nil {
+		return false, fmt.Errorf("root is nil")
 	}
 	seedHash = normalizeSeedHashHex(seedHash)
 	if seedHash == "" {
 		return false, fmt.Errorf("seed_hash required")
 	}
-	return tx.BizSeedChunkSupply.Query().
+	return root.BizSeedChunkSupply.Query().
 		Where(bizseedchunksupply.SeedHashEQ(seedHash), bizseedchunksupply.ChunkIndexEQ(int64(chunkIndex))).
 		Exist(ctx)
 }

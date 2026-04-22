@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 )
 
 // confirmedUTXOChange 已确认 UTXO 变化（来自同步层，供 fact 层消费）
@@ -66,7 +67,7 @@ func SyncWalletAndApplyFacts(ctx context.Context, store *clientDB, address strin
 		})
 	}
 	if len(changes) == 0 {
-		if backfillErr := store.Do(ctx, func(db sqlConn) error {
+		if backfillErr := store.WriteTx(ctx, func(db moduleapi.WriteTx) error {
 			return backfillFactSpentFromWalletUTXO(ctx, db, walletID, address, updatedAt)
 		}); backfillErr != nil {
 			return fmt.Errorf("backfill fact spent without confirmed changes: %w", backfillErr)
@@ -97,8 +98,8 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 	}
 	classifier := defaultWalletScriptClassifier(source)
 	var changes []confirmedUTXOChange
-	err := store.Tx(ctx, func(tx sqlConn) error {
-		current, err := dbLoadWalletUTXOStateRowsTx(tx, walletID, address)
+	err := store.WriteTx(ctx, func(tx moduleapi.WriteTx) error {
+		current, err := dbLoadWalletUTXOStateRowsTx(ctx, tx, walletID, address)
 		if err != nil {
 			return err
 		}
@@ -320,7 +321,7 @@ func ApplyConfirmedUTXOChanges(ctx context.Context, store *clientDB, changes []c
 		"change_count": len(changes),
 		"updated_at":   updatedAt,
 	})
-	return store.Do(ctx, func(db sqlConn) error {
+	return store.WriteTx(ctx, func(db moduleapi.WriteTx) error {
 		addressWallet := make(map[string]string, len(changes))
 		for _, change := range changes {
 			// 从 wallet_id 提取 owner_pubkey_hex（去掉 "wallet:" 前缀）

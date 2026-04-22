@@ -98,26 +98,26 @@ func dbGetVerificationQueueSummary(ctx context.Context, store *clientDB) (*Verif
 	if store == nil {
 		return nil, fmt.Errorf("store is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (*VerificationQueueSummary, error) {
+	return readEntValue(ctx, store, func(root EntReadRoot) (*VerificationQueueSummary, error) {
 		var summary VerificationQueueSummary
-		total, err := tx.WalletUtxoTokenVerification.Query().Count(ctx)
+		total, err := root.WalletUtxoTokenVerification.Query().Count(ctx)
 		if err != nil {
 			return nil, err
 		}
 		summary.Total = total
-		if summary.Pending, err = tx.WalletUtxoTokenVerification.Query().Where(walletutxotokenverification.StatusEQ("pending")).Count(ctx); err != nil {
+		if summary.Pending, err = root.WalletUtxoTokenVerification.Query().Where(walletutxotokenverification.StatusEQ("pending")).Count(ctx); err != nil {
 			return nil, err
 		}
-		if summary.ConfirmedBSV20, err = tx.WalletUtxoTokenVerification.Query().Where(walletutxotokenverification.StatusEQ("confirmed_bsv20")).Count(ctx); err != nil {
+		if summary.ConfirmedBSV20, err = root.WalletUtxoTokenVerification.Query().Where(walletutxotokenverification.StatusEQ("confirmed_bsv20")).Count(ctx); err != nil {
 			return nil, err
 		}
-		if summary.ConfirmedBSV21, err = tx.WalletUtxoTokenVerification.Query().Where(walletutxotokenverification.StatusEQ("confirmed_bsv21")).Count(ctx); err != nil {
+		if summary.ConfirmedBSV21, err = root.WalletUtxoTokenVerification.Query().Where(walletutxotokenverification.StatusEQ("confirmed_bsv21")).Count(ctx); err != nil {
 			return nil, err
 		}
-		if summary.ConfirmedPlainBSV, err = tx.WalletUtxoTokenVerification.Query().Where(walletutxotokenverification.StatusEQ("confirmed_plain_bsv")).Count(ctx); err != nil {
+		if summary.ConfirmedPlainBSV, err = root.WalletUtxoTokenVerification.Query().Where(walletutxotokenverification.StatusEQ("confirmed_plain_bsv")).Count(ctx); err != nil {
 			return nil, err
 		}
-		if summary.Failed, err = tx.WalletUtxoTokenVerification.Query().Where(walletutxotokenverification.StatusEQ("failed")).Count(ctx); err != nil {
+		if summary.Failed, err = root.WalletUtxoTokenVerification.Query().Where(walletutxotokenverification.StatusEQ("failed")).Count(ctx); err != nil {
 			return nil, err
 		}
 		return &summary, nil
@@ -135,8 +135,8 @@ func dbListFailedVerificationItems(ctx context.Context, store *clientDB, limit i
 	if limit <= 0 {
 		limit = 50
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]VerificationFailureDetail, error) {
-		q := tx.WalletUtxoTokenVerification.Query().
+	return readEntValue(ctx, store, func(root EntReadRoot) ([]VerificationFailureDetail, error) {
+		q := root.WalletUtxoTokenVerification.Query().
 			Where(walletutxotokenverification.ErrorMessageNEQ(""))
 		if includePending {
 			q = q.Where(walletutxotokenverification.StatusIn("pending", "failed"))
@@ -188,7 +188,7 @@ func dbListVerificationItems(ctx context.Context, store *clientDB, f verificatio
 	if f.Limit <= 0 {
 		f.Limit = 100
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]VerificationQueueItem, error) {
+	return readEntValue(ctx, store, func(root EntReadRoot) ([]VerificationQueueItem, error) {
 		preds := make([]func(*gen.WalletUtxoTokenVerificationQuery), 0, 4)
 		if f.Status != "" {
 			preds = append(preds, func(q *gen.WalletUtxoTokenVerificationQuery) {
@@ -210,7 +210,7 @@ func dbListVerificationItems(ctx context.Context, store *clientDB, f verificatio
 				q.Where(walletutxotokenverification.UpdatedAtUnixLTE(f.BeforeUnix))
 			})
 		}
-		q := tx.WalletUtxoTokenVerification.Query()
+		q := root.WalletUtxoTokenVerification.Query()
 		for _, pred := range preds {
 			pred(q)
 		}
@@ -256,12 +256,12 @@ func dbCheckVerificationReconciliation(ctx context.Context, store *clientDB) (*V
 	if store == nil {
 		return nil, fmt.Errorf("store is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (*VerificationReconcileReport, error) {
+	return readEntValue(ctx, store, func(root EntReadRoot) (*VerificationReconcileReport, error) {
 		report := &VerificationReconcileReport{
 			Summary: make(map[string]int),
 		}
 
-		confirmedRows, err := tx.WalletUtxoTokenVerification.Query().
+		confirmedRows, err := root.WalletUtxoTokenVerification.Query().
 			Where(walletutxotokenverification.StatusIn("confirmed_bsv20", "confirmed_bsv21", "confirmed_plain_bsv")).
 			All(ctx)
 		if err != nil {
@@ -273,7 +273,7 @@ func dbCheckVerificationReconciliation(ctx context.Context, store *clientDB) (*V
 		}
 		factConfirmedSet := make(map[string]struct{}, len(confirmedIDs))
 		if len(confirmedIDs) > 0 {
-			factRows, err := tx.FactBsvUtxos.Query().
+			factRows, err := root.FactBsvUtxos.Query().
 				Where(factbsvutxos.UtxoIDIn(confirmedIDs...)).
 				All(ctx)
 			if err != nil {
@@ -298,7 +298,7 @@ func dbCheckVerificationReconciliation(ctx context.Context, store *clientDB) (*V
 		}
 		report.Summary["confirmed_without_fact"] = len(report.ConfirmedNoFact)
 
-		pendingRows, err := tx.WalletUtxoTokenVerification.Query().
+		pendingRows, err := root.WalletUtxoTokenVerification.Query().
 			Where(walletutxotokenverification.StatusEQ("pending")).
 			All(ctx)
 		if err != nil {
@@ -310,7 +310,7 @@ func dbCheckVerificationReconciliation(ctx context.Context, store *clientDB) (*V
 		}
 		pendingFactType := make(map[string]string, len(pendingIDs))
 		if len(pendingIDs) > 0 {
-			factRows, err := tx.FactBsvUtxos.Query().
+			factRows, err := root.FactBsvUtxos.Query().
 				Where(factbsvutxos.UtxoIDIn(pendingIDs...)).
 				All(ctx)
 			if err != nil {
@@ -323,7 +323,7 @@ func dbCheckVerificationReconciliation(ctx context.Context, store *clientDB) (*V
 				}
 				pendingFactType[utxoID] = strings.TrimSpace(row.CarrierType)
 			}
-			carrierRows, err := tx.FactTokenCarrierLinks.Query().
+			carrierRows, err := root.FactTokenCarrierLinks.Query().
 				Where(
 					facttokencarrierlinks.CarrierUtxoIDIn(pendingIDs...),
 					facttokencarrierlinks.LinkStateEQ("active"),
@@ -377,7 +377,7 @@ func dbResetVerificationToPending(ctx context.Context, store *clientDB, utxoID s
 	if utxoID == "" {
 		return fmt.Errorf("utxo_id is required")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		now := time.Now().Unix()
 		affected, err := tx.WalletUtxoTokenVerification.Update().
 			Where(walletutxotokenverification.UtxoIDEQ(utxoID)).
@@ -407,7 +407,7 @@ func dbBatchRetryFailed(ctx context.Context, store *clientDB, walletID string, a
 		return 0, fmt.Errorf("store is nil")
 	}
 	var result int
-	if err := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	if err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		now := time.Now().Unix()
 		q := tx.WalletUtxoTokenVerification.Update().
 			Where(

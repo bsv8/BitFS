@@ -75,7 +75,7 @@ func main() {
 		log.Fatal(err)
 	}
 	cfg := managedclient.NewDefaultConfig(initNetwork)
-	if err := clientapp.ApplyConfigDefaultsForMode(&cfg, clientapp.StartupModeProduct); err != nil {
+	if err := clientapp.ApplyConfigDefaults(&cfg); err != nil {
 		log.Fatal(err)
 	}
 	// 设计说明：

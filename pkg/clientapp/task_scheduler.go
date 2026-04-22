@@ -420,7 +420,7 @@ func (s *taskScheduler) upsertTaskProfile(rt *periodicTaskRuntime, status string
 	if strings.TrimSpace(status) == "" {
 		status = "active"
 	}
-	return clientDBEntTx(s.ctx, s.store, func(tx *gen.Tx) error {
+	return  s.store.WriteEntTx(s.ctx, func(tx EntWriteRoot) error {
 		intervalSeconds := int64(spec.Interval / time.Second)
 		createdAtUnix := int64(now)
 		closedAtUnix := int64(closedAt)
@@ -480,7 +480,7 @@ func (s *taskScheduler) markTaskStoppedWithCtx(ctx context.Context, name string)
 		return fmt.Errorf("client db is nil")
 	}
 	now := time.Now().Unix()
-	return clientDBEntTx(ctx, s.store, func(tx *gen.Tx) error {
+	return s.store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		existing, err := tx.ProcSchedulerTasks.Query().Where(procschedulertasks.TaskNameEQ(strings.TrimSpace(name))).Only(ctx)
 		if err != nil {
 			return err
@@ -505,7 +505,7 @@ func (s *taskScheduler) markTaskStarted(name string, trigger string, startedAt i
 	if s.store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(s.ctx, s.store, func(tx *gen.Tx) error {
+	return  s.store.WriteEntTx(s.ctx, func(tx EntWriteRoot) error {
 		existing, err := tx.ProcSchedulerTasks.Query().Where(procschedulertasks.TaskNameEQ(strings.TrimSpace(name))).Only(s.ctx)
 		if err != nil {
 			return err
@@ -542,7 +542,7 @@ func (s *taskScheduler) markTaskFinished(name string, endedAt int64, durationMS 
 	if s.store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(s.ctx, s.store, func(tx *gen.Tx) error {
+	return  s.store.WriteEntTx(s.ctx, func(tx EntWriteRoot) error {
 		existing, err := tx.ProcSchedulerTasks.Query().Where(procschedulertasks.TaskNameEQ(strings.TrimSpace(name))).Only(s.ctx)
 		if err != nil {
 			return err
@@ -572,7 +572,7 @@ func (s *taskScheduler) appendTaskRunLog(spec periodicTaskSpec, trigger string, 
 	if s.store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(s.ctx, s.store, func(tx *gen.Tx) error {
+	return  s.store.WriteEntTx(s.ctx, func(tx EntWriteRoot) error {
 		_, err := tx.ProcSchedulerTaskRuns.Create().
 			SetTaskName(strings.TrimSpace(spec.Name)).
 			SetOwner(strings.TrimSpace(spec.Owner)).
@@ -637,7 +637,7 @@ func (s *taskScheduler) ResetTaskProfilesForStartup(names []string, startupUnix 
 	if s.store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(s.ctx, s.store, func(tx *gen.Tx) error {
+	return  s.store.WriteEntTx(s.ctx, func(tx EntWriteRoot) error {
 		_, err := tx.ProcSchedulerTasks.Update().
 			Where(procschedulertasks.TaskNameIn(filtered...)).
 			SetStatus("stopped").

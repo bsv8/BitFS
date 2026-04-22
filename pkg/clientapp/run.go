@@ -234,17 +234,14 @@ type sellerCatalog struct {
 	stale     atomic.Bool
 }
 
-// ClientStore 是业务层可见的最小数据库能力。
+// ClientStore 是业务主路可见的最小数据库能力。
 // 设计约束：
-// - 这里不暴露 *sql.DB 给上层拼装逻辑；
-// - 业务函数只拿能力，不拿底层连接；
+// - 业务主路只拿 ent 读写能力；
+// - raw SQL 只留给模块边界和极少数基础设施桥接；
 // - 真正的实现仍然是 clientDB。
 type ClientStore interface {
-	Do(ctx context.Context, fn func(SQLConn) error) error
-	Tx(ctx context.Context, fn func(SQLConn) error) error
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ReadEnt(ctx context.Context, fn func(EntReadRoot) error) error
+	WriteEntTx(ctx context.Context, fn func(EntWriteRoot) error) error
 }
 
 // RunDeps 由最外层装配好后显式传给 Run。
@@ -315,8 +312,6 @@ type Runtime struct {
 	transferPoolOpenMu         sync.Mutex
 	transferPoolSessionLocksMu sync.Mutex
 	transferPoolSessionLocks   map[string]*sync.Mutex
-	directTransferTestMu       sync.RWMutex
-	directTransferTestOpts     DirectTransferTestOptions
 	// walletAllocMu 保证“钱包 UTXO 分配”串行执行，避免并发选中同一输入导致冲突。
 	// 分配完成后，基于专属 UTXO 的后续池内操作可并行。
 	walletAllocMu sync.Mutex

@@ -33,7 +33,7 @@ import (
 // ⚠️ 第五步：仅用于协议运行期上下文恢复，禁止用于业务状态判断
 func dbLoadDirectDealParties(ctx context.Context, store *clientDB, dealID string) (string, string, string, error) {
 	// 运行期辅助查询：只给 direct transfer 串 buyer / seller / arbiter 上下文。
-	out, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (struct {
+	out, err := readEntValue(ctx, store, func(root EntReadRoot) (struct {
 		buyer   string
 		seller  string
 		arbiter string
@@ -43,7 +43,7 @@ func dbLoadDirectDealParties(ctx context.Context, store *clientDB, dealID string
 			seller  string
 			arbiter string
 		}
-		row, err := tx.ProcDirectDeals.Query().
+		row, err := root.ProcDirectDeals.Query().
 			Where(procdirectdeals.DealIDEQ(strings.TrimSpace(dealID))).
 			Only(ctx)
 		if err != nil {
@@ -67,8 +67,8 @@ func dbLoadDirectDealParties(ctx context.Context, store *clientDB, dealID string
 // ⚠️ 第五步：仅用于协议运行期上下文恢复，禁止用于业务状态判断
 func dbLoadDirectDealSeedHash(ctx context.Context, store *clientDB, dealID string) (string, error) {
 	// 运行期辅助查询：只用于恢复直连链路的 seed 关联。
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (string, error) {
-		row, err := tx.ProcDirectDeals.Query().
+	return readEntValue(ctx, store, func(root EntReadRoot) (string, error) {
+		row, err := root.ProcDirectDeals.Query().
 			Where(procdirectdeals.DealIDEQ(strings.TrimSpace(dealID))).
 			Only(ctx)
 		if err != nil {
@@ -86,21 +86,21 @@ func dbLoadDirectDealSeedHash(ctx context.Context, store *clientDB, dealID strin
 // - 返回值中的 Status 是协议运行时状态，不代表业务结算状态
 // - 业务状态请查 order_settlements
 func dbLoadDirectTransferPoolRow(ctx context.Context, store *clientDB, sessionID string) (directTransferPoolRow, error) {
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (directTransferPoolRow, error) {
-		return loadDirectTransferPoolRowEntTx(ctx, tx, sessionID)
+	return readEntValue(ctx, store, func(root EntReadRoot) (directTransferPoolRow, error) {
+		return loadDirectTransferPoolRowEntRoot(ctx, root, sessionID)
 	})
 }
 
-func loadDirectTransferPoolRowEntTx(ctx context.Context, tx *gen.Tx, sessionID string) (directTransferPoolRow, error) {
+func loadDirectTransferPoolRowEntRoot(ctx context.Context, root EntReadRoot, sessionID string) (directTransferPoolRow, error) {
 	var row directTransferPoolRow
-	if tx == nil {
+	if root == nil {
 		return row, fmt.Errorf("tx is nil")
 	}
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return row, fmt.Errorf("session_id is required")
 	}
-	node, err := tx.ProcDirectTransferPools.Query().
+	node, err := root.ProcDirectTransferPools.Query().
 		Where(procdirecttransferpools.SessionIDEQ(sessionID)).
 		Only(ctx)
 	if err != nil {
@@ -133,12 +133,21 @@ func loadDirectTransferPoolRowEntTx(ctx context.Context, tx *gen.Tx, sessionID s
 	return row, nil
 }
 
+func loadDirectTransferPoolRowEntTx(ctx context.Context, tx EntWriteRoot, sessionID string) (directTransferPoolRow, error) {
+	if tx == nil {
+		return directTransferPoolRow{}, fmt.Errorf("tx is nil")
+	}
+	return loadDirectTransferPoolRowEntRoot(ctx, &entReadRoot{
+		ProcDirectTransferPools: newQueryBox(tx.ProcDirectTransferPools.Query()),
+	}, sessionID)
+}
+
 func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req directTransferPoolOpenReq, sessionID string, dealID string, buyerPubHex string, sellerPubHex string, arbiterPubHex string, currentTxHex string, baseTxHex string) error {
 	if store == nil {
 		return fmt.Errorf("db is nil")
 	}
 	now := time.Now().Unix()
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		if row, err := loadDirectTransferPoolRowEntTx(ctx, tx, sessionID); err == nil {
 			if strings.EqualFold(strings.TrimSpace(row.Status), "closed") {
 				return fmt.Errorf("transfer pool is closed")
@@ -261,7 +270,7 @@ func dbUpdateDirectTransferPoolPay(ctx context.Context, store *clientDB, session
 		nextStatus = "paid"
 	}
 	now := time.Now().Unix()
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		row, err := loadDirectTransferPoolRowEntTx(ctx, tx, sessionID)
 		if err != nil {
 			return err
@@ -362,7 +371,7 @@ func dbUpdateDirectTransferPoolStatus(ctx context.Context, store *clientDB, sess
 		return fmt.Errorf("session_id and status are required")
 	}
 	now := time.Now().Unix()
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		existing, err := tx.ProcDirectTransferPools.Query().
 			Where(procdirecttransferpools.SessionIDEQ(sessionID)).
 			Only(ctx)
@@ -393,7 +402,7 @@ func dbUpsertDirectArbitrationState(ctx context.Context, store *clientDB, sessio
 		return fmt.Errorf("session_id/evidence_key/status are required")
 	}
 	now := time.Now().Unix()
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		row, err := loadDirectTransferPoolRowEntTx(ctx, tx, sessionID)
 		if err != nil {
 			return err
@@ -436,7 +445,7 @@ func dbApplyDirectTransferPoolArbitrated(ctx context.Context, store *clientDB, s
 		return fmt.Errorf("session_id/current_tx_hex are required")
 	}
 	now := time.Now().Unix()
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		existing, err := tx.ProcDirectTransferPools.Query().
 			Where(procdirecttransferpools.SessionIDEQ(sessionID)).
 			Only(ctx)
@@ -463,7 +472,7 @@ func dbUpdateDirectTransferPoolClosing(ctx context.Context, store *clientDB, ses
 		return fmt.Errorf("db is nil")
 	}
 	now := time.Now().Unix()
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		row, err := loadDirectTransferPoolRowEntTx(ctx, tx, sessionID)
 		if err != nil {
 			return err
@@ -553,8 +562,8 @@ func dbUpdateDirectTransferPoolClosing(ctx context.Context, store *clientDB, ses
 }
 
 func dbLoadSeedBytesBySeedHash(ctx context.Context, store *clientDB, seedHash string) ([]byte, error) {
-	seedPath, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (string, error) {
-		row, err := tx.BizSeeds.Query().
+	seedPath, err := readEntValue(ctx, store, func(root EntReadRoot) (string, error) {
+		row, err := root.BizSeeds.Query().
 			Where(bizseeds.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
 			Only(ctx)
 		if err != nil {
@@ -572,7 +581,7 @@ func dbLoadSeedBytesBySeedHash(ctx context.Context, store *clientDB, seedHash st
 }
 
 func dbLoadChunkBytesBySeedHash(ctx context.Context, store *clientDB, seedHash string, chunkIndex uint32) ([]byte, error) {
-	meta, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (struct {
+	meta, err := readEntValue(ctx, store, func(root EntReadRoot) (struct {
 		workspacePath string
 		filePath      string
 		chunkCount    uint32
@@ -582,7 +591,7 @@ func dbLoadChunkBytesBySeedHash(ctx context.Context, store *clientDB, seedHash s
 			filePath      string
 			chunkCount    uint32
 		}
-		seedRow, err := tx.BizSeeds.Query().
+		seedRow, err := root.BizSeeds.Query().
 			Where(bizseeds.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
 			Only(ctx)
 		if err != nil {
@@ -592,7 +601,7 @@ func dbLoadChunkBytesBySeedHash(ctx context.Context, store *clientDB, seedHash s
 			return out, err
 		}
 		out.chunkCount = uint32(seedRow.ChunkCount)
-		fileRow, err := tx.BizWorkspaceFiles.Query().
+		fileRow, err := root.BizWorkspaceFiles.Query().
 			Where(bizworkspacefiles.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
 			Order(bizworkspacefiles.ByWorkspacePath(), bizworkspacefiles.ByFilePath()).
 			First(ctx)

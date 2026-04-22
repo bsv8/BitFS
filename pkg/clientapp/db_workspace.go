@@ -77,7 +77,7 @@ func dbEnsureDefaultWorkspace(ctx context.Context, store *clientDB, workspaceDir
 		return err
 	}
 	now := time.Now().Unix()
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		if _, err := dbLoadWorkspaceByPathTx(ctx, tx, abs); err != nil {
 			if err != sql.ErrNoRows {
 				return err
@@ -102,14 +102,14 @@ func dbListWorkspaces(ctx context.Context, store *clientDB) ([]workspaceItem, er
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]workspaceItem, error) {
+	return readEntValue(ctx, store, func(root EntReadRoot) ([]workspaceItem, error) {
 		var rows []struct {
 			WorkspacePath string `json:"workspace_path,omitempty"`
 			Enabled       int64  `json:"enabled,omitempty"`
 			MaxBytes      int64  `json:"max_bytes,omitempty"`
 			CreatedAtUnix int64  `json:"created_at_unix,omitempty"`
 		}
-		err := tx.BizWorkspaces.Query().
+		err := root.BizWorkspaces.Query().
 			Order(bizworkspaces.ByWorkspacePath()).
 			Select(
 				bizworkspaces.FieldWorkspacePath,
@@ -143,7 +143,7 @@ func dbAddWorkspace(ctx context.Context, store *clientDB, absPath string, maxByt
 		return workspaceItem{}, err
 	}
 	now := time.Now().Unix()
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (workspaceItem, error) {
+	return writeEntValue(ctx, store, func(tx EntWriteRoot) (workspaceItem, error) {
 		if _, err := dbLoadWorkspaceByPathTx(ctx, tx, absPath); err != nil {
 			if err != sql.ErrNoRows {
 				return workspaceItem{}, err
@@ -177,7 +177,7 @@ func dbDeleteWorkspaceByPath(ctx context.Context, store *clientDB, workspacePath
 	if err != nil {
 		return err
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		cur, err := dbLoadWorkspaceByPathTx(ctx, tx, workspacePath)
 		if err != nil {
 			if err == sql.ErrNoRows {
@@ -203,7 +203,7 @@ func dbUpdateWorkspaceByPath(ctx context.Context, store *clientDB, workspacePath
 	if err != nil {
 		return workspaceItem{}, err
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (workspaceItem, error) {
+	return writeEntValue(ctx, store, func(tx EntWriteRoot) (workspaceItem, error) {
 		cur, err := dbLoadWorkspaceByPathTx(ctx, tx, workspacePath)
 		if err != nil {
 			if err == sql.ErrNoRows {
@@ -260,8 +260,8 @@ func dbListLiveCacheFiles(ctx context.Context, store *clientDB) ([]workspaceFile
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]workspaceFileRow, error) {
-		rows, err := tx.BizWorkspaceFiles.Query().Order(bizworkspacefiles.ByWorkspacePath(), bizworkspacefiles.ByFilePath()).All(ctx)
+	return readEntValue(ctx, store, func(root EntReadRoot) ([]workspaceFileRow, error) {
+		rows, err := root.BizWorkspaceFiles.Query().Order(bizworkspacefiles.ByWorkspacePath(), bizworkspacefiles.ByFilePath()).All(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -283,7 +283,7 @@ func dbDeleteLiveStreamCacheRows(ctx context.Context, store *clientDB, streamID 
 		return fmt.Errorf("client db is nil")
 	}
 	like := "live/" + strings.ToLower(strings.TrimSpace(streamID)) + "/%"
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		_, err := tx.BizWorkspaceFiles.Delete().Where(bizworkspacefiles.FilePathHasPrefix(strings.TrimSuffix(like, "%"))).Exec(ctx)
 		return err
 	})
@@ -293,12 +293,12 @@ func dbCleanupOrphanSeedState(ctx context.Context, store *clientDB) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		return dbCleanupOrphanSeedStateTx(ctx, tx)
 	})
 }
 
-func dbCleanupOrphanSeedStateTx(ctx context.Context, tx *gen.Tx) error {
+func dbCleanupOrphanSeedStateTx(ctx context.Context, tx EntWriteRoot) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -320,7 +320,7 @@ func dbUpsertDownloadedFile(ctx context.Context, store *clientDB, absPath string
 	if seedLocked {
 		lockedValue = 1
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		roots, err := dbListWorkspaceRootsTx(ctx, tx)
 		if err != nil {
 			return err
@@ -344,12 +344,29 @@ func dbListWorkspaceRoots(ctx context.Context, store *clientDB) ([]string, error
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]string, error) {
-		return dbListWorkspaceRootsTx(ctx, tx)
+	return readEntValue(ctx, store, func(root EntReadRoot) ([]string, error) {
+		var rows []struct {
+			WorkspacePath string `json:"workspace_path,omitempty"`
+		}
+		err := root.BizWorkspaces.Query().
+			Where(bizworkspaces.EnabledEQ(1)).
+			Order(bizworkspaces.ByWorkspacePath()).
+			Select(bizworkspaces.FieldWorkspacePath).
+			Scan(ctx, &rows)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]string, 0, len(rows))
+		for _, row := range rows {
+			if root, err := normalizeWorkspacePath(row.WorkspacePath); err == nil && root != "" {
+				out = append(out, root)
+			}
+		}
+		return out, nil
 	})
 }
 
-func dbListWorkspaceRootsTx(ctx context.Context, tx *gen.Tx) ([]string, error) {
+func dbListWorkspaceRootsTx(ctx context.Context, tx EntWriteRoot) ([]string, error) {
 	if tx == nil {
 		return nil, fmt.Errorf("tx is nil")
 	}
@@ -377,8 +394,8 @@ func dbListWorkspaceFiles(ctx context.Context, store *clientDB, limit int, offse
 	if store == nil {
 		return workspaceFilesPage{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (workspaceFilesPage, error) {
-		query := tx.BizWorkspaceFiles.Query()
+	return readEntValue(ctx, store, func(root EntReadRoot) (workspaceFilesPage, error) {
+		query := root.BizWorkspaceFiles.Query()
 		if pathLike != "" {
 			query = query.Where(bizworkspacefiles.Or(
 				bizworkspacefiles.WorkspacePathContains(pathLike),
@@ -412,58 +429,53 @@ func dbListWorkspaceSeeds(ctx context.Context, store *clientDB, limit int, offse
 	if store == nil {
 		return workspaceSeedsPage{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (workspaceSeedsPage, error) {
-		query := tx.BizSeeds.Query()
-		if seedHash != "" {
-			query = query.Where(bizseeds.SeedHashEQ(seedHash))
-		} else if seedHashLike != "" {
-			query = query.Where(bizseeds.SeedHashContains(seedHashLike))
-		}
+	return readEntValue(ctx, store, func(root EntReadRoot) (workspaceSeedsPage, error) {
 		var out workspaceSeedsPage
-		var err error
-		out.Total, err = query.Clone().Count(ctx)
+		q := root.BizSeeds.Query()
+		switch {
+		case seedHash != "":
+			q = q.Where(bizseeds.SeedHashEQ(normalizeSeedHashHex(seedHash)))
+		case seedHashLike != "":
+			q = q.Where(bizseeds.SeedHashContains(strings.ToLower(strings.TrimSpace(seedHashLike))))
+		}
+		total, err := q.Clone().Count(ctx)
 		if err != nil {
 			return workspaceSeedsPage{}, err
 		}
-		seeds, err := query.Clone().Order(bizseeds.BySeedHash()).Limit(limit).Offset(offset).All(ctx)
+		out.Total = total
+		rows, err := q.Clone().Order(bizseeds.BySeedHash()).Limit(limit).Offset(offset).All(ctx)
 		if err != nil {
 			return workspaceSeedsPage{}, err
 		}
-		hashes := make([]string, 0, len(seeds))
-		for _, seed := range seeds {
-			hashes = append(hashes, seed.SeedHash)
-		}
-		policies := map[string]*gen.BizSeedPricingPolicy{}
-		if len(hashes) > 0 {
-			policyRows, err := tx.BizSeedPricingPolicy.Query().
-				Where(bizseedpricingpolicy.SeedHashIn(hashes...)).
-				All(ctx)
+		out.Items = make([]workspaceSeedItem, 0, len(rows))
+		for _, seed := range rows {
+			item := workspaceSeedItem{
+				SeedHash:      seed.SeedHash,
+				SeedFilePath:  seed.SeedFilePath,
+				ChunkCount:    uint32(seed.ChunkCount),
+				FileSize:      seed.FileSize,
+				PricingSource: "system",
+			}
+			policy, err := root.BizSeedPricingPolicy.Query().Where(bizseedpricingpolicy.SeedHashEQ(seed.SeedHash)).Only(ctx)
 			if err != nil {
-				return workspaceSeedsPage{}, err
+				if !gen.IsNotFound(err) {
+					return workspaceSeedsPage{}, err
+				}
+			} else {
+				item.FloorPriceSatPer64K = uint64(policy.FloorUnitPriceSatPer64k)
+				item.ResaleDiscountBPS = uint64(policy.ResaleDiscountBps)
+				if strings.TrimSpace(policy.PricingSource) != "" {
+					item.PricingSource = policy.PricingSource
+				}
+				item.PriceUpdatedAtUnix = policy.UpdatedAtUnix
 			}
-			for _, policy := range policyRows {
-				policies[policy.SeedHash] = policy
-			}
-		}
-		out.Items = make([]workspaceSeedItem, 0, len(seeds))
-		for _, seed := range seeds {
-			policy := policies[seed.SeedHash]
-			out.Items = append(out.Items, workspaceSeedItem{
-				SeedHash:            seed.SeedHash,
-				SeedFilePath:        seed.SeedFilePath,
-				ChunkCount:          uint32(seed.ChunkCount),
-				FileSize:            seed.FileSize,
-				FloorPriceSatPer64K: policyValueOrZero(policy, func(p *gen.BizSeedPricingPolicy) uint64 { return uint64(p.FloorUnitPriceSatPer64k) }),
-				ResaleDiscountBPS:   policyValueOrZero(policy, func(p *gen.BizSeedPricingPolicy) uint64 { return uint64(p.ResaleDiscountBps) }),
-				PricingSource:       policyStringOrDefault(policy, func(p *gen.BizSeedPricingPolicy) string { return p.PricingSource }, "system"),
-				PriceUpdatedAtUnix:  int64(policyValueOrZero(policy, func(p *gen.BizSeedPricingPolicy) uint64 { return uint64(p.UpdatedAtUnix) })),
-			})
+			out.Items = append(out.Items, item)
 		}
 		return out, nil
 	})
 }
 
-func dbLoadWorkspaceByPathTx(ctx context.Context, tx *gen.Tx, absPath string) (workspaceItem, error) {
+func dbLoadWorkspaceByPathTx(ctx context.Context, tx EntWriteRoot, absPath string) (workspaceItem, error) {
 	if tx == nil {
 		return workspaceItem{}, fmt.Errorf("tx is nil")
 	}
@@ -505,7 +517,7 @@ func dbLoadWorkspaceByPathTx(ctx context.Context, tx *gen.Tx, absPath string) (w
 	}, nil
 }
 
-func dbUpsertBizSeedTx(ctx context.Context, tx *gen.Tx, seedHash string, chunkCount uint32, fullFileSize uint64, seedPath string, recommendedName string, mimeHint string) error {
+func dbUpsertBizSeedTx(ctx context.Context, tx EntWriteRoot, seedHash string, chunkCount uint32, fullFileSize uint64, seedPath string, recommendedName string, mimeHint string) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -538,7 +550,40 @@ func dbUpsertBizSeedTx(ctx context.Context, tx *gen.Tx, seedHash string, chunkCo
 	return err
 }
 
-func dbUpsertWorkspaceFileTx(ctx context.Context, tx *gen.Tx, workspacePath string, filePath string, seedHash string, lockedValue int64) error {
+func dbUpsertBizSeedClient(ctx context.Context, client *gen.BizSeedsClient, seedHash string, chunkCount uint32, fullFileSize uint64, seedPath string, recommendedName string, mimeHint string) error {
+	if client == nil {
+		return fmt.Errorf("biz_seeds client is nil")
+	}
+	seedHash = normalizeSeedHashHex(seedHash)
+	if seedHash == "" {
+		return fmt.Errorf("seed_hash required")
+	}
+	seed, err := client.Query().Where(bizseeds.SeedHashEQ(seedHash)).Only(ctx)
+	if err != nil {
+		if !gen.IsNotFound(err) {
+			return err
+		}
+		_, err = client.Create().
+			SetSeedHash(seedHash).
+			SetChunkCount(int64(chunkCount)).
+			SetFileSize(int64(fullFileSize)).
+			SetSeedFilePath(seedPath).
+			SetRecommendedFileName(recommendedName).
+			SetMimeHint(mimeHint).
+			Save(ctx)
+		return err
+	}
+	_, err = seed.Update().
+		SetChunkCount(int64(chunkCount)).
+		SetFileSize(int64(fullFileSize)).
+		SetSeedFilePath(seedPath).
+		SetRecommendedFileName(recommendedName).
+		SetMimeHint(mimeHint).
+		Save(ctx)
+	return err
+}
+
+func dbUpsertWorkspaceFileTx(ctx context.Context, tx EntWriteRoot, workspacePath string, filePath string, seedHash string, lockedValue int64) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -577,7 +622,7 @@ func dbUpsertWorkspaceFileTx(ctx context.Context, tx *gen.Tx, workspacePath stri
 	return err
 }
 
-func dbListActiveSeedHashesTx(ctx context.Context, tx *gen.Tx) ([]string, error) {
+func dbListActiveSeedHashesTx(ctx context.Context, tx EntWriteRoot) ([]string, error) {
 	if tx == nil {
 		return nil, fmt.Errorf("tx is nil")
 	}
@@ -603,7 +648,7 @@ func dbListActiveSeedHashesTx(ctx context.Context, tx *gen.Tx) ([]string, error)
 	return out, nil
 }
 
-func deleteSeedScopedOrphansTx(ctx context.Context, tx *gen.Tx, activeSeedHashes []string) error {
+func deleteSeedScopedOrphansTx(ctx context.Context, tx EntWriteRoot, activeSeedHashes []string) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}

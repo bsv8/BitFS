@@ -8,14 +8,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 )
 
 func openSchemaTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbPath)+"?_fk=1")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -196,7 +195,7 @@ func TestSettlementPaymentAttemptWrappersPopulateSettlementSource(t *testing.T) 
 	db := newWalletAccountingTestDB(t)
 	store := newClientDB(db, nil)
 
-	if err := clientDBEntTx(context.Background(), store, func(tx *gen.Tx) error {
+	if err :=  store.WriteEntTx(context.Background(), func(tx EntWriteRoot) error {
 		return dbAppendSettlementPaymentAttemptFinBusiness(context.Background(), tx, 77, finBusinessEntry{
 			OrderID:           "biz_settlement_guard_1",
 			BusinessRole:      "process",
@@ -213,7 +212,7 @@ func TestSettlementPaymentAttemptWrappersPopulateSettlementSource(t *testing.T) 
 		t.Fatalf("settlement payment attempt business write failed: %v", err)
 	}
 
-	if err := clientDBEntTx(context.Background(), store, func(tx *gen.Tx) error {
+	if err :=  store.WriteEntTx(context.Background(), func(tx EntWriteRoot) error {
 		return dbAppendSettlementPaymentAttemptFinProcessEvent(context.Background(), tx, 77, finProcessEventEntry{
 			ProcessID:         "proc_settlement_guard_1",
 			AccountingScene:   "wallet_transfer",
@@ -279,7 +278,7 @@ func TestBizOrderPayBSVProcessEventUsesSourceSettlementID(t *testing.T) {
 		t.Fatalf("business write failed: %v", err)
 	}
 
-	if err := clientDBEntTx(context.Background(), store, func(tx *gen.Tx) error {
+	if err :=  store.WriteEntTx(context.Background(), func(tx EntWriteRoot) error {
 		return dbAppendFinProcessEvent(context.Background(), tx, finProcessEventEntry{
 			ProcessID:         "proc_wallet_guard_1",
 			SourceType:        "biz_order_pay_bsv",
@@ -323,7 +322,7 @@ func TestSettlementPaymentAttemptWriteGuard_NoSharedEntryDirectCalls(t *testing.
 	allowed := map[string]map[string]bool{
 		"db_process_writes.go": {
 			"func dbAppendFinBusiness(ctx context.Context, store *clientDB, e finBusinessEntry) error {":    true,
-			"func dbAppendFinProcessEvent(ctx context.Context, tx *gen.Tx, e finProcessEventEntry) error {": true,
+			"func dbAppendFinProcessEvent(ctx context.Context, tx EntWriteRoot, e finProcessEventEntry) error {": true,
 			"return dbAppendFinBusinessTx(ctx, tx, e)":                                                      true,
 			"return dbAppendFinProcessEvent(ctx, tx, e)":                                                    true,
 		},

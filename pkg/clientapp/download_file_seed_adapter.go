@@ -62,21 +62,9 @@ func (a *downloadFileSeedAdapter) SaveSeed(ctx context.Context, input filedownlo
 	if err := writeIfChanged(seedPath, seedBytes); err != nil {
 		return err
 	}
-	_, err = a.store.ExecContext(ctx,
-		`INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint)
-		 VALUES(?,?,?,?,?,?)
-		 ON CONFLICT(seed_hash) DO UPDATE SET
-		   chunk_count=excluded.chunk_count,
-		   file_size=excluded.file_size,
-		   seed_file_path=excluded.seed_file_path`,
-		seedHash,
-		int64(meta.ChunkCount),
-		int64(meta.FileSize),
-		seedPath,
-		"",
-		"",
-	)
-	return err
+	return a.store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
+		return dbUpsertBizSeedClient(ctx, tx.BizSeeds, seedHash, meta.ChunkCount, meta.FileSize, seedPath, "", "")
+	})
 }
 
 func (a *downloadFileSeedAdapter) ResolveAndSaveSeedMeta(ctx context.Context, req filedownload.SeedResolveRequest) (filedownload.SeedMeta, error) {

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 )
 
 // ==================== Unknown 资产确认流程 ====================
@@ -54,17 +56,17 @@ func enqueueUnknownUTXOToVerification(ctx context.Context, store *clientDB, wall
 	if store == nil {
 		return fmt.Errorf("store is nil")
 	}
-	return store.Tx(ctx, func(db SQLConn) error {
-		return enqueueUnknownUTXOToVerificationTx(ctx, db, walletID, address, utxoID, txID, vout, valueSatoshi)
+	return store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
+		return enqueueUnknownUTXOToVerificationTx(ctx, wtx, walletID, address, utxoID, txID, vout, valueSatoshi)
 	})
 }
 
 // enqueueUnknownUTXOToVerificationTx 在已有事务内入队 unknown UTXO。
 // 设计说明：
 // - 事务闭包中禁止再次走 store.Do/store.Tx，避免 actor/事务重入导致超时。
-func enqueueUnknownUTXOToVerificationTx(ctx context.Context, tx verificationSQLExec, walletID, address, utxoID, txID string, vout uint32, valueSatoshi uint64) error {
-	if tx == nil {
-		return fmt.Errorf("tx is nil")
+func enqueueUnknownUTXOToVerificationTx(ctx context.Context, wtx moduleapi.WriteTx, walletID, address, utxoID, txID string, vout uint32, valueSatoshi uint64) error {
+	if wtx == nil {
+		return fmt.Errorf("wtx is nil")
 	}
 	utxoID = strings.ToLower(strings.TrimSpace(utxoID))
 	if utxoID == "" {
@@ -84,7 +86,7 @@ func enqueueUnknownUTXOToVerificationTx(ctx context.Context, tx verificationSQLE
 	}
 
 	now := time.Now().Unix()
-	_, err := ExecContext(ctx, tx, `
+	_, err := wtx.ExecContext(ctx, `
 		INSERT INTO wallet_utxo_token_verification(
 			utxo_id,wallet_id,address,txid,vout,value_satoshi,
 			status,woc_response_json,last_check_at_unix,next_retry_at_unix,retry_count,error_message,updated_at_unix
@@ -117,8 +119,9 @@ func dbListPendingVerificationItems(ctx context.Context, store *clientDB, limit 
 		limit = assetVerificationMaxBatch
 	}
 	now := time.Now().Unix()
-	return clientDBValue(ctx, store, func(db SQLConn) ([]VerificationQueueItem, error) {
-		rows, err := QueryContext(ctx, db, `
+	var out []VerificationQueueItem
+	if err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
+		rows, err := rc.QueryContext(ctx, `
 			SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,status,error_message,retry_count,
 			       next_retry_at_unix,last_check_at_unix,woc_response_json,updated_at_unix
 			  FROM wallet_utxo_token_verification
@@ -128,11 +131,11 @@ func dbListPendingVerificationItems(ctx context.Context, store *clientDB, limit 
 			now, limit,
 		)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		defer rows.Close()
 
-		out := make([]VerificationQueueItem, 0, limit)
+		out = make([]VerificationQueueItem, 0, limit)
 		for rows.Next() {
 			var item VerificationQueueItem
 			var vout int64
@@ -153,18 +156,18 @@ func dbListPendingVerificationItems(ctx context.Context, store *clientDB, limit 
 				&item.WOCResponseJSON,
 				&item.UpdatedAtUnix,
 			); err != nil {
-				return nil, err
+				return err
 			}
 			item.Vout = uint32(vout)
 			item.ValueSatoshi = uint64(valueSatoshi)
 			item.RetryCount = int(retryCount)
 			out = append(out, item)
 		}
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		return out, nil
-	})
+		return rows.Err()
+	}); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // dbUpdateUTXOAllocationClass 更新 UTXO 的 allocation_class
@@ -184,8 +187,8 @@ func dbUpdateUTXOAllocationClass(ctx context.Context, store *clientDB, utxoID, a
 	}
 	reason = strings.TrimSpace(reason)
 	now := time.Now().Unix()
-	return store.Tx(ctx, func(db SQLConn) error {
-		result, err := ExecContext(ctx, db,
+	return store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
+		result, err := wtx.ExecContext(ctx,
 			`UPDATE wallet_utxo
 			    SET allocation_class=?, allocation_reason=?, updated_at_unix=?
 			  WHERE utxo_id=?`,
@@ -439,8 +442,8 @@ func updateVerificationQueueSuccess(ctx context.Context, store *clientDB, utxoID
 			"quantity_text":  strings.TrimSpace(evidence.QuantityText),
 		})
 	}
-	return store.Tx(ctx, func(db SQLConn) error {
-		result, err := ExecContext(ctx, db, `
+	return store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
+		result, err := wtx.ExecContext(ctx, `
 			UPDATE wallet_utxo_token_verification
 			   SET status=?,
 			       woc_response_json=?,
@@ -480,9 +483,9 @@ func updateVerificationBackoff(ctx context.Context, store *clientDB, utxoID stri
 	}
 	reason = strings.TrimSpace(reason)
 	now := time.Now().Unix()
-	return store.Tx(ctx, func(db SQLConn) error {
+	return store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
 		var retryCount int64
-		if err := QueryRowContext(ctx, db, `SELECT retry_count FROM wallet_utxo_token_verification WHERE utxo_id=?`, utxoID).Scan(&retryCount); err != nil {
+		if err := wtx.QueryRowContext(ctx, `SELECT retry_count FROM wallet_utxo_token_verification WHERE utxo_id=?`, utxoID).Scan(&retryCount); err != nil {
 			if err == sql.ErrNoRows {
 				return fmt.Errorf("utxo_id %s not found", utxoID)
 			}
@@ -498,7 +501,7 @@ func updateVerificationBackoff(ctx context.Context, store *clientDB, utxoID stri
 			}
 		}
 		nextRetryAt := now + delay
-		result, err := ExecContext(ctx, db, `
+		result, err := wtx.ExecContext(ctx, `
 			UPDATE wallet_utxo_token_verification
 			   SET status='pending',
 			       retry_count=?,
@@ -532,8 +535,8 @@ func dbAutoFailExhaustedRetries(ctx context.Context, store *clientDB) (int, erro
 	}
 	now := time.Now().Unix()
 	var affectedCount int
-	if err := store.Tx(ctx, func(db SQLConn) error {
-		result, err := ExecContext(ctx, db, `
+	if err := store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
+		result, err := wtx.ExecContext(ctx, `
 			UPDATE wallet_utxo_token_verification
 			   SET status='failed',
 			       error_message=CASE WHEN error_message='' THEN 'max retries exceeded' ELSE error_message END,

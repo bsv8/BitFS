@@ -44,9 +44,9 @@ func dbGetFileDownloadState(ctx context.Context, store *clientDB, seedHash strin
 	if store == nil {
 		return fileDownloadStateRow{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (fileDownloadStateRow, error) {
+	return readEntValue(ctx, store, func(root EntReadRoot) (fileDownloadStateRow, error) {
 		var out fileDownloadStateRow
-		row, err := tx.ProcFileDownloads.Query().
+		row, err := root.ProcFileDownloads.Query().
 			Where(procfiledownloads.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
 			Only(ctx)
 		if err != nil {
@@ -73,9 +73,9 @@ func dbGetFileDownloadStateNoUpdated(ctx context.Context, store *clientDB, seedH
 	if store == nil {
 		return fileDownloadStateRow{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (fileDownloadStateRow, error) {
+	return readEntValue(ctx, store, func(root EntReadRoot) (fileDownloadStateRow, error) {
 		var out fileDownloadStateRow
-		row, err := tx.ProcFileDownloads.Query().
+		row, err := root.ProcFileDownloads.Query().
 			Where(procfiledownloads.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
 			Only(ctx)
 		if err != nil {
@@ -101,7 +101,7 @@ func dbEnsureFileDownloadQueued(ctx context.Context, store *clientDB, seedHash s
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		now := time.Now().Unix()
 		existing, err := tx.ProcFileDownloads.Query().
 			Where(procfiledownloads.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
@@ -147,8 +147,8 @@ func dbListFileDownloadChunks(ctx context.Context, store *clientDB, seedHash str
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]fileDownloadChunkRow, error) {
-		rows, err := tx.ProcFileDownloadChunks.Query().
+	return readEntValue(ctx, store, func(root EntReadRoot) ([]fileDownloadChunkRow, error) {
+		rows, err := root.ProcFileDownloadChunks.Query().
 			Where(procfiledownloadchunks.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
 			Order(procfiledownloadchunks.ByChunkIndex()).
 			All(ctx)
@@ -170,7 +170,7 @@ func dbUpsertFileDownloadState(ctx context.Context, store *clientDB, seedHash st
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		now := time.Now().Unix()
 		existing, err := tx.ProcFileDownloads.Query().
 			Where(procfiledownloads.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
@@ -216,7 +216,7 @@ func dbUpsertFileDownloadChunkDone(ctx context.Context, store *clientDB, seedHas
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		now := time.Now().Unix()
 		existing, err := tx.ProcFileDownloadChunks.Query().
 			Where(
@@ -256,9 +256,9 @@ func dbFindLatestWorkspaceFileBySeedHash(ctx context.Context, store *clientDB, s
 		path string
 		size uint64
 	}
-	out, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (result, error) {
+	out, err := readEntValue(ctx, store, func(root EntReadRoot) (result, error) {
 		var out result
-		row, err := tx.BizWorkspaceFiles.Query().
+		row, err := root.BizWorkspaceFiles.Query().
 			Where(bizworkspacefiles.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
 			Order(bizworkspacefiles.ByWorkspacePath(), bizworkspacefiles.ByFilePath()).
 			First(ctx)

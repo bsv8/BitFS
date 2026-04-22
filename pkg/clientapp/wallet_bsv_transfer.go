@@ -13,7 +13,6 @@ import (
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	"github.com/bsv8/BFTP/pkg/infra/fundalloc"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 )
 
 // WalletBSVTransferRequest 是钱包普通 BSV 转账的业务输入。
@@ -174,7 +173,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				"status":         "waiting_fund",
 				"error":          err.Error(),
 			}
-			if txErr := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+			if txErr := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 				if writeErr := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
 					ProcessID:         "proc_" + businessID,
 					SourceType:        "biz_order_pay_bsv",
@@ -224,7 +223,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 			"status":         "failed",
 			"error":          err.Error(),
 		}
-		if txErr := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		if txErr := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 			if writeErr := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
 				ProcessID:         "proc_" + businessID,
 				SourceType:        "biz_order_pay_bsv",
@@ -299,7 +298,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 	}
 
 	if finalStatus == "failed" {
-		if err := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		if err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 			if err := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
 				ProcessID:         "proc_" + businessID,
 				SourceType:        "biz_order_pay_bsv",
@@ -346,7 +345,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 	if finalStatus == "submitted_unknown_projection" {
 		payload["status"] = "submitted_unknown_projection"
 		payload["error"] = submitted.Result.Message
-		if err := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		if err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 			if err := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
 				ProcessID:         "proc_" + businessID,
 				SourceType:        "biz_order_pay_bsv",
@@ -411,7 +410,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 		if len(selectedUTXOIDs) == 0 {
 			return resp, fmt.Errorf("selected utxo ids are required for settlement records")
 		}
-		if err := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		if err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 			channelID, settlementPaymentAttemptID, err := dbUpsertChainChannelWithSettlementPaymentAttempt(ctx, tx, chainPaymentEntry{
 				TxID:                 submitted.BroadcastTxID,
 				PaymentSubType:       "biz_order_pay_bsv",
@@ -478,7 +477,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				"status":            "failed",
 				"error":             err.Error(),
 			}
-			_ = clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+			_ = store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 				if writeErr := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
 					ProcessID:         "proc_" + businessID,
 					SourceType:        "biz_order_pay_bsv",

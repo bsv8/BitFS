@@ -54,22 +54,19 @@ func MessageOf(err error) string {
 	return strings.TrimSpace(err.Error())
 }
 
-// Conn 是模块可见的最小数据库连接能力。
-type Conn interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+type ReadConn interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// Store 是模块可见的最小存储能力。
-//
-// 设计说明：
-// - 模块只拿能力，不拿 *sql.DB；
-// - 串行能力由主干统一提供，模块只看是否存在；
-// - 查询/写入必须在闭包里完成，避免句柄泄露到外层。
+type WriteTx interface {
+	ReadConn
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 type Store interface {
-	Conn
-	Do(context.Context, func(Conn) error) error
-	SerialAccess() bool
+	Read(ctx context.Context, fn func(ReadConn) error) error
+	WriteTx(ctx context.Context, fn func(WriteTx) error) error
 }
 
 // HTTPHandler 是模块注册 HTTP 路由时的处理函数。

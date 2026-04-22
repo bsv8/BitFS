@@ -91,25 +91,24 @@ func dbGetCommandTimelineItem(ctx context.Context, store *clientDB, id int64) (c
 	if store == nil {
 		return commandTimelineItem{}, fmt.Errorf("client db is nil")
 	}
-	if store.ent == nil {
-		return commandTimelineItem{}, fmt.Errorf("client db ent client is nil")
-	}
-	journal, err := store.ent.ProcCommandJournal.Query().Where(bitfsproccommandjournal.IDEQ(int(id))).Only(ctx)
-	if err != nil {
-		if gen.IsNotFound(err) {
-			return commandTimelineItem{}, sql.ErrNoRows
+	return readEntValue(ctx, store, func(root EntReadRoot) (commandTimelineItem, error) {
+		journal, err := root.ProcCommandJournal.Query().Where(bitfsproccommandjournal.IDEQ(int(id))).Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return commandTimelineItem{}, sql.ErrNoRows
+			}
+			return commandTimelineItem{}, err
 		}
-		return commandTimelineItem{}, err
-	}
-	out := commandTimelineItem{commandJournalItem: commandJournalItemFromEnt(journal)}
-	if err := hydrateCommandTimelineRelationsEnt(ctx, store, &out); err != nil {
-		return commandTimelineItem{}, err
-	}
-	return out, nil
+		out := commandTimelineItem{commandJournalItem: commandJournalItemFromEnt(journal)}
+		if err := hydrateCommandTimelineRelationsEnt(ctx, store, &out); err != nil {
+			return commandTimelineItem{}, err
+		}
+		return out, nil
+	})
 }
 
 func hydrateCommandTimelineRelationsEnt(ctx context.Context, store *clientDB, out *commandTimelineItem) error {
-	if store == nil || store.ent == nil || out == nil || strings.TrimSpace(out.CommandID) == "" {
+	if store == nil || out == nil || strings.TrimSpace(out.CommandID) == "" {
 		return nil
 	}
 	commandID := out.CommandID
@@ -134,76 +133,100 @@ func hydrateCommandTimelineRelationsEnt(ctx context.Context, store *clientDB, ou
 }
 
 func loadGatewayEventsByCommandIDEnt(ctx context.Context, store *clientDB, commandID string, out *[]gatewayEventItem) error {
-	if store == nil || store.ent == nil {
-		return fmt.Errorf("client db ent client is nil")
+	if store == nil {
+		return fmt.Errorf("client db is nil")
 	}
-	nodes, err := store.ent.ProcGatewayEvents.Query().
-		Where(bitfsprocgatewayevents.CommandIDEQ(commandID)).
-		Order(bitfsprocgatewayevents.ByID(entsql.OrderAsc())).
-		All(ctx)
+	items, err := readEntValue(ctx, store, func(root EntReadRoot) ([]gatewayEventItem, error) {
+		nodes, err := root.ProcGatewayEvents.Query().
+			Where(bitfsprocgatewayevents.CommandIDEQ(commandID)).
+			Order(bitfsprocgatewayevents.ByID(entsql.OrderAsc())).
+			All(ctx)
+		if err != nil {
+			return nil, err
+		}
+		items := make([]gatewayEventItem, 0, len(nodes))
+		for _, node := range nodes {
+			items = append(items, gatewayEventItemFromEnt(node))
+		}
+		return items, nil
+	})
 	if err != nil {
 		return err
-	}
-	items := make([]gatewayEventItem, 0, len(nodes))
-	for _, node := range nodes {
-		items = append(items, gatewayEventItemFromEnt(node))
 	}
 	*out = items
 	return nil
 }
 
 func loadDomainEventsByCommandIDEnt(ctx context.Context, store *clientDB, commandID string, out *[]domainEventItem) error {
-	if store == nil || store.ent == nil {
-		return fmt.Errorf("client db ent client is nil")
+	if store == nil {
+		return fmt.Errorf("client db is nil")
 	}
-	nodes, err := store.ent.ProcDomainEvents.Query().
-		Where(bitfsprocdomainevents.CommandIDEQ(commandID)).
-		Order(bitfsprocdomainevents.ByID(entsql.OrderAsc())).
-		All(ctx)
+	items, err := readEntValue(ctx, store, func(root EntReadRoot) ([]domainEventItem, error) {
+		nodes, err := root.ProcDomainEvents.Query().
+			Where(bitfsprocdomainevents.CommandIDEQ(commandID)).
+			Order(bitfsprocdomainevents.ByID(entsql.OrderAsc())).
+			All(ctx)
+		if err != nil {
+			return nil, err
+		}
+		items := make([]domainEventItem, 0, len(nodes))
+		for _, node := range nodes {
+			items = append(items, domainEventItemFromEnt(node))
+		}
+		return items, nil
+	})
 	if err != nil {
 		return err
-	}
-	items := make([]domainEventItem, 0, len(nodes))
-	for _, node := range nodes {
-		items = append(items, domainEventItemFromEnt(node))
 	}
 	*out = items
 	return nil
 }
 
 func loadStateSnapshotsByCommandIDEnt(ctx context.Context, store *clientDB, commandID string, out *[]stateSnapshotItem) error {
-	if store == nil || store.ent == nil {
-		return fmt.Errorf("client db ent client is nil")
+	if store == nil {
+		return fmt.Errorf("client db is nil")
 	}
-	nodes, err := store.ent.ProcStateSnapshots.Query().
-		Where(bitfsprocstatesnapshots.CommandIDEQ(commandID)).
-		Order(bitfsprocstatesnapshots.ByID(entsql.OrderAsc())).
-		All(ctx)
+	items, err := readEntValue(ctx, store, func(root EntReadRoot) ([]stateSnapshotItem, error) {
+		nodes, err := root.ProcStateSnapshots.Query().
+			Where(bitfsprocstatesnapshots.CommandIDEQ(commandID)).
+			Order(bitfsprocstatesnapshots.ByID(entsql.OrderAsc())).
+			All(ctx)
+		if err != nil {
+			return nil, err
+		}
+		items := make([]stateSnapshotItem, 0, len(nodes))
+		for _, node := range nodes {
+			items = append(items, stateSnapshotItemFromEnt(node))
+		}
+		return items, nil
+	})
 	if err != nil {
 		return err
-	}
-	items := make([]stateSnapshotItem, 0, len(nodes))
-	for _, node := range nodes {
-		items = append(items, stateSnapshotItemFromEnt(node))
 	}
 	*out = items
 	return nil
 }
 
 func loadEffectLogsByCommandIDEnt(ctx context.Context, store *clientDB, commandID string, out *[]effectLogItem) error {
-	if store == nil || store.ent == nil {
-		return fmt.Errorf("client db ent client is nil")
+	if store == nil {
+		return fmt.Errorf("client db is nil")
 	}
-	nodes, err := store.ent.ProcEffectLogs.Query().
-		Where(bitfsproceffectlogs.CommandIDEQ(commandID)).
-		Order(bitfsproceffectlogs.ByID(entsql.OrderAsc())).
-		All(ctx)
+	items, err := readEntValue(ctx, store, func(root EntReadRoot) ([]effectLogItem, error) {
+		nodes, err := root.ProcEffectLogs.Query().
+			Where(bitfsproceffectlogs.CommandIDEQ(commandID)).
+			Order(bitfsproceffectlogs.ByID(entsql.OrderAsc())).
+			All(ctx)
+		if err != nil {
+			return nil, err
+		}
+		items := make([]effectLogItem, 0, len(nodes))
+		for _, node := range nodes {
+			items = append(items, effectLogItemFromEnt(node))
+		}
+		return items, nil
+	})
 	if err != nil {
 		return err
-	}
-	items := make([]effectLogItem, 0, len(nodes))
-	for _, node := range nodes {
-		items = append(items, effectLogItemFromEnt(node))
 	}
 	*out = items
 	return nil

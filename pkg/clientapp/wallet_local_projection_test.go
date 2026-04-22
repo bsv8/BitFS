@@ -14,6 +14,7 @@ import (
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 )
 
 func TestApplyLocalBroadcastWalletProjection_UpdatesWalletUTXOView(t *testing.T) {
@@ -299,7 +300,7 @@ func TestApplyLocalBroadcastWalletProjection_SQLTraceRepeatUpdateTop(t *testing.
 	roundID := "round-local-projection-trace"
 	trigger := "test_local_projection_trace"
 	ctx := sqlTraceContextWithMeta(context.Background(), roundID, trigger, "wallet_local_projection", "wallet_local_projection_test.runLocalProjectionTraceReplay")
-	if err := store.Tx(ctx, func(tx sqlConn) error {
+	if err := store.WriteTx(ctx, func(tx moduleapi.WriteTx) error {
 		if err := applyWalletUTXODiffTx(ctx, tx, current, desired, walletID, addr, now); err != nil {
 			return err
 		}

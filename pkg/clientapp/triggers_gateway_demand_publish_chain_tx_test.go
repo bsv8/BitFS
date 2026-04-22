@@ -371,9 +371,13 @@ func registerGatewayDemandPublishMock(t *testing.T, h host.Host, store gatewayQu
 	brokenResp := brokenDemandResp
 
 	sec := pproto.SecurityConfig{Domain: "bitfs-node", Network: "test", TTL: 30 * time.Second}
-	pproto.HandleProto[contractmessage.DemandPublishReq, ncall.CallResp](h, contractprotoid.ProtoBroadcastV1DemandPublish, sec, func(ctx context.Context, req contractmessage.DemandPublishReq) (ncall.CallResp, error) {
+	pproto.HandleProto[ncall.CallReq, ncall.CallResp](h, contractprotoid.ProtoBroadcastV1DemandPublish, sec, func(ctx context.Context, req ncall.CallReq) (ncall.CallResp, error) {
 		senderPubkeyHex, _ := pproto.SenderPubkeyHexFromContext(ctx)
-		bodyBytes, _ := oldproto.Marshal(&req)
+		var body contractmessage.DemandPublishReq
+		if err := oldproto.Unmarshal(req.Body, &body); err != nil {
+			return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: err.Error()}, nil
+		}
+		bodyBytes, _ := oldproto.Marshal(&body)
 		serverActor, _ := poolcore.BuildActor("gateway", strings.TrimSpace(gatewayPrivHex), false)
 		offer := payflow.ServiceOffer{
 			ServiceType:          quoteServiceTypeDemandPublish,

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 )
 
 // 设计说明：
@@ -176,13 +178,14 @@ func dbLoadSeedCatalogSnapshot(ctx context.Context, store *clientDB) (map[string
 	type result struct {
 		seeds map[string]sellerSeed
 	}
-	out, err := clientDBValue(ctx, store, func(db SQLConn) (result, error) {
-		rows, err := QueryContext(ctx, db, `
+	var out result
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
+		rows, err := rc.QueryContext(ctx, `
 			SELECT seed_hash,chunk_count,file_size,recommended_file_name,mime_hint
 			  FROM biz_seeds
 			 ORDER BY seed_hash ASC`)
 		if err != nil {
-			return result{}, err
+			return err
 		}
 		defer rows.Close()
 
@@ -190,7 +193,7 @@ func dbLoadSeedCatalogSnapshot(ctx context.Context, store *clientDB) (map[string
 		for rows.Next() {
 			var seed sellerSeed
 			if err := rows.Scan(&seed.SeedHash, &seed.ChunkCount, &seed.FileSize, &seed.RecommendedFileName, &seed.MIMEHint); err != nil {
-				return result{}, err
+				return err
 			}
 			seed.SeedHash = strings.ToLower(strings.TrimSpace(seed.SeedHash))
 			if seed.SeedHash == "" {
@@ -202,10 +205,8 @@ func dbLoadSeedCatalogSnapshot(ctx context.Context, store *clientDB) (map[string
 			seed.MIMEHint = sanitizeMIMEHint(seed.MIMEHint)
 			seeds[seed.SeedHash] = seed
 		}
-		if err := rows.Err(); err != nil {
-			return result{}, err
-		}
-		return result{seeds: seeds}, nil
+		out.seeds = seeds
+		return rows.Err()
 	})
 	if err != nil {
 		return nil, err

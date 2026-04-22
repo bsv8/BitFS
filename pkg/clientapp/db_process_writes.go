@@ -41,7 +41,7 @@ func dbAppendTxHistory(ctx context.Context, store *clientDB, e txHistoryEntry) {
 	if store == nil {
 		return
 	}
-	_ = clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	_ = store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		if strings.TrimSpace(e.GatewayPeerID) == "" {
 			e.GatewayPeerID = "unknown"
 		}
@@ -108,7 +108,7 @@ func dbAppendPurchaseDone(ctx context.Context, store *clientDB, e purchaseDoneEn
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		if strings.TrimSpace(e.DemandID) == "" {
 			return fmt.Errorf("demand_id is required")
 		}
@@ -170,7 +170,7 @@ func dbAppendGatewayEvent(ctx context.Context, store *clientDB, e gatewayEventEn
 		obs.Error(ServiceName, "gateway_event_append_rejected", map[string]any{"error": err.Error(), "action": strings.TrimSpace(e.Action)})
 		return err
 	}
-	err := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		if strings.TrimSpace(e.GatewayPeerID) == "" {
 			e.GatewayPeerID = "unknown"
 		}
@@ -200,7 +200,7 @@ func dbAppendOrchestratorLog(ctx context.Context, store *clientDB, e orchestrato
 	if store == nil {
 		return
 	}
-	_ = clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	_ = store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		_, err := tx.ProcOrchestratorLogs.Create().
 			SetCreatedAtUnix(time.Now().Unix()).
 			SetEventType(strings.TrimSpace(e.EventType)).
@@ -235,7 +235,7 @@ func dbAppendCommandJournal(ctx context.Context, store *clientDB, e commandJourn
 		obs.Error(ServiceName, "proc_command_journal_append_rejected", map[string]any{"error": err.Error(), "command_type": strings.TrimSpace(e.CommandType)})
 		return err
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		accepted := 0
 		if e.Accepted {
 			accepted = 1
@@ -279,7 +279,7 @@ func dbAppendDomainEvent(ctx context.Context, store *clientDB, e domainEventEntr
 		obs.Error(ServiceName, "domain_event_append_rejected", map[string]any{"error": err.Error(), "event_name": strings.TrimSpace(e.EventName)})
 		return err
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		_, err := tx.ProcDomainEvents.Create().
 			SetCreatedAtUnix(time.Now().Unix()).
 			SetCommandID(commandID).
@@ -306,7 +306,7 @@ func dbAppendStateSnapshot(ctx context.Context, store *clientDB, e stateSnapshot
 		obs.Error(ServiceName, "state_snapshot_append_rejected", map[string]any{"error": err.Error(), "state": strings.TrimSpace(e.State)})
 		return err
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		_, err := tx.ProcStateSnapshots.Create().
 			SetCreatedAtUnix(time.Now().Unix()).
 			SetCommandID(commandID).
@@ -343,7 +343,7 @@ func dbAppendObservedGatewayState(ctx context.Context, store *clientDB, e observ
 	if store == nil {
 		return nil
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		observedAtUnix := e.ObservedAtUnix
 		if observedAtUnix <= 0 {
 			observedAtUnix = time.Now().Unix()
@@ -379,7 +379,7 @@ func dbAppendEffectLog(ctx context.Context, store *clientDB, e effectLogEntry) e
 		obs.Error(ServiceName, "effect_log_append_rejected", map[string]any{"error": err.Error(), "effect_type": strings.TrimSpace(e.EffectType), "stage": strings.TrimSpace(e.Stage)})
 		return err
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		_, err := tx.ProcEffectLogs.Create().
 			SetCreatedAtUnix(time.Now().Unix()).
 			SetCommandID(commandID).
@@ -409,7 +409,7 @@ func dbAppendChainWorkerLog(ctx context.Context, store *clientDB, table string, 
 	if store == nil {
 		return
 	}
-	_ = clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	_ = store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		if e.TriggeredAtUnix <= 0 {
 			e.TriggeredAtUnix = time.Now().Unix()
 		}
@@ -455,7 +455,7 @@ func dbAppendChainWorkerLog(ctx context.Context, store *clientDB, table string, 
 	})
 }
 
-func dbTrimWorkerLogsEntTx(ctx context.Context, tx *gen.Tx, table string, keep int) {
+func dbTrimWorkerLogsEntTx(ctx context.Context, tx EntWriteRoot, table string, keep int) {
 	if tx == nil || strings.TrimSpace(table) == "" || keep <= 0 {
 		return
 	}
@@ -505,7 +505,7 @@ func dbTrimWorkerLogsEntTx(ctx context.Context, tx *gen.Tx, table string, keep i
 // - 结算出口字段由桥接层单独补，不在这里猜；
 // - order_settlements 已经是唯一主表，旧来源一律拒绝。
 
-func dbAppendFinBusinessTx(ctx context.Context, tx *gen.Tx, e finBusinessEntry) error {
+func dbAppendFinBusinessTx(ctx context.Context, tx EntWriteRoot, e finBusinessEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -549,7 +549,7 @@ func dbAppendFinBusinessTx(ctx context.Context, tx *gen.Tx, e finBusinessEntry) 
 	return dbAppendFinBusinessRowTx(ctx, tx, e, settlementMethod, settlementStatus, settlementTargetType, settlementTargetID, settlementErrorMessage)
 }
 
-func dbAppendFinBusinessRowTx(ctx context.Context, tx *gen.Tx, e finBusinessEntry, settlementMethod, settlementStatus, settlementTargetType, settlementTargetID, settlementErrorMessage string) error {
+func dbAppendFinBusinessRowTx(ctx context.Context, tx EntWriteRoot, e finBusinessEntry, settlementMethod, settlementStatus, settlementTargetType, settlementTargetID, settlementErrorMessage string) error {
 	existing, err := tx.OrderSettlements.Query().
 		Where(ordersettlements.SettlementIDEQ(e.SettlementID)).
 		Only(ctx)
@@ -632,7 +632,7 @@ func dbAppendFinBusinessRowTx(ctx context.Context, tx *gen.Tx, e finBusinessEntr
 // - source_type/source_id 在这里统一生成；
 // - 结算链路只传 settlementPaymentAttemptID 和业务字段；
 // - 这样才能把“入口可用”和“入口可误用”彻底分开。
-func dbAppendSettlementPaymentAttemptFinBusiness(ctx context.Context, tx *gen.Tx, settlementPaymentAttemptID int64, e finBusinessEntry) error {
+func dbAppendSettlementPaymentAttemptFinBusiness(ctx context.Context, tx EntWriteRoot, settlementPaymentAttemptID int64, e finBusinessEntry) error {
 	if settlementPaymentAttemptID <= 0 {
 		return fmt.Errorf("settlement_payment_attempt_id must be positive")
 	}
@@ -657,7 +657,7 @@ func dbAppendBusinessUTXOFactIfAbsent(_ any, txRole string) error {
 // - 结算链路里，settlement_payment_attempt 继续走专用封装，biz_order_pay_bsv 直接用 settlement_id 作为来源；
 // - 不要在这里塞兼容分支，不然历史口径会重新污染主线；
 // - source_id 先按 settlement_id 使用，若是 settlement_payment_attempt 再反查真实 settlement。
-func dbAppendFinProcessEvent(ctx context.Context, tx *gen.Tx, e finProcessEventEntry) error {
+func dbAppendFinProcessEvent(ctx context.Context, tx EntWriteRoot, e finProcessEventEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -762,7 +762,7 @@ func dbAppendFinProcessEvent(ctx context.Context, tx *gen.Tx, e finProcessEventE
 }
 
 // 结算流程事件专用入口只认 settlement_payment_attempt 主键，避免调用方把旧来源带进来。
-func dbAppendSettlementPaymentAttemptFinProcessEvent(ctx context.Context, tx *gen.Tx, settlementPaymentAttemptID int64, e finProcessEventEntry) error {
+func dbAppendSettlementPaymentAttemptFinProcessEvent(ctx context.Context, tx EntWriteRoot, settlementPaymentAttemptID int64, e finProcessEventEntry) error {
 	if settlementPaymentAttemptID <= 0 {
 		return fmt.Errorf("settlement_payment_attempt_id must be positive")
 	}
@@ -776,7 +776,7 @@ func dbAppendSettlementPaymentAttemptFinProcessEvent(ctx context.Context, tx *ge
 // - 这里只负责 biz_pool_allocations 和 biz_pool 快照，不碰 fact 消耗主路径；
 // - 调用方仍然可以先写兼容 fact 事件，但真正的划拨账必须从这里落到业务层；
 // - 幂等性依赖 allocation_id + (pool_session_id, allocation_kind, sequence_num) 的唯一约束。
-func dbApplyDirectTransferBizPoolAccountingTx(ctx context.Context, tx *gen.Tx, in directTransferPoolAllocationFactInput, allocationNo int64) error {
+func dbApplyDirectTransferBizPoolAccountingTx(ctx context.Context, tx EntWriteRoot, in directTransferPoolAllocationFactInput, allocationNo int64) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -910,7 +910,7 @@ func directTransferPoolAccountingSource(sessionID string, allocationKind string,
 }
 
 func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feePoolOpenAccountingInput) {
-	dbRecordAccounting(ctx, store, func(tx *gen.Tx) {
+	dbRecordAccounting(ctx, store, func(tx EntWriteRoot) {
 		businessID := strings.TrimSpace(in.BusinessID)
 		if businessID == "" {
 			businessID = "biz_feepool_open_" + randHex(8)
@@ -986,7 +986,7 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 }
 
 func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID string, sequence uint32, amount uint64, gatewayPeerID string) {
-	dbRecordAccounting(ctx, store, func(tx *gen.Tx) {
+	dbRecordAccounting(ctx, store, func(tx EntWriteRoot) {
 		processID := "proc_feepool_cycle_" + strings.TrimSpace(spendTxID)
 		// 这里直接按 chain_payment 反查 settlement_payment_attempt，保证写入和查询走同一条路。
 		settlementPaymentAttemptID, err := resolveChainPaymentSourceToSettlementPaymentAttempt(ctx, store, strings.TrimSpace(spendTxID))
@@ -1076,7 +1076,7 @@ func dbRecordFeePoolQuotePayAccounting(ctx context.Context, store *clientDB, gat
 		"lock_blocks":                 session.LockBlocks,
 		"fee_rate_sat_per_byte":       session.FeeRateSatPerByte,
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		var (
 			settlementPaymentAttemptID int64
 			channelID                  int64
@@ -1237,7 +1237,7 @@ func dbRecordFeePoolCloseAccounting(ctx context.Context, store *clientDB, sessio
 	finalTxHex = strings.ToLower(strings.TrimSpace(finalTxHex))
 	gatewayPeerID = strings.ToLower(strings.TrimSpace(gatewayPeerID))
 	now := time.Now().Unix()
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		existing, err := tx.FactSettlementChannelPoolSessionQuotePay.Query().
 			Where(factsettlementchannelpoolsessionquotepay.PoolSessionIDEQ(sessionID)).
 			Only(ctx)
@@ -1351,7 +1351,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		// 第二阶段整改：open 继续有自己的业务记录，但定性为过程型财务对象
 		businessID := "biz_c2c_open_" + strings.TrimSpace(in.SessionID)
 		baseTxID := strings.ToLower(strings.TrimSpace(in.BaseTxID))
@@ -1460,7 +1460,7 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, downl
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		_, allocID := directTransferPoolAccountingSource(strings.TrimSpace(sessionID), "pay", sequence)
 		if _, err := dbGetPoolAllocationIDByAllocationID(ctx, store, allocID); err != nil {
 			return fmt.Errorf("resolve pool_allocation source id failed: %w", err)
@@ -1506,7 +1506,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		finalTxID = strings.ToLower(strings.TrimSpace(finalTxID))
 		txHex := strings.TrimSpace(finalTxHex)
 		var parsedFinalTx *transaction.Transaction
@@ -1605,11 +1605,11 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 	})
 }
 
-func dbRecordAccounting(ctx context.Context, store *clientDB, fn func(*gen.Tx)) {
+func dbRecordAccounting(ctx context.Context, store *clientDB, fn func(EntWriteRoot)) {
 	if store == nil {
 		return
 	}
-	_ = clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	_ = store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		fn(tx)
 		return nil
 	})

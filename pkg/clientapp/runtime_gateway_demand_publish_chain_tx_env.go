@@ -37,6 +37,10 @@ func (r *Runtime) CallNodeRoute(ctx context.Context, peerID peer.ID, req ncall.C
 	return callNodeRoute(ctx, r, peerID, protoID, req)
 }
 
+func (r *Runtime) CallGatewayRoute(ctx context.Context, peerID peer.ID, req ncall.CallReq, protoID protocol.ID) (ncall.CallResp, error) {
+	return callGatewayRoute(ctx, r, peerID, protoID, req)
+}
+
 func (r *Runtime) RequestPeerCallChainTxQuote(ctx context.Context, store ClientStore, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, protoID protocol.ID) (peerCallChainTxQuoteBuilt, error) {
 	return requestPeerCallChainTxQuote(ctx, r, store, peerID, req, option, protoID)
 }

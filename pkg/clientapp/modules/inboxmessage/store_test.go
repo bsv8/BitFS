@@ -6,6 +6,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"entgo.io/ent/dialect"
+	entsql "entgo.io/ent/dialect/sql"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	_ "modernc.org/sqlite"
 )
 
@@ -33,8 +37,54 @@ func (t testSerialExec) QueryContext(ctx context.Context, query string, args ...
 	return t.db.QueryContext(ctx, query, args...)
 }
 
-func (t testSerialExec) Do(ctx context.Context, fn func(Conn) error) error {
-	return fn(t)
+type testStore struct {
+	db *sql.DB
+}
+
+func (t testStore) Read(ctx context.Context, fn func(moduleapi.ReadConn) error) error {
+	return fn(t.db)
+}
+
+func (t testStore) WriteTx(ctx context.Context, fn func(moduleapi.WriteTx) error) error {
+	tx, err := t.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	wtx := testWriteTx{tx: tx}
+	if err := fn(wtx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+type testWriteTx struct {
+	tx *sql.Tx
+}
+
+func (t testWriteTx) Exec(query string, args ...any) (sql.Result, error) {
+	return t.tx.Exec(query, args...)
+}
+func (t testWriteTx) QueryRow(query string, args ...any) *sql.Row {
+	return t.tx.QueryRow(query, args...)
+}
+func (t testWriteTx) Query(query string, args ...any) (*sql.Rows, error) {
+	return t.tx.Query(query, args...)
+}
+func (t testWriteTx) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return t.tx.ExecContext(ctx, query, args...)
+}
+func (t testWriteTx) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return t.tx.QueryContext(ctx, query, args...)
+}
+func (t testWriteTx) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return t.tx.QueryRowContext(ctx, query, args...)
+}
+func (t testWriteTx) Tx(context.Context, func(moduleapi.WriteTx) error) error { return sql.ErrTxDone }
+
+func prepareInboxMessageSchema(ctx context.Context, db *sql.DB) error {
+	client := gen.NewClient(gen.Driver(entsql.OpenDB(dialect.SQLite, db)))
+	return client.Schema.Create(ctx)
 }
 
 func TestBootstrapStoreAndWriteRead(t *testing.T) {
@@ -49,10 +99,11 @@ func TestBootstrapStoreAndWriteRead(t *testing.T) {
 	if _, err := db.Exec(`PRAGMA foreign_keys=ON`); err != nil {
 		t.Fatalf("pragma foreign_keys: %v", err)
 	}
+	if err := prepareInboxMessageSchema(context.Background(), db); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
 
-	conn := testDBConn{db: db}
-	serial := testSerialExec{db: db}
-	store, err := BootstrapStore(context.Background(), conn, serial)
+	store, err := BootstrapStore(context.Background(), testStore{db: db})
 	if err != nil {
 		t.Fatalf("bootstrap store: %v", err)
 	}
@@ -103,8 +154,7 @@ func TestStoreListNotFound(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	conn := testDBConn{db: db}
-	store, err := BootstrapStore(context.Background(), conn, nil)
+	store, err := BootstrapStore(context.Background(), testStore{db: db})
 	if err != nil {
 		t.Fatalf("bootstrap store: %v", err)
 	}

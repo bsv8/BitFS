@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 )
 
 // ==================== 测试/初始化支架 ====================
@@ -49,7 +49,7 @@ func dbUpsertTokenLot(ctx context.Context, store *clientDB, e tokenLotEntry) err
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		return dbUpsertTokenLotEntTx(ctx, tx, e)
 	})
 }
@@ -59,9 +59,16 @@ func dbGetTokenLot(ctx context.Context, store *clientDB, lotID string) (*tokenLo
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (*tokenLotEntry, error) {
-		return dbGetTokenLotEntTx(ctx, tx, lotID)
+	var result *tokenLotEntry
+	err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
+		item, err := dbGetTokenLotEntTx(ctx, tx, lotID)
+		if err != nil {
+			return err
+		}
+		result = item
+		return nil
 	})
+	return result, err
 }
 
 // dbUpsertTokenCarrierLink 幂等写入/更新 Token Carrier Link。
@@ -69,10 +76,9 @@ func dbUpsertTokenCarrierLink(ctx context.Context, store *clientDB, e tokenCarri
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	_, err := clientDBValue(ctx, store, func(db sqlConn) (struct{}, error) {
-		return struct{}{}, dbUpsertTokenCarrierLinkDB(ctx, db, e)
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
+		return dbUpsertTokenCarrierLinkEntTx(ctx, tx, e)
 	})
-	return err
 }
 
 // dbListActiveCarrierLinksByOwner 查询某个 owner 下所有 active carrier link。
@@ -84,8 +90,9 @@ func dbListActiveCarrierLinksByOwner(ctx context.Context, store *clientDB, owner
 	if ownerPubkeyHex == "" {
 		return nil, fmt.Errorf("owner_pubkey_hex is required")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) ([]tokenCarrierLinkEntry, error) {
-		rows, err := QueryContext(ctx, db, `
+	var result []tokenCarrierLinkEntry
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
+		rows, err := rc.QueryContext(ctx, `
 			SELECT link_id, lot_id, carrier_utxo_id, owner_pubkey_hex, link_state, bind_txid, unbind_txid,
 			       created_at_unix, updated_at_unix, note, payload_json
 			  FROM fact_token_carrier_links
@@ -94,7 +101,7 @@ func dbListActiveCarrierLinksByOwner(ctx context.Context, store *clientDB, owner
 			ownerPubkeyHex,
 		)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		defer rows.Close()
 
@@ -104,15 +111,17 @@ func dbListActiveCarrierLinksByOwner(ctx context.Context, store *clientDB, owner
 			var payloadJSON string
 			if err := rows.Scan(&row.LinkID, &row.LotID, &row.CarrierUTXOID, &row.OwnerPubkeyHex, &row.LinkState,
 				&row.BindTxid, &row.UnbindTxid, &row.CreatedAtUnix, &row.UpdatedAtUnix, &row.Note, &payloadJSON); err != nil {
-				return nil, err
+				return err
 			}
 			if strings.TrimSpace(payloadJSON) != "" {
 				row.Payload = json.RawMessage(payloadJSON)
 			}
 			out = append(out, row)
 		}
-		return out, rows.Err()
+		result = out
+		return rows.Err()
 	})
+	return result, err
 }
 
 // dbAppendSettlementRecord 写入结算消耗记录。
@@ -120,7 +129,7 @@ func dbAppendSettlementRecord(ctx context.Context, store *clientDB, e settlement
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		return dbAppendSettlementRecordEntTx(ctx, tx, e)
 	})
 }
@@ -133,8 +142,9 @@ func dbListSettlementRecordsByCycle(ctx context.Context, store *clientDB, settle
 	if settlementPaymentAttemptID <= 0 {
 		return nil, fmt.Errorf("settlement_payment_attempt_id is required")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) ([]settlementRecordEntry, error) {
-		rows, err := QueryContext(ctx, db, `
+	var result []settlementRecordEntry
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
+		rows, err := rc.QueryContext(ctx, `
 			SELECT record_id, settlement_payment_attempt_id, asset_type, owner_pubkey_hex,
 			       COALESCE(source_utxo_id,''), COALESCE(source_lot_id,''),
 			       used_satoshi, COALESCE(used_quantity_text,''), state,
@@ -145,7 +155,7 @@ func dbListSettlementRecordsByCycle(ctx context.Context, store *clientDB, settle
 			settlementPaymentAttemptID,
 		)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		defer rows.Close()
 
@@ -156,15 +166,17 @@ func dbListSettlementRecordsByCycle(ctx context.Context, store *clientDB, settle
 			if err := rows.Scan(&row.RecordID, &row.SettlementPaymentAttemptID, &row.AssetType, &row.OwnerPubkeyHex,
 				&row.SourceUTXOID, &row.SourceLotID, &row.UsedSatoshi, &row.UsedQuantityText, &row.State,
 				&row.OccurredAtUnix, &row.ConfirmedAtUnix, &row.Note, &payloadJSON); err != nil {
-				return nil, err
+				return err
 			}
 			if strings.TrimSpace(payloadJSON) != "" {
 				row.Payload = json.RawMessage(payloadJSON)
 			}
 			out = append(out, row)
 		}
-		return out, rows.Err()
+		result = out
+		return rows.Err()
 	})
+	return result, err
 }
 
 // dbSelectBSVUTXOsForTarget 按目标金额做小额优先选币。
@@ -217,11 +229,11 @@ func dbLoadWalletBSVBalance(ctx context.Context, store *clientDB, ownerPubkeyHex
 	if ownerPubkeyHex == "" {
 		return walletBSVBalance{}, fmt.Errorf("owner_pubkey_hex is required")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (walletBSVBalance, error) {
-		var out walletBSVBalance
-		out.OwnerPubkeyHex = ownerPubkeyHex
+	var result walletBSVBalance
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
+		result.OwnerPubkeyHex = ownerPubkeyHex
 
-		rows, err := QueryContext(ctx, db, `
+		rows, err := rc.QueryContext(ctx, `
 			SELECT value_satoshi, carrier_type
 			  FROM fact_bsv_utxos
 			 WHERE owner_pubkey_hex=? AND utxo_state='unspent'
@@ -229,7 +241,7 @@ func dbLoadWalletBSVBalance(ctx context.Context, store *clientDB, ownerPubkeyHex
 			ownerPubkeyHex,
 		)
 		if err != nil {
-			return walletBSVBalance{}, err
+			return err
 		}
 		defer rows.Close()
 
@@ -237,19 +249,17 @@ func dbLoadWalletBSVBalance(ctx context.Context, store *clientDB, ownerPubkeyHex
 			var value int64
 			var carrierType string
 			if err := rows.Scan(&value, &carrierType); err != nil {
-				return walletBSVBalance{}, err
+				return err
 			}
-			out.TotalSatoshi += uint64(value)
+			result.TotalSatoshi += uint64(value)
 			if strings.ToLower(strings.TrimSpace(carrierType)) == "plain_bsv" {
-				out.ConfirmedSatoshi += uint64(value)
-				out.SpendableUTXOCount++
+				result.ConfirmedSatoshi += uint64(value)
+				result.SpendableUTXOCount++
 			}
 		}
-		if err := rows.Err(); err != nil {
-			return walletBSVBalance{}, err
-		}
-		return out, nil
+		return rows.Err()
 	})
+	return result, err
 }
 
 // dbLoadAllWalletTokenBalances 加载钱包所有 Token 余额。
@@ -267,8 +277,9 @@ func dbLoadAllWalletTokenBalances(ctx context.Context, store *clientDB, ownerPub
 		totalIn   string
 		totalUsed string
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) ([]walletTokenBalance, error) {
-		rows, err := QueryContext(ctx, db, `
+	var result []walletTokenBalance
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
+		rows, err := rc.QueryContext(ctx, `
 			SELECT token_standard, token_id, quantity_text, used_quantity_text
 			  FROM fact_token_lots
 			 WHERE owner_pubkey_hex=? AND lot_state='unspent'
@@ -276,7 +287,7 @@ func dbLoadAllWalletTokenBalances(ctx context.Context, store *clientDB, ownerPub
 			ownerPubkeyHex,
 		)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		defer rows.Close()
 
@@ -284,7 +295,7 @@ func dbLoadAllWalletTokenBalances(ctx context.Context, store *clientDB, ownerPub
 		for rows.Next() {
 			var standard, tokenID, qtyText, usedText string
 			if err := rows.Scan(&standard, &tokenID, &qtyText, &usedText); err != nil {
-				return nil, err
+				return err
 			}
 			key := standard + ":" + tokenID
 			agg, ok := aggs[key]
@@ -294,17 +305,17 @@ func dbLoadAllWalletTokenBalances(ctx context.Context, store *clientDB, ownerPub
 			}
 			nextIn, err := sumDecimalTexts(agg.totalIn + "," + qtyText)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			nextUsed, err := sumDecimalTexts(agg.totalUsed + "," + usedText)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			agg.totalIn = nextIn
 			agg.totalUsed = nextUsed
 		}
 		if err := rows.Err(); err != nil {
-			return nil, err
+			return err
 		}
 
 		keys := make([]string, 0, len(aggs))
@@ -318,7 +329,7 @@ func dbLoadAllWalletTokenBalances(ctx context.Context, store *clientDB, ownerPub
 			agg := aggs[key]
 			remaining, err := subtractTokenDecimalText(agg.totalIn, agg.totalUsed)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			if compareDecimalText(remaining, "0") <= 0 {
 				continue
@@ -330,8 +341,10 @@ func dbLoadAllWalletTokenBalances(ctx context.Context, store *clientDB, ownerPub
 				BalanceText:    remaining,
 			})
 		}
-		return out, nil
+		result = out
+		return nil
 	})
+	return result, err
 }
 
 // dbListTokenSpendableSourceFlows 保持旧接口，但只查新 fact 表。
@@ -363,13 +376,19 @@ func dbListTokenSpendableSourceFlows(ctx context.Context, store *clientDB, walle
 			continue
 		}
 		var walletUtxoAllocationClass string
-		row := QueryRowContext(ctx, store, `SELECT allocation_class FROM wallet_utxo WHERE utxo_id=?`, link.CarrierUTXOID)
-		if row != nil {
-			if err := row.Scan(&walletUtxoAllocationClass); err != nil {
-				if err != sql.ErrNoRows {
-					return nil, err
+		err = store.Read(ctx, func(rc moduleapi.ReadConn) error {
+			row := rc.QueryRowContext(ctx, `SELECT allocation_class FROM wallet_utxo WHERE utxo_id=?`, link.CarrierUTXOID)
+			if row != nil {
+				if err := row.Scan(&walletUtxoAllocationClass); err != nil {
+					if err != sql.ErrNoRows {
+						return err
+					}
 				}
 			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
 		}
 		if strings.ToLower(strings.TrimSpace(walletUtxoAllocationClass)) == walletUTXOAllocationUnknown {
 			continue
@@ -417,13 +436,13 @@ func dbLoadTokenBalanceFact(ctx context.Context, store *clientDB, walletID strin
 	if tokenID == "" {
 		return tokenBalanceResult{}, fmt.Errorf("token_id is required")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (tokenBalanceResult, error) {
-		var result tokenBalanceResult
+	var result tokenBalanceResult
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
 		result.WalletID = walletID
 		result.AssetKind = assetKind
 		result.TokenID = tokenID
 
-		rows, err := QueryContext(ctx, db, `
+		rows, err := rc.QueryContext(ctx, `
 			SELECT quantity_text, used_quantity_text
 			  FROM fact_token_lots
 			 WHERE owner_pubkey_hex=? AND token_standard=? AND token_id=? AND lot_state='unspent'
@@ -431,7 +450,7 @@ func dbLoadTokenBalanceFact(ctx context.Context, store *clientDB, walletID strin
 			ownerPubkeyHex, assetKind, tokenID,
 		)
 		if err != nil {
-			return tokenBalanceResult{}, err
+			return err
 		}
 		defer rows.Close()
 
@@ -440,26 +459,27 @@ func dbLoadTokenBalanceFact(ctx context.Context, store *clientDB, walletID strin
 		for rows.Next() {
 			var qtyText, usedText string
 			if err := rows.Scan(&qtyText, &usedText); err != nil {
-				return tokenBalanceResult{}, err
+				return err
 			}
 			nextIn, err := sumDecimalTexts(totalIn + "," + qtyText)
 			if err != nil {
-				return tokenBalanceResult{}, err
+				return err
 			}
 			nextUsed, err := sumDecimalTexts(totalUsed + "," + usedText)
 			if err != nil {
-				return tokenBalanceResult{}, err
+				return err
 			}
 			totalIn = nextIn
 			totalUsed = nextUsed
 		}
 		if err := rows.Err(); err != nil {
-			return tokenBalanceResult{}, err
+			return err
 		}
 		result.TotalInText = totalIn
 		result.TotalUsedText = totalUsed
-		return result, nil
+		return nil
 	})
+	return result, err
 }
 
 // dbGetBSVUTXO 查询单个本币 UTXO。
@@ -471,8 +491,9 @@ func dbGetBSVUTXO(ctx context.Context, store *clientDB, utxoID string) (*bsvUTXO
 	if utxoID == "" {
 		return nil, fmt.Errorf("utxo_id is required")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (*bsvUTXOEntry, error) {
-		row := QueryRowContext(ctx, db, `
+	var result *bsvUTXOEntry
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
+		row := rc.QueryRowContext(ctx, `
 			SELECT utxo_id, owner_pubkey_hex, address, txid, vout, value_satoshi,
 			       utxo_state, carrier_type, spent_by_txid, created_at_unix, updated_at_unix,
 			       spent_at_unix, note, COALESCE(payload_json,'{}')
@@ -482,7 +503,7 @@ func dbGetBSVUTXO(ctx context.Context, store *clientDB, utxoID string) (*bsvUTXO
 			utxoID,
 		)
 		if row == nil {
-			return nil, nil
+			return nil
 		}
 		var out bsvUTXOEntry
 		var payloadJSON string
@@ -490,15 +511,17 @@ func dbGetBSVUTXO(ctx context.Context, store *clientDB, utxoID string) (*bsvUTXO
 			&out.UTXOState, &out.CarrierType, &out.SpentByTxid, &out.CreatedAtUnix, &out.UpdatedAtUnix,
 			&out.SpentAtUnix, &out.Note, &payloadJSON); err != nil {
 			if err == sql.ErrNoRows {
-				return nil, nil
+				return nil
 			}
-			return nil, err
+			return err
 		}
 		if strings.TrimSpace(payloadJSON) != "" {
 			out.Payload = json.RawMessage(payloadJSON)
 		}
-		return &out, nil
+		result = &out
+		return nil
 	})
+	return result, err
 }
 
 // dbMarkBSVUTXOSpent 标记本币 UTXO 为已花费。
@@ -514,9 +537,9 @@ func dbMarkBSVUTXOSpent(ctx context.Context, store *clientDB, utxoID string, spe
 	if spentByTxid == "" {
 		return fmt.Errorf("spent_by_txid is required")
 	}
-	_, err := clientDBValue(ctx, store, func(db sqlConn) (struct{}, error) {
+	return store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
 		now := time.Now().Unix()
-		result, err := ExecContext(ctx, db, `
+		result, err := wtx.ExecContext(ctx, `
 			UPDATE fact_bsv_utxos
 			   SET utxo_state='spent',
 			       spent_by_txid=?,
@@ -526,21 +549,20 @@ func dbMarkBSVUTXOSpent(ctx context.Context, store *clientDB, utxoID string, spe
 			spentByTxid, now, now, utxoID,
 		)
 		if err != nil {
-			return struct{}{}, err
+			return err
 		}
 		if result == nil {
-			return struct{}{}, fmt.Errorf("utxo_id %s not found", utxoID)
+			return fmt.Errorf("utxo_id %s not found", utxoID)
 		}
 		affected, err := result.RowsAffected()
 		if err != nil {
-			return struct{}{}, err
+			return err
 		}
 		if affected == 0 {
-			return struct{}{}, fmt.Errorf("utxo_id %s not found", utxoID)
+			return fmt.Errorf("utxo_id %s not found", utxoID)
 		}
-		return struct{}{}, nil
+		return nil
 	})
-	return err
 }
 
 // dbCalcBSVBalance 兼容旧签名。
@@ -548,26 +570,20 @@ func dbCalcBSVBalance(ctx context.Context, store *clientDB, ownerPubkeyHex strin
 	if store == nil {
 		return 0, 0, fmt.Errorf("client db is nil")
 	}
-	if store.ent == nil {
-		return 0, 0, fmt.Errorf("client db ent client is nil")
-	}
-	out, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (struct {
+	var result struct {
 		confirmed uint64
 		total     uint64
-	}, error) {
-		confirmed, total, err := dbCalcBSVBalanceEntTx(ctx, tx, ownerPubkeyHex)
+	}
+	err := store.ReadEnt(ctx, func(root EntReadRoot) error {
+		confirmed, total, err := dbCalcBSVBalanceEntRoot(ctx, root, ownerPubkeyHex)
 		if err != nil {
-			return struct {
-				confirmed uint64
-				total     uint64
-			}{}, err
+			return err
 		}
-		return struct {
-			confirmed uint64
-			total     uint64
-		}{confirmed: confirmed, total: total}, nil
+		result.confirmed = confirmed
+		result.total = total
+		return nil
 	})
-	return out.confirmed, out.total, err
+	return result.confirmed, result.total, err
 }
 
 // dbCalcTokenBalance 兼容旧签名。
@@ -575,12 +591,16 @@ func dbCalcTokenBalance(ctx context.Context, store *clientDB, ownerPubkeyHex str
 	if store == nil {
 		return "", fmt.Errorf("client db is nil")
 	}
-	if store.ent == nil {
-		return "", fmt.Errorf("client db ent client is nil")
-	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (string, error) {
-		return dbCalcTokenBalanceEntTx(ctx, tx, ownerPubkeyHex, tokenStandard, tokenID)
+	var result string
+	err := store.ReadEnt(ctx, func(root EntReadRoot) error {
+		balance, err := dbCalcTokenBalanceEntRoot(ctx, root, ownerPubkeyHex, tokenStandard, tokenID)
+		if err != nil {
+			return err
+		}
+		result = balance
+		return nil
 	})
+	return result, err
 }
 
 // getFactBSV21ByTokenID 按 token_id 查询 BSV21 主事实。
@@ -592,10 +612,11 @@ func getFactBSV21ByTokenID(ctx context.Context, store *clientDB, tokenID string)
 	if tokenID == "" {
 		return factBSV21CreateItem{}, fmt.Errorf("token_id is required")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (factBSV21CreateItem, error) {
+	var result factBSV21CreateItem
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
 		var item factBSV21CreateItem
 		var payloadJSON string
-		err := QueryRowContext(ctx, db, `
+		err := rc.QueryRowContext(ctx, `
 			SELECT token_id,create_txid,wallet_id,address,token_standard,symbol,max_supply,decimals,icon,created_at_unix,submitted_at_unix,updated_at_unix,COALESCE(payload_json,'{}')
 			  FROM fact_bsv21
 			 WHERE token_id=?
@@ -606,11 +627,13 @@ func getFactBSV21ByTokenID(ctx context.Context, store *clientDB, tokenID string)
 			&item.MaxSupply, &item.Decimals, &item.Icon, &item.CreatedAtUnix, &item.SubmittedAtUnix, &item.UpdatedAtUnix, &payloadJSON,
 		)
 		if err != nil {
-			return factBSV21CreateItem{}, err
+			return err
 		}
 		item.PayloadJSON = payloadJSON
-		return item, nil
+		result = item
+		return nil
 	})
+	return result, err
 }
 
 // dbUpsertChainPayment 按 txid 写入链支付事实。
@@ -618,9 +641,16 @@ func dbUpsertChainPayment(ctx context.Context, store *clientDB, e chainPaymentEn
 	if store == nil {
 		return 0, fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int64, error) {
-		return dbUpsertChainPaymentEntTx(ctx, tx, e, false)
+	var result int64
+	err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
+		id, err := dbUpsertChainPaymentEntTx(ctx, tx, e, false)
+		if err != nil {
+			return err
+		}
+		result = id
+		return nil
 	})
+	return result, err
 }
 
 // dbUpsertChainPaymentWithSettlementPaymentAttempt 按 txid 写入链支付事实，并补 settlement_payment_attempt。
@@ -628,9 +658,16 @@ func dbUpsertChainPaymentWithSettlementPaymentAttempt(ctx context.Context, store
 	if store == nil {
 		return 0, fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int64, error) {
-		return dbUpsertChainPaymentEntTx(ctx, tx, e, true)
+	var result int64
+	err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
+		id, err := dbUpsertChainPaymentEntTx(ctx, tx, e, true)
+		if err != nil {
+			return err
+		}
+		result = id
+		return nil
 	})
+	return result, err
 }
 
 // dbUpsertChainDirectPayWithSettlementPaymentAttempt 写入 chain_direct_pay。
@@ -639,10 +676,16 @@ func dbUpsertChainDirectPayWithSettlementPaymentAttempt(ctx context.Context, sto
 	if store == nil {
 		return 0, fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int64, error) {
+	var result int64
+	err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		channelID, _, err := dbUpsertChainChannelWithSettlementPaymentAttempt(ctx, tx, e, "chain_direct_pay", "payment_attempt_chain_direct_pay", "bind chain direct pay channel id")
-		return channelID, err
+		if err != nil {
+			return err
+		}
+		result = channelID
+		return nil
 	})
+	return result, err
 }
 
 // dbUpsertBusinessSettlement 写入业务结算出口。
@@ -650,7 +693,7 @@ func dbUpsertBusinessSettlement(ctx context.Context, store *clientDB, e business
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		return dbUpsertBusinessSettlementEntTx(ctx, tx, e)
 	})
 }
@@ -664,10 +707,11 @@ func dbGetBusinessSettlement(ctx context.Context, store *clientDB, settlementID 
 	if settlementID == "" {
 		return BusinessSettlementItem{}, fmt.Errorf("settlement_id is required")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (BusinessSettlementItem, error) {
+	var result BusinessSettlementItem
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
 		var item BusinessSettlementItem
 		var payload string
-		err := QueryRowContext(ctx, db, `
+		err := rc.QueryRowContext(ctx, `
 			SELECT settlement_id,order_id,settlement_method,settlement_status,target_type,target_id,error_message,created_at_unix,updated_at_unix,COALESCE(settlement_payload_json,'{}')
 			  FROM order_settlements
 			 WHERE settlement_id=?
@@ -678,11 +722,13 @@ func dbGetBusinessSettlement(ctx context.Context, store *clientDB, settlementID 
 			&item.ErrorMessage, &item.CreatedAtUnix, &item.UpdatedAtUnix, &payload,
 		)
 		if err != nil {
-			return BusinessSettlementItem{}, err
+			return err
 		}
 		item.Payload = json.RawMessage(payload)
-		return item, nil
+		result = item
+		return nil
 	})
+	return result, err
 }
 
 // dbListBusinessSettlementsByTarget 按 target_type + target_id 查询业务结算出口列表。
@@ -710,7 +756,8 @@ func dbListBusinessSettlements(ctx context.Context, store *clientDB, filter busi
 		item    BusinessSettlementItem
 		payload string
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (businessSettlementPage, error) {
+	var result businessSettlementPage
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
 		where := make([]string, 0, 6)
 		args := make([]any, 0, 6)
 		if filter.SettlementID != "" {
@@ -751,12 +798,12 @@ func dbListBusinessSettlements(ctx context.Context, store *clientDB, filter busi
 		listSQL += " ORDER BY settlement_no DESC, updated_at_unix DESC, settlement_id DESC LIMIT ? OFFSET ?"
 
 		var page businessSettlementPage
-		if err := QueryRowContext(ctx, db, countSQL, args...).Scan(&page.Total); err != nil {
-			return businessSettlementPage{}, err
+		if err := rc.QueryRowContext(ctx, countSQL, args...).Scan(&page.Total); err != nil {
+			return err
 		}
-		rows, err := QueryContext(ctx, db, listSQL, append(args, filter.Limit, filter.Offset)...)
+		rows, err := rc.QueryContext(ctx, listSQL, append(args, filter.Limit, filter.Offset)...)
 		if err != nil {
-			return businessSettlementPage{}, err
+			return err
 		}
 		defer rows.Close()
 
@@ -766,17 +813,19 @@ func dbListBusinessSettlements(ctx context.Context, store *clientDB, filter busi
 			var payload string
 			if err := rows.Scan(&item.SettlementID, &item.OrderID, &item.SettlementMethod, &item.Status, &item.TargetType, &item.TargetID,
 				&item.ErrorMessage, &item.CreatedAtUnix, &item.UpdatedAtUnix, &payload); err != nil {
-				return businessSettlementPage{}, err
+				return err
 			}
 			item.Payload = json.RawMessage(payload)
 			items = append(items, item)
 		}
 		if err := rows.Err(); err != nil {
-			return businessSettlementPage{}, err
+			return err
 		}
 		page.Items = items
-		return page, nil
+		result = page
+		return nil
 	})
+	return result, err
 }
 
 // dbUpdateBusinessSettlementOutcome 同步回写业务状态和结算出口状态。
@@ -784,7 +833,7 @@ func dbUpdateBusinessSettlementOutcome(ctx context.Context, store *clientDB, e b
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		return dbUpdateBusinessSettlementOutcomeEntTx(ctx, tx, e)
 	})
 }
@@ -794,7 +843,7 @@ func dbAppendBusinessTrigger(ctx context.Context, store *clientDB, e businessTri
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		return dbAppendBusinessTriggerTx(ctx, tx, e)
 	})
 }
@@ -808,10 +857,11 @@ func dbGetBusinessTrigger(ctx context.Context, store *clientDB, triggerID string
 	if triggerID == "" {
 		return businessTriggerItem{}, fmt.Errorf("trigger_id is required")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (businessTriggerItem, error) {
+	var result businessTriggerItem
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
 		var item businessTriggerItem
 		var payload string
-		err := QueryRowContext(ctx, db, `
+		err := rc.QueryRowContext(ctx, `
 			SELECT e.process_id, COALESCE(s.order_id,''), e.source_type, e.source_id, e.accounting_subtype, e.occurred_at_unix, e.note, COALESCE(e.payload_json,'{}')
 			  FROM order_settlement_events e
 			  LEFT JOIN order_settlements s ON s.settlement_id=e.settlement_id
@@ -821,11 +871,13 @@ func dbGetBusinessTrigger(ctx context.Context, store *clientDB, triggerID string
 			triggerID,
 		).Scan(&item.TriggerID, &item.OrderID, &item.TriggerType, &item.TriggerIDValue, &item.TriggerRole, &item.CreatedAtUnix, &item.Note, &payload)
 		if err != nil {
-			return businessTriggerItem{}, err
+			return err
 		}
 		item.Payload = json.RawMessage(payload)
-		return item, nil
+		result = item
+		return nil
 	})
+	return result, err
 }
 
 // dbListBusinessTriggersByOrderID 按 order_id 查询旧桥接记录列表。
@@ -848,7 +900,8 @@ func dbListBusinessTriggers(ctx context.Context, store *clientDB, filter busines
 	if filter.Offset < 0 {
 		filter.Offset = 0
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (businessTriggerPage, error) {
+	var result businessTriggerPage
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
 		where := make([]string, 0, 5)
 		args := make([]any, 0, 5)
 		if filter.TriggerID != "" {
@@ -890,12 +943,12 @@ func dbListBusinessTriggers(ctx context.Context, store *clientDB, filter busines
 		listSQL += " ORDER BY e.occurred_at_unix DESC, e.id DESC LIMIT ? OFFSET ?"
 
 		var page businessTriggerPage
-		if err := QueryRowContext(ctx, db, countSQL, args...).Scan(&page.Total); err != nil {
-			return businessTriggerPage{}, err
+		if err := rc.QueryRowContext(ctx, countSQL, args...).Scan(&page.Total); err != nil {
+			return err
 		}
-		rows, err := QueryContext(ctx, db, listSQL, append(args, filter.Limit, filter.Offset)...)
+		rows, err := rc.QueryContext(ctx, listSQL, append(args, filter.Limit, filter.Offset)...)
 		if err != nil {
-			return businessTriggerPage{}, err
+			return err
 		}
 		defer rows.Close()
 
@@ -904,17 +957,19 @@ func dbListBusinessTriggers(ctx context.Context, store *clientDB, filter busines
 			var item businessTriggerItem
 			var payload string
 			if err := rows.Scan(&item.TriggerID, &item.OrderID, &item.TriggerType, &item.TriggerIDValue, &item.TriggerRole, &item.CreatedAtUnix, &item.Note, &payload); err != nil {
-				return businessTriggerPage{}, err
+				return err
 			}
 			item.Payload = json.RawMessage(payload)
 			items = append(items, item)
 		}
 		if err := rows.Err(); err != nil {
-			return businessTriggerPage{}, err
+			return err
 		}
 		page.Items = items
-		return page, nil
+		result = page
+		return nil
 	})
+	return result, err
 }
 
 // dbAppendFinBusiness 是共享财务业务写入口。
@@ -922,7 +977,7 @@ func dbAppendFinBusiness(ctx context.Context, store *clientDB, e finBusinessEntr
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		return dbAppendFinBusinessTx(ctx, tx, e)
 	})
 }
@@ -938,7 +993,8 @@ func dbListFrontOrders(ctx context.Context, store *clientDB, filter frontOrderFi
 	if filter.Offset < 0 {
 		filter.Offset = 0
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (frontOrderPage, error) {
+	var result frontOrderPage
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
 		where := make([]string, 0, 6)
 		args := make([]any, 0, 6)
 		if filter.FrontOrderID != "" {
@@ -982,12 +1038,12 @@ func dbListFrontOrders(ctx context.Context, store *clientDB, filter frontOrderFi
 		listSQL += " ORDER BY created_at_unix DESC, updated_at_unix DESC, order_id DESC LIMIT ? OFFSET ?"
 
 		var page frontOrderPage
-		if err := QueryRowContext(ctx, db, countSQL, args...).Scan(&page.Total); err != nil {
-			return frontOrderPage{}, err
+		if err := rc.QueryRowContext(ctx, countSQL, args...).Scan(&page.Total); err != nil {
+			return err
 		}
-		rows, err := QueryContext(ctx, db, listSQL, append(args, filter.Limit, filter.Offset)...)
+		rows, err := rc.QueryContext(ctx, listSQL, append(args, filter.Limit, filter.Offset)...)
 		if err != nil {
-			return frontOrderPage{}, err
+			return err
 		}
 		defer rows.Close()
 
@@ -998,18 +1054,20 @@ func dbListFrontOrders(ctx context.Context, store *clientDB, filter frontOrderFi
 			var payload string
 			if err := rows.Scan(&item.FrontOrderID, &item.FrontType, &item.FrontSubtype, &item.OwnerPubkeyHex, &item.TargetObjectType, &item.TargetObjectID,
 				&item.Status, &item.CreatedAtUnix, &item.UpdatedAtUnix, &note, &payload); err != nil {
-				return frontOrderPage{}, err
+				return err
 			}
 			item.Note = note
 			item.Payload = json.RawMessage(payload)
 			items = append(items, item)
 		}
 		if err := rows.Err(); err != nil {
-			return frontOrderPage{}, err
+			return err
 		}
 		page.Items = items
-		return page, nil
+		result = page
+		return nil
 	})
+	return result, err
 }
 
 // dbUpsertSettlementPaymentAttemptStore 写入结算支付尝试。
@@ -1019,9 +1077,16 @@ func dbUpsertSettlementPaymentAttemptStore(ctx context.Context, store *clientDB,
 	if store == nil {
 		return 0, fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int64, error) {
-		return dbUpsertSettlementPaymentAttemptEntTx(ctx, tx, paymentAttemptID, sourceType, sourceID, state, grossSatoshi, gateFeeSatoshi, netSatoshi, paymentAttemptIndex, occurredAtUnix, note, payload)
+	var result int64
+	err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
+		id, err := dbUpsertSettlementPaymentAttemptEntTx(ctx, tx, paymentAttemptID, sourceType, sourceID, state, grossSatoshi, gateFeeSatoshi, netSatoshi, paymentAttemptIndex, occurredAtUnix, note, payload)
+		if err != nil {
+			return err
+		}
+		result = id
+		return nil
 	})
+	return result, err
 }
 
 // dbGetSettlementPaymentAttemptSourceTxIDStore 兼容 store 入口。
@@ -1029,9 +1094,16 @@ func dbGetSettlementPaymentAttemptSourceTxIDStore(ctx context.Context, store *cl
 	if store == nil {
 		return "", fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (string, error) {
-		return dbGetSettlementPaymentAttemptSourceTxIDCtx(ctx, db, settlementPaymentAttemptID)
+	var result string
+	err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
+		txid, err := dbGetSettlementPaymentAttemptSourceTxIDEntTx(ctx, tx, settlementPaymentAttemptID)
+		if err != nil {
+			return err
+		}
+		result = txid
+		return nil
 	})
+	return result, err
 }
 
 // defaultArbiterPubHex 统一给下载链路挑一个默认仲裁者。
@@ -1058,7 +1130,7 @@ func defaultArbiterPubHex(rt *Runtime) string {
 	return ""
 }
 
-// dbAppendTokenConsumptionsForSettlementPaymentAttempt 写入 Token 消耗记录。
+// dbAppendTokenConsumptionsForSettlementPaymentAttemptCtx 写入 Token 消耗记录。
 // 设计说明：
 // - 先落结算记录，再按 lot 重算 used_quantity；
 // - 这样重复回放同一批记录时不会重复累加。

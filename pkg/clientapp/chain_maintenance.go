@@ -237,8 +237,8 @@ func (m *chainMaintainer) start(ctx context.Context) {
 		m.runScheduler(ctx)
 	}()
 	m.runTipWorker(ctx)
-	m.runUTXOWorker(ctx)
 	m.enqueue(chainTaskTip, "startup")
+	m.runUTXOWorker(ctx)
 	m.enqueue(chainTaskUTXO, "startup")
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizpurchases"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/factbsvutxos"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/factpoolsessionevents"
@@ -38,7 +37,11 @@ func dbLoadWalletSummaryCounters(ctx context.Context, store *clientDB) (walletSu
 	if store == nil {
 		return walletSummaryCounters{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (walletSummaryCounters, error) {
+	// 设计说明：
+	// - 这里只做只读聚合，不应额外开启 ent 事务；
+	// - e2e 场景里费用池打开后会有持续写入，若这里再开事务，容易把 HTTP 读接口拖进等待链；
+	// - 统一走只读查询入口，让 actor 只负责串行，不再叠加事务锁。
+	return readEntValue(ctx, store, func(root EntReadRoot) (walletSummaryCounters, error) {
 		var out walletSummaryCounters
 		// 设计说明（硬切版）：
 		// - 不再从旧汇总表读统计；
@@ -46,7 +49,7 @@ func dbLoadWalletSummaryCounters(ctx context.Context, store *clientDB) (walletSu
 		// - 统计逻辑尽量简单，方便后续直接从代码判断口径。
 
 		// 1. 本币 UTXO 数量和未花费金额
-		unspentRows, err := tx.FactBsvUtxos.Query().
+		unspentRows, err := root.FactBsvUtxos.Query().
 			Where(factbsvutxos.UtxoStateEQ("unspent")).
 			All(ctx)
 		if err != nil {
@@ -58,7 +61,7 @@ func dbLoadWalletSummaryCounters(ctx context.Context, store *clientDB) (walletSu
 		}
 
 		// 2. BSV 已花费金额，按已确认结算记录统计
-		settlementRows, err := tx.FactSettlementRecords.Query().
+		settlementRows, err := root.FactSettlementRecords.Query().
 			Where(
 				factsettlementrecords.AssetTypeEQ("BSV"),
 				factsettlementrecords.StateEQ("confirmed"),
@@ -73,7 +76,7 @@ func dbLoadWalletSummaryCounters(ctx context.Context, store *clientDB) (walletSu
 		out.BSVUsedSatoshi = out.TotalOut
 
 		// 3. Token 消耗统计，按 token_standard + token_id 分组
-		tokenRows, err := tx.FactTokenLots.Query().
+		tokenRows, err := root.FactTokenLots.Query().
 			Where(
 				facttokenlots.LotStateIn("unspent", "spent"),
 				facttokenlots.UsedQuantityTextNEQ("0"),
@@ -107,7 +110,7 @@ func dbLoadWalletSummaryCounters(ctx context.Context, store *clientDB) (walletSu
 		out.TotalReturned = 0 // 已废弃
 
 		// 4. 交易历史、购买、网关事件的总数
-		txCount, err := tx.FactPoolSessionEvents.Query().
+		txCount, err := root.FactPoolSessionEvents.Query().
 			Where(factpoolsessionevents.EventKindEQ(PoolFactEventKindTxHistory)).
 			Count(ctx)
 		if err != nil {
@@ -115,7 +118,7 @@ func dbLoadWalletSummaryCounters(ctx context.Context, store *clientDB) (walletSu
 		}
 		out.TxCount = int64(txCount)
 
-		purchaseCount, err := tx.BizPurchases.Query().
+		purchaseCount, err := root.BizPurchases.Query().
 			Where(bizpurchases.StatusEQ("done")).
 			Count(ctx)
 		if err != nil {
@@ -123,7 +126,7 @@ func dbLoadWalletSummaryCounters(ctx context.Context, store *clientDB) (walletSu
 		}
 		out.PurchaseCount = int64(purchaseCount)
 
-		gatewayCount, err := tx.ProcGatewayEvents.Query().Count(ctx)
+		gatewayCount, err := root.ProcGatewayEvents.Query().Count(ctx)
 		if err != nil {
 			return walletSummaryCounters{}, err
 		}

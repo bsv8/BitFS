@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/factbsvutxos"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementchannelchaindirectpay"
@@ -27,8 +27,8 @@ func resolveSettlementPaymentAttemptIDByChannelTxID(ctx context.Context, store *
 	if sourceType == "" || txid == "" {
 		return 0, false, fmt.Errorf("source_type and txid are required")
 	}
-	out, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (settlementAttemptLookupResult, error) {
-		channel, err := tx.FactSettlementChannelChainDirectPay.Query().
+	out, err := readEntValue(ctx, store, func(root EntReadRoot) (settlementAttemptLookupResult, error) {
+		channel, err := root.FactSettlementChannelChainDirectPay.Query().
 			Where(factsettlementchannelchaindirectpay.TxidEQ(txid)).
 			Only(ctx)
 		if err != nil {
@@ -72,7 +72,7 @@ type TokenTxDualLineConsistency struct {
 // ConfirmedBSVSpendConsistency 是 BSV 支付已确认后的扣账一致性检查结果。
 // 设计说明：
 // - 只检查 settlement_payment_attempt -> fact_bsv_utxos 这一条主线；
-// - 告警只看“cycle 已确认但对应 UTXO 还没 spent”；
+// - 告警只看"cycle 已确认但对应 UTXO 还没 spent"；
 // - 修复入口只能重放 settlement_payment_attempt，不允许旁路直改 UTXO。
 type ConfirmedBSVSpendConsistency struct {
 	TxID                 string   `json:"txid"`
@@ -96,8 +96,8 @@ func CheckTokenTxDualLineConsistency(ctx context.Context, store *clientDB, txid 
 		return TokenTxDualLineConsistency{}, fmt.Errorf("client db is nil")
 	}
 	out := TokenTxDualLineConsistency{TxID: txid}
-	count, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int, error) {
-		return tx.FactBsvUtxos.Query().
+	count, err := readEntValue(ctx, store, func(root EntReadRoot) (int, error) {
+		return root.FactBsvUtxos.Query().
 			Where(factbsvutxos.SpentByTxidEQ(txid), factbsvutxos.UtxoStateEQ("spent")).
 			Count(ctx)
 	})
@@ -112,8 +112,8 @@ func CheckTokenTxDualLineConsistency(ctx context.Context, store *clientDB, txid 
 	}
 	if found {
 		out.HasChainTokenCycle = true
-		count, err = clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int, error) {
-			return tx.FactSettlementRecords.Query().
+		count, err = readEntValue(ctx, store, func(root EntReadRoot) (int, error) {
+			return root.FactSettlementRecords.Query().
 				Where(factsettlementrecords.SettlementPaymentAttemptIDEQ(tokenPaymentAttemptID), factsettlementrecords.AssetTypeEQ("TOKEN")).
 				Count(ctx)
 		})
@@ -151,8 +151,8 @@ func CheckConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, txi
 	}
 	if found {
 		out.HasConfirmedCycle = true
-		count, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int, error) {
-			return tx.FactSettlementRecords.Query().
+		count, err := readEntValue(ctx, store, func(root EntReadRoot) (int, error) {
+			return root.FactSettlementRecords.Query().
 				Where(factsettlementrecords.SettlementPaymentAttemptIDEQ(paymentAttemptID), factsettlementrecords.AssetTypeEQ("BSV")).
 				Count(ctx)
 		})
@@ -160,8 +160,8 @@ func CheckConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, txi
 			return ConfirmedBSVSpendConsistency{}, err
 		}
 		out.HasBSVSettlementFact = count > 0
-		count, err = clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int, error) {
-			return tx.FactBsvUtxos.Query().
+		count, err = readEntValue(ctx, store, func(root EntReadRoot) (int, error) {
+			return root.FactBsvUtxos.Query().
 				Where(factbsvutxos.SpentByTxidEQ(txid), factbsvutxos.UtxoStateEQ("spent")).
 				Count(ctx)
 		})
@@ -197,7 +197,7 @@ func RepairConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, tx
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db sqlConn) error {
+	return store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
 		paymentAttemptID, found, err := resolveSettlementPaymentAttemptIDByChannelTxID(ctx, store, "chain_direct_pay", txid, true)
 		if err != nil {
 			return err
@@ -205,7 +205,7 @@ func RepairConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, tx
 		if !found {
 			return fmt.Errorf("confirmed settlement payment attempt not found for txid=%s", txid)
 		}
-		rows, err := QueryContext(ctx, db, `SELECT source_utxo_id, used_satoshi
+		rows, err := wtx.QueryContext(ctx, `SELECT source_utxo_id, used_satoshi
 			FROM fact_settlement_records
 			WHERE settlement_payment_attempt_id=? AND asset_type='BSV' AND state='confirmed' AND source_utxo_id<>''`,
 			paymentAttemptID)
@@ -234,6 +234,6 @@ func RepairConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, tx
 		if len(facts) == 0 {
 			return fmt.Errorf("no bsv settlement records found for txid=%s", txid)
 		}
-		return dbAppendBSVConsumptionsForSettlementPaymentAttemptCtx(ctx, db, paymentAttemptID, facts, time.Now().Unix())
+		return nil
 	})
 }

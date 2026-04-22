@@ -21,7 +21,7 @@ type seedPricingPolicyRow struct {
 
 // 这里只放种子定价策略的读写，避免和运行流程混在一起。
 
-func dbLoadSeedPricingPolicyTx(ctx context.Context, tx *gen.Tx, seedHash string) (seedPricingPolicyRow, error) {
+func dbLoadSeedPricingPolicyTx(ctx context.Context, tx EntWriteRoot, seedHash string) (seedPricingPolicyRow, error) {
 	if tx == nil {
 		return seedPricingPolicyRow{}, fmt.Errorf("tx is nil")
 	}
@@ -49,12 +49,12 @@ func dbUpsertSeedPricingPolicy(ctx context.Context, store *clientDB, seedHash st
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		return dbUpsertSeedPricingPolicyTx(ctx, tx, seedHash, floorUnit, discountBPS, source, updatedAtUnix)
 	})
 }
 
-func dbUpsertSeedPricingPolicyTx(ctx context.Context, tx *gen.Tx, seedHash string, floorUnit, discountBPS uint64, source string, updatedAtUnix int64) error {
+func dbUpsertSeedPricingPolicyTx(ctx context.Context, tx EntWriteRoot, seedHash string, floorUnit, discountBPS uint64, source string, updatedAtUnix int64) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -97,7 +97,7 @@ func dbSyncSystemSeedPricingPolicies(ctx context.Context, store *clientDB, floor
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		var rows []struct {
 			SeedHash string `json:"seed_hash,omitempty"`
 		}

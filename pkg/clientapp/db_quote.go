@@ -20,8 +20,8 @@ func dbListLiveQuotes(ctx context.Context, store *clientDB, demandID string) ([]
 	if demandID == "" {
 		return nil, fmt.Errorf("demand_id required")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]LiveQuoteItem, error) {
-		rows, err := tx.BizLiveQuotes.Query().
+	return readEntValue(ctx, store, func(root EntReadRoot) ([]LiveQuoteItem, error) {
+		rows, err := root.BizLiveQuotes.Query().
 			Where(bizlivequotes.DemandIDEQ(demandID)).
 			Order(bizlivequotes.ByCreatedAtUnix()).
 			All(ctx)
@@ -53,7 +53,7 @@ func dbUpsertLiveQuote(ctx context.Context, store *clientDB, item LiveQuoteItem)
 	if strings.TrimSpace(item.DemandID) == "" || strings.TrimSpace(item.SellerPubHex) == "" || strings.TrimSpace(item.StreamID) == "" {
 		return fmt.Errorf("live quote keys are required")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		recentJSON, err := json.Marshal(item.RecentSegments)
 		if err != nil {
 			return err

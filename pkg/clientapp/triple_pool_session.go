@@ -345,10 +345,6 @@ func handleDirectTransferPoolPay(ctx context.Context, rt *Runtime, _ host.Host, 
 	if req.ChunkIndex != resolvedChunkIndex {
 		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "chunk index mismatch"}, nil
 	}
-	if rt.directTransferTestOptions().ForceRejectPay {
-		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "simulated pay reject"}, nil
-	}
-
 	sellerPriv, err := ec.PrivateKeyFromHex(strings.TrimSpace(cfg.Keys.PrivkeyHex))
 	if err != nil {
 		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "invalid seller key"}, nil
@@ -507,26 +503,6 @@ func handleDirectTransferArbitrate(ctx context.Context, rt *Runtime, h host.Host
 	}
 	if strings.TrimSpace(arbResp.Status) != "arbitrated" {
 		return directTransferArbitrateResp{SessionId: sessionID, Status: strings.TrimSpace(arbResp.Status), Error: strings.TrimSpace(arbResp.Error)}, nil
-	}
-	if rt.directTransferTestOptions().ForceRejectArbFee {
-		_ = dbUpsertDirectArbitrationState(ctx, store, sessionID, evidenceKey, "arbitration_rejected", "")
-		emitDirectTransferEvent(rt, "direct_transfer_arbitration_fee_rejected", map[string]any{
-			"event_id":            fmt.Sprintf("%s:arb:%d", sessionID, req.Sequence),
-			"demand_id":           strings.TrimSpace(req.DemandId),
-			"deal_id":             strings.TrimSpace(row.DealID),
-			"session_id":          sessionID,
-			"seller_pubkey_hex":   strings.TrimSpace(row.SellerPubHex),
-			"buyer_pubkey_hex":    strings.TrimSpace(row.BuyerPubHex),
-			"arbiter_pubkey_hex":  strings.TrimSpace(row.ArbiterPubHex),
-			"sequence":            req.Sequence,
-			"arbiter_fee_satoshi": arbResp.ArbiterFee,
-		})
-		return directTransferArbitrateResp{
-			SessionId:  sessionID,
-			Status:     "fee_rejected",
-			Error:      "fee_rejected",
-			ArbiterFee: arbResp.ArbiterFee,
-		}, nil
 	}
 	if rt == nil || rt.ActionChain == nil {
 		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: "runtime not initialized"}, nil

@@ -8,11 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 )
 
 // 设计说明：
 // - 卖方报价读取需要同时看 biz_seeds 和 biz_seed_pricing_policy；
-// - 这里把“从库里拼成 sellerSeed”收成一个入口，run.go 只拿结果，不拼 SQL。
+// - 这里把"从库里拼成 sellerSeed"收成一个入口，run.go 只拿结果，不拼 SQL。
 func dbLoadSellerSeedSnapshot(ctx context.Context, store *clientDB, seedHash string) (sellerSeed, bool, error) {
 	if store == nil {
 		return sellerSeed{}, false, fmt.Errorf("client db is nil")
@@ -25,12 +27,11 @@ func dbLoadSellerSeedSnapshot(ctx context.Context, store *clientDB, seedHash str
 		seed sellerSeed
 		ok   bool
 	}
-	out, err := clientDBValue(ctx, store, func(db sqlConn) (result, error) {
-		var out result
+	var out result
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
 		var unitPrice uint64
 		var policyFound bool
-		var seedFilePath string
-		if err := QueryRowContext(ctx, db,
+		if err := rc.QueryRowContext(ctx,
 			`SELECT floor_unit_price_sat_per_64k
 			   FROM biz_seed_pricing_policy
 			  WHERE seed_hash=?`,
@@ -38,20 +39,21 @@ func dbLoadSellerSeedSnapshot(ctx context.Context, store *clientDB, seedHash str
 		).Scan(&unitPrice); err == nil {
 			policyFound = true
 		} else if !errors.Is(err, sql.ErrNoRows) {
-			return result{}, err
+			return err
 		}
 
 		var seed sellerSeed
-		if err := QueryRowContext(ctx, db,
+		var seedFilePath string
+		if err := rc.QueryRowContext(ctx,
 			`SELECT seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint
 			   FROM biz_seeds
 			  WHERE seed_hash=?`,
 			seedHash,
 		).Scan(&seed.SeedHash, &seed.ChunkCount, &seed.FileSize, &seedFilePath, &seed.RecommendedFileName, &seed.MIMEHint); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return result{}, nil
+				return nil
 			}
-			return result{}, err
+			return err
 		}
 		seed.SeedHash = seedHash
 		seed.ChunkPrice = unitPrice
@@ -64,7 +66,7 @@ func dbLoadSellerSeedSnapshot(ctx context.Context, store *clientDB, seedHash str
 		}
 		seedFilePath = strings.TrimSpace(seedFilePath)
 		if seedFilePath == "" {
-			return result{}, fmt.Errorf("seed file path is required")
+			return fmt.Errorf("seed file path is required")
 		}
 		if seedBytes, err := os.ReadFile(filepath.Clean(seedFilePath)); err == nil {
 			if meta, err := parseSeedV1(seedBytes); err == nil && meta.ChunkCount == seed.ChunkCount {
@@ -73,7 +75,7 @@ func dbLoadSellerSeedSnapshot(ctx context.Context, store *clientDB, seedHash str
 		}
 		out.seed = seed
 		out.ok = true
-		return out, nil
+		return nil
 	})
 	if err != nil {
 		return sellerSeed{}, false, err

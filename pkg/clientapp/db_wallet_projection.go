@@ -9,6 +9,7 @@ import (
 
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxo"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxosyncstate"
@@ -19,7 +20,7 @@ import (
 // - 业务层只传交易和显式 store，这里统一处理钱包 UTXO 回填；
 // - 本地广播只是钱包运行态，不是结算事实；这里不允许补任何 settlement payment attempt；
 // - 这样 local broadcast 这条链路就不会再散落 sql 细节。
-func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store ClientStore, rt transferRuntimeCaps, tx *txsdk.Transaction, trigger string) error {
+func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store moduleBootstrapStore, rt transferRuntimeCaps, tx *txsdk.Transaction, trigger string) error {
 	if store == nil {
 		return fmt.Errorf("store not initialized")
 	}
@@ -51,8 +52,8 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store ClientStor
 
 	roundID := strings.TrimSpace(anyToString(ctx.Value(sqlTraceContextRoundIDKey)))
 	ctx = sqlTraceContextWithMeta(ctx, roundID, trigger, "wallet_local_projection", "dbApplyLocalBroadcastWalletProjection")
-	if err := store.Tx(ctx, func(dbtx sqlConn) error {
-		current, err := dbLoadWalletUTXOStateRowsTx(dbtx, walletID, addr)
+	if err := store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
+		current, err := dbLoadWalletUTXOStateRowsTx(ctx, wtx, walletID, addr)
 		if err != nil {
 			return err
 		}
@@ -63,7 +64,7 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store ClientStor
 			}
 			utxoID := strings.ToLower(strings.TrimSpace(in.SourceTXID.String())) + ":" + fmt.Sprint(in.SourceTxOutIndex)
 			_ = applyWalletUTXOSpentState(desired, utxoID, txid, updatedAt)
-			if err := markBSVUTXOSpentConn(ctx, dbtx, utxoID, txid, updatedAt); err != nil {
+			if err := markBSVUTXOSpentConn(ctx, wtx, utxoID, txid, updatedAt); err != nil {
 				return err
 			}
 		}
@@ -77,7 +78,7 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store ClientStor
 			utxoID := txid + ":" + fmt.Sprint(idx)
 			classified := classifyWalletUTXOWithClassifier(ctx, classifier, newRuntimeWalletScriptEvidenceSource(rt), addr, utxoID, txid, uint32(idx), out.Satoshis, hex.EncodeToString(out.LockingScript.Bytes()), txHex)
 			_ = applyWalletUTXOUpsertState(desired, walletID, addr, utxoID, txid, uint32(idx), out.Satoshis, "unspent", "", string(classified.ScriptType), classified.Reason, updatedAt, updatedAt)
-			if err := dbUpsertBSVUTXODB(ctx, dbtx, bsvUTXOEntry{
+			if err := dbUpsertBSVUTXODB(ctx, wtx, bsvUTXOEntry{
 				UTXOID:         utxoID,
 				OwnerPubkeyHex: strings.ToLower(strings.TrimSpace(addr)),
 				Address:        addr,
@@ -93,10 +94,10 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store ClientStor
 				return err
 			}
 		}
-		if err := dbUpsertWalletLocalBroadcastStoreTx(ctx, dbtx, walletID, addr, txid, txHex, 0, updatedAt); err != nil {
+		if err := dbUpsertWalletLocalBroadcastStoreTx(ctx, wtx, walletID, addr, txid, txHex, 0, updatedAt); err != nil {
 			return err
 		}
-		if err := applyWalletUTXODiffTx(ctx, dbtx, current, desired, walletID, addr, updatedAt); err != nil {
+		if err := applyWalletUTXODiffTx(ctx, wtx, current, desired, walletID, addr, updatedAt); err != nil {
 			return err
 		}
 		stats := summarizeWalletUTXOState(desired)
@@ -108,7 +109,7 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store ClientStor
 		protectedBalanceSatoshi := int64(stats.ProtectedBalanceSatoshi)
 		unknownUTXOCount := int64(stats.UnknownUTXOCount)
 		unknownBalanceSatoshi := int64(stats.UnknownBalanceSatoshi)
-		if _, err := ExecContext(ctx, dbtx,
+		if _, err := wtx.ExecContext(ctx,
 			`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,plain_bsv_utxo_count,plain_bsv_balance_satoshi,protected_utxo_count,protected_balance_satoshi,unknown_utxo_count,unknown_balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
 			 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			 ON CONFLICT(address) DO UPDATE SET
@@ -153,11 +154,14 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store ClientStor
 	return nil
 }
 
-func dbLoadWalletUTXOStateRowsTx(tx sqlConn, walletID string, address string) (map[string]utxoStateRow, error) {
+func dbLoadWalletUTXOStateRowsTx(ctx context.Context, tx sqlConn, walletID string, address string) (map[string]utxoStateRow, error) {
 	if tx == nil {
 		return nil, fmt.Errorf("tx is nil")
 	}
-	rows, err := tx.Query(`SELECT utxo_id,txid,vout,value_satoshi,state,script_type,script_type_reason,script_type_updated_at_unix,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,spent_at_unix FROM wallet_utxo WHERE wallet_id=? AND address=?`, walletID, address)
+	if ctx == nil {
+		return nil, fmt.Errorf("ctx is required")
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT utxo_id,txid,vout,value_satoshi,state,script_type,script_type_reason,script_type_updated_at_unix,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,spent_at_unix FROM wallet_utxo WHERE wallet_id=? AND address=?`, walletID, address)
 	if err != nil {
 		return nil, err
 	}
@@ -203,8 +207,8 @@ func summarizeWalletUTXOState(existing map[string]utxoStateRow) walletUTXOAggreg
 	return stats
 }
 
-func dbUpsertWalletLocalBroadcastStoreTx(ctx context.Context, tx sqlConn, walletID string, address string, txid string, txHex string, observedAtUnix int64, updatedAt int64) error {
-	if tx == nil {
+func dbUpsertWalletLocalBroadcastStoreTx(ctx context.Context, wtx sqlConn, walletID string, address string, txid string, txHex string, observedAtUnix int64, updatedAt int64) error {
+	if wtx == nil {
 		return fmt.Errorf("tx is nil")
 	}
 	txid = strings.ToLower(strings.TrimSpace(txid))
@@ -215,7 +219,7 @@ func dbUpsertWalletLocalBroadcastStoreTx(ctx context.Context, tx sqlConn, wallet
 	if observedAtUnix < 0 {
 		observedAtUnix = 0
 	}
-	_, err := ExecContext(ctx, tx,
+	_, err := wtx.ExecContext(ctx,
 		`INSERT INTO wallet_local_broadcast_txs(
 			txid,wallet_id,address,tx_hex,created_at_unix,updated_at_unix,observed_at_unix
 		) VALUES(?,?,?,?,?,?,?)
@@ -255,7 +259,7 @@ func dbRefreshWalletAssetProjection(ctx context.Context, store *clientDB, addres
 	if err != nil {
 		return err
 	}
-	if err := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	if err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		updatedAt := time.Now().Unix()
 		for utxoID, row := range current {
 			if strings.TrimSpace(strings.ToLower(row.State)) != "unspent" {
@@ -291,7 +295,7 @@ func dbRefreshWalletAssetProjection(ctx context.Context, store *clientDB, addres
 	return nil
 }
 
-func dbUpsertWalletUTXOSyncStateEntTx(ctx context.Context, tx *gen.Tx, address string, stats walletUTXOAggregateStats, updatedAt int64) error {
+func dbUpsertWalletUTXOSyncStateEntTx(ctx context.Context, tx EntWriteRoot, address string, stats walletUTXOAggregateStats, updatedAt int64) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}

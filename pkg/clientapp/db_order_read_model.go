@@ -298,8 +298,8 @@ func GetSettlementByChainPaymentID(ctx context.Context, store *clientDB, chainPa
 	if store == nil {
 		return BusinessSettlementItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (BusinessSettlementItem, error) {
-		node, err := tx.OrderSettlements.Query().
+	return readEntValue(ctx, store, func(root EntReadRoot) (BusinessSettlementItem, error) {
+		node, err := root.OrderSettlements.Query().
 			Where(
 				ordersettlements.SettlementMethodEQ(string(SettlementMethodChain)),
 				ordersettlements.TargetIDEQ(fmt.Sprintf("%d", chainPaymentID)),

@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	filedownload "github.com/bsv8/BitFS/pkg/clientapp/download/file"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 )
 
 // downloadFileWorkspacePartPath 只负责把下载 part 文件放到稳定位置。
@@ -221,7 +221,7 @@ func dbRegisterWorkspaceFileOnly(ctx context.Context, store *clientDB, absPath s
 	if seedLocked {
 		lockedValue = 1
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		return dbUpsertWorkspaceFileTx(ctx, tx, resolved.WorkspacePath, resolved.FilePath, seedHash, lockedValue)
 	})
 }
@@ -249,15 +249,21 @@ func clientDBDatabasePath(ctx context.Context, store *clientDB) (string, error) 
 	if store == nil {
 		return "", fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(conn SQLConn) (string, error) {
+	var out string
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
 		var seq int
 		var name string
 		var file string
-		if err := conn.QueryRowContext(ctx, `PRAGMA database_list`).Scan(&seq, &name, &file); err != nil {
-			return "", err
+		if err := rc.QueryRowContext(ctx, `PRAGMA database_list`).Scan(&seq, &name, &file); err != nil {
+			return err
 		}
-		return strings.TrimSpace(file), nil
+		out = strings.TrimSpace(file)
+		return nil
 	})
+	if err != nil {
+		return "", err
+	}
+	return out, nil
 }
 
 func downloadFileWorkspaceSelectOutputPath(ctx context.Context, store *clientDB, fileName string, fileSize uint64) (string, error) {

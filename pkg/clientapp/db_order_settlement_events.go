@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	entsql "entgo.io/ent/dialect/sql"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlementevents"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlements"
 )
@@ -130,8 +129,8 @@ func dbListBusinessesByTrigger(ctx context.Context, store *clientDB, triggerType
 	if triggerType == "" || triggerIDValue == "" {
 		return nil, fmt.Errorf("trigger_type and trigger_id_value are required")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]string, error) {
-		events, err := tx.OrderSettlementEvents.Query().
+	return readEntValue(ctx, store, func(root EntReadRoot) ([]string, error) {
+		events, err := root.OrderSettlementEvents.Query().
 			Where(
 				ordersettlementevents.SourceTypeEQ(triggerType),
 				ordersettlementevents.SourceIDEQ(triggerIDValue),
@@ -147,7 +146,7 @@ func dbListBusinessesByTrigger(ctx context.Context, store *clientDB, triggerType
 		seen := make(map[string]struct{}, len(events))
 		out := make([]string, 0, len(events))
 		for _, event := range events {
-			settlement, err := tx.OrderSettlements.Query().
+			settlement, err := root.OrderSettlements.Query().
 				Where(ordersettlements.SettlementIDEQ(strings.TrimSpace(event.SettlementID))).
 				Only(ctx)
 			if err != nil {

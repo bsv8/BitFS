@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 )
 
 func TestInitIndexDB_CreatesCurrentPoolSchema(t *testing.T) {
@@ -122,7 +121,7 @@ func TestInitIndexDB_PoolFactsWriteCurrentTables(t *testing.T) {
 		t.Fatal("nil tx should be rejected")
 	}
 	store := newClientDB(db, nil)
-	if err := clientDBEntTx(context.Background(), store, func(tx *gen.Tx) error {
+	if err :=  store.WriteEntTx(context.Background(), func(tx EntWriteRoot) error {
 		if err := dbUpsertDirectTransferPoolSessionTx(context.Background(), tx, directTransferPoolSessionFactInput{
 			SessionID:          "sess_pool_schema_1",
 			PoolScheme:         "2of3",

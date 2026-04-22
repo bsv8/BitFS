@@ -7,6 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"entgo.io/ent/dialect"
+	entsql "entgo.io/ent/dialect/sql"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	_ "modernc.org/sqlite"
 )
 
@@ -31,6 +35,56 @@ func (t testDBCapability) SerialAccess() bool {
 	return t.serial
 }
 
+type testStore struct {
+	db *sql.DB
+}
+
+func (t testStore) Read(ctx context.Context, fn func(moduleapi.ReadConn) error) error {
+	return fn(t.db)
+}
+
+func (t testStore) WriteTx(ctx context.Context, fn func(moduleapi.WriteTx) error) error {
+	tx, err := t.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	wtx := testWriteTx{tx: tx}
+	if err := fn(wtx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+type testWriteTx struct {
+	tx *sql.Tx
+}
+
+func (t testWriteTx) Exec(query string, args ...any) (sql.Result, error) {
+	return t.tx.Exec(query, args...)
+}
+func (t testWriteTx) QueryRow(query string, args ...any) *sql.Row {
+	return t.tx.QueryRow(query, args...)
+}
+func (t testWriteTx) Query(query string, args ...any) (*sql.Rows, error) {
+	return t.tx.Query(query, args...)
+}
+func (t testWriteTx) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return t.tx.ExecContext(ctx, query, args...)
+}
+func (t testWriteTx) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return t.tx.QueryContext(ctx, query, args...)
+}
+func (t testWriteTx) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return t.tx.QueryRowContext(ctx, query, args...)
+}
+func (t testWriteTx) Tx(context.Context, func(moduleapi.WriteTx) error) error { return sql.ErrTxDone }
+
+func prepareIndexResolveSchema(ctx context.Context, db *sql.DB) error {
+	client := gen.NewClient(gen.Driver(entsql.OpenDB(dialect.SQLite, db)))
+	return client.Schema.Create(ctx)
+}
+
 func TestBootstrapStoreAndLifecycle(t *testing.T) {
 	t.Parallel()
 
@@ -43,27 +97,17 @@ func TestBootstrapStoreAndLifecycle(t *testing.T) {
 	if _, err := db.Exec(`PRAGMA foreign_keys=ON`); err != nil {
 		t.Fatalf("pragma foreign_keys: %v", err)
 	}
-	if _, err := db.Exec(`CREATE TABLE biz_seeds(
-		seed_hash TEXT PRIMARY KEY,
-		recommended_file_name TEXT NOT NULL,
-		mime_hint TEXT NOT NULL,
-		file_size INTEGER NOT NULL
-	)`); err != nil {
-		t.Fatalf("create biz_seeds: %v", err)
+	if err := prepareIndexResolveSchema(context.Background(), db); err != nil {
+		t.Fatalf("create schema: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,recommended_file_name,mime_hint,file_size) VALUES(?,?,?,?)`,
-		strings.Repeat("aa", 32), "movie.mp4", "video/mp4", 4096); err != nil {
+	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,
+		strings.Repeat("aa", 32), 1, 4096, filepath.Join(t.TempDir(), "movie.bse"), "movie.mp4", "video/mp4"); err != nil {
 		t.Fatalf("insert seed: %v", err)
 	}
 
-	capability := testDBCapability{db: db}
-	store, err := BootstrapStore(context.Background(), capability, nil)
+	store, err := BootstrapStore(context.Background(), testStore{db: db})
 	if err != nil {
 		t.Fatalf("bootstrap store: %v", err)
-	}
-	var name string
-	if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='proc_index_resolve_routes'`).Scan(&name); err != nil {
-		t.Fatalf("module table missing: %v", err)
 	}
 
 	item, err := BizSettingsUpsert(context.Background(), store, "movie", strings.Repeat("aa", 32))

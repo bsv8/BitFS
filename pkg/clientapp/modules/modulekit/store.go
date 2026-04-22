@@ -18,12 +18,22 @@ func RequireStore(host moduleapi.Host) (moduleapi.Store, error) {
 	return store, nil
 }
 
-func Do(ctx context.Context, store moduleapi.Store, fn func(moduleapi.Conn) error) error {
+func Read(ctx context.Context, store moduleapi.Store, fn func(moduleapi.ReadConn) error) error {
 	if store == nil {
 		return fmt.Errorf("store is required")
 	}
 	if fn == nil {
 		return fmt.Errorf("fn is required")
 	}
-	return store.Do(ctx, fn)
+	return store.Read(ctx, fn)
+}
+
+func WriteTx(ctx context.Context, store moduleapi.Store, fn func(moduleapi.WriteTx) error) error {
+	if store == nil {
+		return fmt.Errorf("store is required")
+	}
+	if fn == nil {
+		return fmt.Errorf("fn is required")
+	}
+	return store.WriteTx(ctx, fn)
 }

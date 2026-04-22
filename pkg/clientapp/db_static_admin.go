@@ -42,8 +42,8 @@ func dbGetSeedFilePathByHash(ctx context.Context, store *clientDB, seedHash stri
 	if store == nil {
 		return "", fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (string, error) {
-		row, err := tx.BizSeeds.Query().
+	return readEntValue(ctx, store, func(root EntReadRoot) (string, error) {
+		row, err := root.BizSeeds.Query().
 			Where(bizseeds.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
 			Only(ctx)
 		if err != nil {
@@ -62,8 +62,8 @@ func dbListLiveWorkspaceEntries(ctx context.Context, store *clientDB, pattern st
 	}
 	needle := strings.Trim(pattern, "%")
 	needle = strings.ReplaceAll(needle, "/", string(filepath.Separator))
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]liveWorkspaceEntry, error) {
-		rows, err := tx.BizWorkspaceFiles.Query().
+	return readEntValue(ctx, store, func(root EntReadRoot) ([]liveWorkspaceEntry, error) {
+		rows, err := root.BizWorkspaceFiles.Query().
 			Order(bizworkspacefiles.ByWorkspacePath(), bizworkspacefiles.ByFilePath()).
 			All(ctx)
 		if err != nil {
@@ -103,7 +103,7 @@ func dbDeleteLiveStreamWorkspaceRows(ctx context.Context, store *clientDB, strea
 	if !isSeedHashHex(streamID) {
 		return 0, fmt.Errorf("invalid stream_id")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int64, error) {
+	return writeEntValue(ctx, store, func(tx EntWriteRoot) (int64, error) {
 		pathPrefix := "live/" + streamID + "/"
 		q := tx.BizWorkspaceFiles.Query().Where(bizworkspacefiles.FilePathHasPrefix(pathPrefix))
 		before, err := q.Count(ctx)
@@ -197,8 +197,8 @@ func dbGetWorkspaceFileSeedHash(ctx context.Context, store *clientDB, path strin
 	if !ok {
 		return "", nil
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (string, error) {
-		row, err := tx.BizWorkspaceFiles.Query().
+	return readEntValue(ctx, store, func(root EntReadRoot) (string, error) {
+		row, err := root.BizWorkspaceFiles.Query().
 			Where(
 				bizworkspacefiles.WorkspacePathEQ(resolved.WorkspacePath),
 				bizworkspacefiles.FilePathEQ(resolved.FilePath),
@@ -222,8 +222,8 @@ func dbGetStaticFilePrice(ctx context.Context, store *clientDB, path string) (st
 	if err != nil || seedHash == "" {
 		return staticFilePriceRecord{}, err
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (staticFilePriceRecord, error) {
-		row, err := tx.BizSeedPricingPolicy.Query().
+	return readEntValue(ctx, store, func(root EntReadRoot) (staticFilePriceRecord, error) {
+		row, err := root.BizSeedPricingPolicy.Query().
 			Where(bizseedpricingpolicy.SeedHashEQ(seedHash)).
 			Only(ctx)
 		if err != nil {
@@ -256,8 +256,8 @@ func dbBindStaticPriceToSeed2(ctx context.Context, store *clientDB, path string,
 		return "", 0, 0, false, err
 	}
 	var chunkCount uint32
-	if _, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (struct{}, error) {
-		row, err := tx.BizSeeds.Query().Where(bizseeds.SeedHashEQ(seedHash)).Only(ctx)
+	if _, err := readEntValue(ctx, store, func(root EntReadRoot) (struct{}, error) {
+		row, err := root.BizSeeds.Query().Where(bizseeds.SeedHashEQ(seedHash)).Only(ctx)
 		if err != nil {
 			if gen.IsNotFound(err) {
 				return struct{}{}, sql.ErrNoRows

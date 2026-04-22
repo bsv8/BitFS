@@ -20,9 +20,9 @@ func dbLoadChainTipState(ctx context.Context, store *clientDB) (chainTipState, e
 	if store == nil {
 		return chainTipState{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (chainTipState, error) {
+	return readEntValue(ctx, store, func(root EntReadRoot) (chainTipState, error) {
 		var s chainTipState
-		row, err := tx.ProcChainTipState.Query().Where(procchaintipstate.IDEQ(1)).Only(ctx)
+		row, err := root.ProcChainTipState.Query().Where(procchaintipstate.IDEQ(1)).Only(ctx)
 		if err != nil {
 			if gen.IsNotFound(err) {
 				return chainTipState{}, nil
@@ -43,7 +43,7 @@ func dbUpsertChainTipState(ctx context.Context, store *clientDB, tip uint32, las
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		existing, err := tx.ProcChainTipState.Query().Where(procchaintipstate.IDEQ(1)).Only(ctx)
 		if err == nil {
 			_, err = existing.Update().
@@ -90,7 +90,7 @@ func dbResetWalletUTXOSyncStateOnStartup(ctx context.Context, store *clientDB) e
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		_, err := tx.WalletUtxoSyncState.Update().
 			SetLastError("").
 			SetLastTrigger("").
@@ -112,9 +112,9 @@ func dbLoadWalletUTXOSyncState(ctx context.Context, store *clientDB, address str
 	if address == "" {
 		return walletUTXOSyncState{}, fmt.Errorf("wallet address is empty")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (walletUTXOSyncState, error) {
+	return readEntValue(ctx, store, func(root EntReadRoot) (walletUTXOSyncState, error) {
 		var s walletUTXOSyncState
-		row, err := tx.WalletUtxoSyncState.Query().Where(walletutxosyncstate.AddressEQ(address)).Only(ctx)
+		row, err := root.WalletUtxoSyncState.Query().Where(walletutxosyncstate.AddressEQ(address)).Only(ctx)
 		if err != nil {
 			if gen.IsNotFound(err) {
 				return walletUTXOSyncState{}, nil
@@ -152,9 +152,9 @@ func dbLoadWalletUTXOSyncCursor(ctx context.Context, store *clientDB, address st
 	if address == "" {
 		return walletUTXOSyncCursor{}, fmt.Errorf("wallet address is empty")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (walletUTXOSyncCursor, error) {
+	return readEntValue(ctx, store, func(root EntReadRoot) (walletUTXOSyncCursor, error) {
 		var s walletUTXOSyncCursor
-		row, err := tx.WalletUtxoSyncCursor.Query().Where(walletutxosynccursor.AddressEQ(address)).Only(ctx)
+		row, err := root.WalletUtxoSyncCursor.Query().Where(walletutxosynccursor.AddressEQ(address)).Only(ctx)
 		if err != nil {
 			if gen.IsNotFound(err) {
 				return walletUTXOSyncCursor{}, nil
@@ -183,8 +183,8 @@ func dbLoadWalletUTXOAggregate(ctx context.Context, store *clientDB, address str
 		return stats, fmt.Errorf("wallet address is empty")
 	}
 	walletID := walletIDByAddress(address)
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (walletUTXOAggregateStats, error) {
-		rows, err := tx.WalletUtxo.Query().
+	return readEntValue(ctx, store, func(root EntReadRoot) (walletUTXOAggregateStats, error) {
+		rows, err := root.WalletUtxo.Query().
 			Where(
 				walletutxo.WalletIDEQ(walletID),
 				walletutxo.AddressEQ(address),
@@ -229,7 +229,7 @@ func dbUpdateWalletUTXOSyncStateError(ctx context.Context, store *clientDB, addr
 		errMsg = err.Error()
 	}
 	roundID, failedStep, upstreamPath, httpStatus := walletSyncFailureDetails(meta, err)
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		existing, loadErr := tx.WalletUtxoSyncState.Query().Where(walletutxosyncstate.AddressEQ(address)).Only(ctx)
 		if loadErr == nil {
 			_, err = existing.Update().
@@ -292,7 +292,7 @@ func dbUpdateWalletUTXOSyncCursorError(ctx context.Context, store *clientDB, add
 	}
 	walletID := walletIDByAddress(address)
 	now := time.Now().Unix()
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		existing, loadErr := tx.WalletUtxoSyncCursor.Query().Where(walletutxosynccursor.AddressEQ(address)).Only(ctx)
 		if loadErr == nil {
 			_, err := existing.Update().

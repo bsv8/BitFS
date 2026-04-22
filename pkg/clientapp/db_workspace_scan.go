@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/obs"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseeds"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizworkspacefiles"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizworkspaces"
@@ -26,7 +25,10 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (map[string]sellerSeed, error) {
+	obs.Business(ServiceName, "workspace_scan_phase", map[string]any{
+		"step": "begin",
+	})
+	return writeEntValue(ctx, store, func(tx EntWriteRoot) (map[string]sellerSeed, error) {
 		now := time.Now().Unix()
 		seedsDir := filepath.Join(cfg.Storage.DataDir, "biz_seeds")
 		type existingRef struct {
@@ -39,6 +41,10 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 		if err != nil {
 			return nil, err
 		}
+		obs.Business(ServiceName, "workspace_scan_phase", map[string]any{
+			"step":           "workspace_files_loaded",
+			"existing_count": len(rowsExists),
+		})
 		for _, row := range rowsExists {
 			key := row.WorkspacePath + "\x00" + row.FilePath
 			existing[key] = existingRef{SeedHash: normalizeSeedHashHex(row.SeedHash), Locked: row.SeedLocked != 0}
@@ -48,10 +54,18 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 		if err != nil {
 			return nil, err
 		}
+		obs.Business(ServiceName, "workspace_scan_phase", map[string]any{
+			"step":            "workspace_paths_loaded",
+			"workspace_count": len(bizWorkspaces),
+		})
 		catalog := map[string]sellerSeed{}
 		seen := map[string]struct{}{}
 		for _, workspace := range bizWorkspaces {
 			workspace = filepath.Clean(strings.TrimSpace(workspace))
+			obs.Business(ServiceName, "workspace_scan_phase", map[string]any{
+				"step":           "workspace_walk_begin",
+				"workspace_path": workspace,
+			})
 			err = filepath.WalkDir(workspace, func(path string, d fs.DirEntry, err error) error {
 				if err != nil {
 					return err
@@ -133,12 +147,22 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 			if err != nil {
 				return nil, err
 			}
+			obs.Business(ServiceName, "workspace_scan_phase", map[string]any{
+				"step":           "workspace_walk_end",
+				"workspace_path": workspace,
+				"seen_count":     len(seen),
+				"seed_count":     len(catalog),
+			})
 		}
 
 		rows, err := tx.BizWorkspaceFiles.Query().All(ctx)
 		if err != nil {
 			return nil, err
 		}
+		obs.Business(ServiceName, "workspace_scan_phase", map[string]any{
+			"step":      "workspace_files_reload",
+			"row_count": len(rows),
+		})
 		for _, row := range rows {
 			if _, ok := seen[row.WorkspacePath+"\x00"+row.FilePath]; ok {
 				continue
@@ -157,6 +181,10 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 		if err != nil {
 			return nil, err
 		}
+		obs.Business(ServiceName, "workspace_scan_phase", map[string]any{
+			"step":      "seed_rows_loaded",
+			"row_count": len(orphanRows),
+		})
 		activeSeedHashes, err := dbListActiveSeedHashesTx(ctx, tx)
 		if err != nil {
 			return nil, err
@@ -180,11 +208,16 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 		}
 
 		obs.Business(ServiceName, "workspace_scanned", map[string]any{"seed_count": len(catalog), "workspace_count": len(bizWorkspaces)})
+		obs.Business(ServiceName, "workspace_scan_phase", map[string]any{
+			"step":            "done",
+			"seed_count":      len(catalog),
+			"workspace_count": len(bizWorkspaces),
+		})
 		return catalog, nil
 	})
 }
 
-func listEnabledWorkspacePaths(ctx context.Context, tx *gen.Tx, fallback string) ([]string, error) {
+func listEnabledWorkspacePaths(ctx context.Context, tx EntWriteRoot, fallback string) ([]string, error) {
 	if tx == nil {
 		return nil, fmt.Errorf("tx is nil")
 	}

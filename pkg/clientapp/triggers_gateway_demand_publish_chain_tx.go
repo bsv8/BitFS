@@ -27,6 +27,7 @@ type gatewayDemandPublishChainTxEnv interface {
 	GatewayBusinessID(pid peer.ID) string
 	LocalAdvertiseAddrs() []string
 	CallNodeRoute(ctx context.Context, peerID peer.ID, req ncall.CallReq, protoID protocol.ID) (ncall.CallResp, error)
+	CallGatewayRoute(ctx context.Context, peerID peer.ID, req ncall.CallReq, protoID protocol.ID) (ncall.CallResp, error)
 	RequestPeerCallChainTxQuote(ctx context.Context, store ClientStore, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, protoID protocol.ID) (peerCallChainTxQuoteBuilt, error)
 	PayPeerCallWithChainTxQuote(ctx context.Context, store ClientStore, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, quoted peerCallChainTxQuoteBuilt, protoID protocol.ID) (ncall.CallResp, error)
 }
@@ -115,7 +116,8 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 		"gateway":     out.GatewayPubkeyHex,
 	})
 
-	preflightResp, err := env.CallNodeRoute(ctx, gw.ID, ncall.CallReq{
+	// 预检也必须走 gateway 域，避免把 gateway 的需求发布能力误发成 node 域调用。
+	preflightResp, err := env.CallGatewayRoute(ctx, gw.ID, ncall.CallReq{
 		To:          out.GatewayPubkeyHex,
 		Route:       string(contractroute.RouteBroadcastV1DemandPublish),
 		ContentType: contractmessage.ContentTypeProto,

@@ -165,287 +165,277 @@ func dbListCommandJournal(ctx context.Context, store *clientDB, f commandJournal
 	if store == nil {
 		return commandJournalPage{}, fmt.Errorf("client db is nil")
 	}
-	if store.ent == nil {
-		return commandJournalPage{}, fmt.Errorf("client db ent client is nil")
-	}
-	q := store.ent.ProcCommandJournal.Query()
-	if len(f.CommandTypes) > 0 {
-		q = q.Where(bitfsproccommandjournal.CommandTypeIn(f.CommandTypes...))
-	}
-	if f.CommandType != "" {
-		q = q.Where(bitfsproccommandjournal.CommandTypeEQ(f.CommandType))
-	}
-	if f.GatewayPeerID != "" {
-		q = q.Where(bitfsproccommandjournal.GatewayPubkeyHexEQ(f.GatewayPeerID))
-	}
-	if f.Status != "" {
-		q = q.Where(bitfsproccommandjournal.StatusEQ(f.Status))
-	}
-	if f.CommandID != "" {
-		q = q.Where(bitfsproccommandjournal.CommandIDEQ(f.CommandID))
-	}
-	if f.TriggerKey != "" {
-		q = q.Where(bitfsproccommandjournal.TriggerKeyEQ(f.TriggerKey))
-	}
-	if f.Query != "" {
-		q = q.Where(bitfsproccommandjournal.Or(
-			bitfsproccommandjournal.ErrorMessageContainsFold(f.Query),
-			bitfsproccommandjournal.CommandIDContainsFold(f.Query),
-			bitfsproccommandjournal.RequestedByContainsFold(f.Query),
-			bitfsproccommandjournal.StateBeforeContainsFold(f.Query),
-			bitfsproccommandjournal.StateAfterContainsFold(f.Query),
-		))
-	}
-	total, err := q.Clone().Count(ctx)
-	if err != nil {
-		return commandJournalPage{}, err
-	}
-	nodes, err := q.Order(bitfsproccommandjournal.ByID(entsql.OrderDesc())).Limit(f.Limit).Offset(f.Offset).All(ctx)
-	if err != nil {
-		return commandJournalPage{}, err
-	}
-	out := commandJournalPage{
-		Total: total,
-		Items: make([]commandJournalItem, 0, len(nodes)),
-	}
-	for _, node := range nodes {
-		out.Items = append(out.Items, commandJournalItemFromEnt(node))
-	}
-	return out, nil
+	return readEntValue(ctx, store, func(root EntReadRoot) (commandJournalPage, error) {
+		q := root.ProcCommandJournal.Query()
+		if len(f.CommandTypes) > 0 {
+			q = q.Where(bitfsproccommandjournal.CommandTypeIn(f.CommandTypes...))
+		}
+		if f.CommandType != "" {
+			q = q.Where(bitfsproccommandjournal.CommandTypeEQ(f.CommandType))
+		}
+		if f.GatewayPeerID != "" {
+			q = q.Where(bitfsproccommandjournal.GatewayPubkeyHexEQ(f.GatewayPeerID))
+		}
+		if f.Status != "" {
+			q = q.Where(bitfsproccommandjournal.StatusEQ(f.Status))
+		}
+		if f.CommandID != "" {
+			q = q.Where(bitfsproccommandjournal.CommandIDEQ(f.CommandID))
+		}
+		if f.TriggerKey != "" {
+			q = q.Where(bitfsproccommandjournal.TriggerKeyEQ(f.TriggerKey))
+		}
+		if f.Query != "" {
+			q = q.Where(bitfsproccommandjournal.Or(
+				bitfsproccommandjournal.ErrorMessageContainsFold(f.Query),
+				bitfsproccommandjournal.CommandIDContainsFold(f.Query),
+				bitfsproccommandjournal.RequestedByContainsFold(f.Query),
+				bitfsproccommandjournal.StateBeforeContainsFold(f.Query),
+				bitfsproccommandjournal.StateAfterContainsFold(f.Query),
+			))
+		}
+		total, err := q.Clone().Count(ctx)
+		if err != nil {
+			return commandJournalPage{}, err
+		}
+		nodes, err := q.Order(bitfsproccommandjournal.ByID(entsql.OrderDesc())).Limit(f.Limit).Offset(f.Offset).All(ctx)
+		if err != nil {
+			return commandJournalPage{}, err
+		}
+		out := commandJournalPage{
+			Total: total,
+			Items: make([]commandJournalItem, 0, len(nodes)),
+		}
+		for _, node := range nodes {
+			out.Items = append(out.Items, commandJournalItemFromEnt(node))
+		}
+		return out, nil
+	})
 }
 
 func dbGetCommandJournalItem(ctx context.Context, store *clientDB, id int64) (commandJournalItem, error) {
 	if store == nil {
 		return commandJournalItem{}, fmt.Errorf("client db is nil")
 	}
-	if store.ent == nil {
-		return commandJournalItem{}, fmt.Errorf("client db ent client is nil")
-	}
-	node, err := store.ent.ProcCommandJournal.Query().Where(bitfsproccommandjournal.IDEQ(int(id))).Only(ctx)
-	if err != nil {
-		if gen.IsNotFound(err) {
-			return commandJournalItem{}, sql.ErrNoRows
+	return readEntValue(ctx, store, func(root EntReadRoot) (commandJournalItem, error) {
+		node, err := root.ProcCommandJournal.Query().Where(bitfsproccommandjournal.IDEQ(int(id))).Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return commandJournalItem{}, sql.ErrNoRows
+			}
+			return commandJournalItem{}, err
 		}
-		return commandJournalItem{}, err
-	}
-	return commandJournalItemFromEnt(node), nil
+		return commandJournalItemFromEnt(node), nil
+	})
 }
 
 func dbListDomainEvents(ctx context.Context, store *clientDB, f domainEventFilter) (domainEventPage, error) {
 	if store == nil {
 		return domainEventPage{}, fmt.Errorf("client db is nil")
 	}
-	if store.ent == nil {
-		return domainEventPage{}, fmt.Errorf("client db ent client is nil")
-	}
-	q := store.ent.ProcDomainEvents.Query()
-	if f.CommandID != "" {
-		q = q.Where(bitfsprocdomainevents.CommandIDEQ(f.CommandID))
-	}
-	if f.GatewayPeerID != "" {
-		q = q.Where(bitfsprocdomainevents.GatewayPubkeyHexEQ(f.GatewayPeerID))
-	}
-	if f.EventName != "" {
-		q = q.Where(bitfsprocdomainevents.EventNameEQ(f.EventName))
-	}
-	total, err := q.Clone().Count(ctx)
-	if err != nil {
-		return domainEventPage{}, err
-	}
-	nodes, err := q.Order(bitfsprocdomainevents.ByID(entsql.OrderDesc())).Limit(f.Limit).Offset(f.Offset).All(ctx)
-	if err != nil {
-		return domainEventPage{}, err
-	}
-	out := domainEventPage{
-		Total: total,
-		Items: make([]domainEventItem, 0, len(nodes)),
-	}
-	for _, node := range nodes {
-		out.Items = append(out.Items, domainEventItemFromEnt(node))
-	}
-	return out, nil
+	return readEntValue(ctx, store, func(root EntReadRoot) (domainEventPage, error) {
+		q := root.ProcDomainEvents.Query()
+		if f.CommandID != "" {
+			q = q.Where(bitfsprocdomainevents.CommandIDEQ(f.CommandID))
+		}
+		if f.GatewayPeerID != "" {
+			q = q.Where(bitfsprocdomainevents.GatewayPubkeyHexEQ(f.GatewayPeerID))
+		}
+		if f.EventName != "" {
+			q = q.Where(bitfsprocdomainevents.EventNameEQ(f.EventName))
+		}
+		total, err := q.Clone().Count(ctx)
+		if err != nil {
+			return domainEventPage{}, err
+		}
+		nodes, err := q.Order(bitfsprocdomainevents.ByID(entsql.OrderDesc())).Limit(f.Limit).Offset(f.Offset).All(ctx)
+		if err != nil {
+			return domainEventPage{}, err
+		}
+		out := domainEventPage{
+			Total: total,
+			Items: make([]domainEventItem, 0, len(nodes)),
+		}
+		for _, node := range nodes {
+			out.Items = append(out.Items, domainEventItemFromEnt(node))
+		}
+		return out, nil
+	})
 }
 
 func dbGetDomainEventItem(ctx context.Context, store *clientDB, id int64) (domainEventItem, error) {
 	if store == nil {
 		return domainEventItem{}, fmt.Errorf("client db is nil")
 	}
-	if store.ent == nil {
-		return domainEventItem{}, fmt.Errorf("client db ent client is nil")
-	}
-	node, err := store.ent.ProcDomainEvents.Query().Where(bitfsprocdomainevents.IDEQ(int(id))).Only(ctx)
-	if err != nil {
-		if gen.IsNotFound(err) {
-			return domainEventItem{}, sql.ErrNoRows
+	return readEntValue(ctx, store, func(root EntReadRoot) (domainEventItem, error) {
+		node, err := root.ProcDomainEvents.Query().Where(bitfsprocdomainevents.IDEQ(int(id))).Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return domainEventItem{}, sql.ErrNoRows
+			}
+			return domainEventItem{}, err
 		}
-		return domainEventItem{}, err
-	}
-	return domainEventItemFromEnt(node), nil
+		return domainEventItemFromEnt(node), nil
+	})
 }
 
 func dbListStateSnapshots(ctx context.Context, store *clientDB, f stateSnapshotFilter) (stateSnapshotPage, error) {
 	if store == nil {
 		return stateSnapshotPage{}, fmt.Errorf("client db is nil")
 	}
-	if store.ent == nil {
-		return stateSnapshotPage{}, fmt.Errorf("client db ent client is nil")
-	}
-	q := store.ent.ProcStateSnapshots.Query()
-	if f.CommandID != "" {
-		q = q.Where(bitfsprocstatesnapshots.CommandIDEQ(f.CommandID))
-	}
-	if f.GatewayPeerID != "" {
-		q = q.Where(bitfsprocstatesnapshots.GatewayPubkeyHexEQ(f.GatewayPeerID))
-	}
-	if f.State != "" {
-		q = q.Where(bitfsprocstatesnapshots.StateEQ(f.State))
-	}
-	total, err := q.Clone().Count(ctx)
-	if err != nil {
-		return stateSnapshotPage{}, err
-	}
-	nodes, err := q.Order(bitfsprocstatesnapshots.ByID(entsql.OrderDesc())).Limit(f.Limit).Offset(f.Offset).All(ctx)
-	if err != nil {
-		return stateSnapshotPage{}, err
-	}
-	out := stateSnapshotPage{
-		Total: total,
-		Items: make([]stateSnapshotItem, 0, len(nodes)),
-	}
-	for _, node := range nodes {
-		out.Items = append(out.Items, stateSnapshotItemFromEnt(node))
-	}
-	return out, nil
+	return readEntValue(ctx, store, func(root EntReadRoot) (stateSnapshotPage, error) {
+		q := root.ProcStateSnapshots.Query()
+		if f.CommandID != "" {
+			q = q.Where(bitfsprocstatesnapshots.CommandIDEQ(f.CommandID))
+		}
+		if f.GatewayPeerID != "" {
+			q = q.Where(bitfsprocstatesnapshots.GatewayPubkeyHexEQ(f.GatewayPeerID))
+		}
+		if f.State != "" {
+			q = q.Where(bitfsprocstatesnapshots.StateEQ(f.State))
+		}
+		total, err := q.Clone().Count(ctx)
+		if err != nil {
+			return stateSnapshotPage{}, err
+		}
+		nodes, err := q.Order(bitfsprocstatesnapshots.ByID(entsql.OrderDesc())).Limit(f.Limit).Offset(f.Offset).All(ctx)
+		if err != nil {
+			return stateSnapshotPage{}, err
+		}
+		out := stateSnapshotPage{
+			Total: total,
+			Items: make([]stateSnapshotItem, 0, len(nodes)),
+		}
+		for _, node := range nodes {
+			out.Items = append(out.Items, stateSnapshotItemFromEnt(node))
+		}
+		return out, nil
+	})
 }
 
 func dbGetStateSnapshotItem(ctx context.Context, store *clientDB, id int64) (stateSnapshotItem, error) {
 	if store == nil {
 		return stateSnapshotItem{}, fmt.Errorf("client db is nil")
 	}
-	if store.ent == nil {
-		return stateSnapshotItem{}, fmt.Errorf("client db ent client is nil")
-	}
-	node, err := store.ent.ProcStateSnapshots.Query().Where(bitfsprocstatesnapshots.IDEQ(int(id))).Only(ctx)
-	if err != nil {
-		if gen.IsNotFound(err) {
-			return stateSnapshotItem{}, sql.ErrNoRows
+	return readEntValue(ctx, store, func(root EntReadRoot) (stateSnapshotItem, error) {
+		node, err := root.ProcStateSnapshots.Query().Where(bitfsprocstatesnapshots.IDEQ(int(id))).Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return stateSnapshotItem{}, sql.ErrNoRows
+			}
+			return stateSnapshotItem{}, err
 		}
-		return stateSnapshotItem{}, err
-	}
-	return stateSnapshotItemFromEnt(node), nil
+		return stateSnapshotItemFromEnt(node), nil
+	})
 }
 
 func dbListObservedGatewayStates(ctx context.Context, store *clientDB, f observedGatewayStateFilter) (observedGatewayStatePage, error) {
 	if store == nil {
 		return observedGatewayStatePage{}, fmt.Errorf("client db is nil")
 	}
-	if store.ent == nil {
-		return observedGatewayStatePage{}, fmt.Errorf("client db ent client is nil")
-	}
-	q := store.ent.ProcObservedGatewayStates.Query()
-	if f.GatewayPeerID != "" {
-		q = q.Where(bitfsprocobservedgatewaystates.GatewayPubkeyHexEQ(f.GatewayPeerID))
-	}
-	if f.SourceRef != "" {
-		q = q.Where(bitfsprocobservedgatewaystates.SourceRefEQ(f.SourceRef))
-	}
-	if f.EventName != "" {
-		q = q.Where(bitfsprocobservedgatewaystates.EventNameEQ(f.EventName))
-	}
-	if f.State != "" {
-		q = q.Where(bitfsprocobservedgatewaystates.StateAfterEQ(f.State))
-	}
-	total, err := q.Clone().Count(ctx)
-	if err != nil {
-		return observedGatewayStatePage{}, err
-	}
-	nodes, err := q.Order(bitfsprocobservedgatewaystates.ByID(entsql.OrderDesc())).Limit(f.Limit).Offset(f.Offset).All(ctx)
-	if err != nil {
-		return observedGatewayStatePage{}, err
-	}
-	out := observedGatewayStatePage{
-		Total: total,
-		Items: make([]observedGatewayStateItem, 0, len(nodes)),
-	}
-	for _, node := range nodes {
-		out.Items = append(out.Items, observedGatewayStateItemFromEnt(node))
-	}
-	return out, nil
+	return readEntValue(ctx, store, func(root EntReadRoot) (observedGatewayStatePage, error) {
+		q := root.ProcObservedGatewayStates.Query()
+		if f.GatewayPeerID != "" {
+			q = q.Where(bitfsprocobservedgatewaystates.GatewayPubkeyHexEQ(f.GatewayPeerID))
+		}
+		if f.SourceRef != "" {
+			q = q.Where(bitfsprocobservedgatewaystates.SourceRefEQ(f.SourceRef))
+		}
+		if f.EventName != "" {
+			q = q.Where(bitfsprocobservedgatewaystates.EventNameEQ(f.EventName))
+		}
+		if f.State != "" {
+			q = q.Where(bitfsprocobservedgatewaystates.StateAfterEQ(f.State))
+		}
+		total, err := q.Clone().Count(ctx)
+		if err != nil {
+			return observedGatewayStatePage{}, err
+		}
+		nodes, err := q.Order(bitfsprocobservedgatewaystates.ByID(entsql.OrderDesc())).Limit(f.Limit).Offset(f.Offset).All(ctx)
+		if err != nil {
+			return observedGatewayStatePage{}, err
+		}
+		out := observedGatewayStatePage{
+			Total: total,
+			Items: make([]observedGatewayStateItem, 0, len(nodes)),
+		}
+		for _, node := range nodes {
+			out.Items = append(out.Items, observedGatewayStateItemFromEnt(node))
+		}
+		return out, nil
+	})
 }
 
 func dbGetObservedGatewayStateItem(ctx context.Context, store *clientDB, id int64) (observedGatewayStateItem, error) {
 	if store == nil {
 		return observedGatewayStateItem{}, fmt.Errorf("client db is nil")
 	}
-	if store.ent == nil {
-		return observedGatewayStateItem{}, fmt.Errorf("client db ent client is nil")
-	}
-	node, err := store.ent.ProcObservedGatewayStates.Query().Where(bitfsprocobservedgatewaystates.IDEQ(int(id))).Only(ctx)
-	if err != nil {
-		if gen.IsNotFound(err) {
-			return observedGatewayStateItem{}, sql.ErrNoRows
+	return readEntValue(ctx, store, func(root EntReadRoot) (observedGatewayStateItem, error) {
+		node, err := root.ProcObservedGatewayStates.Query().Where(bitfsprocobservedgatewaystates.IDEQ(int(id))).Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return observedGatewayStateItem{}, sql.ErrNoRows
+			}
+			return observedGatewayStateItem{}, err
 		}
-		return observedGatewayStateItem{}, err
-	}
-	return observedGatewayStateItemFromEnt(node), nil
+		return observedGatewayStateItemFromEnt(node), nil
+	})
 }
 
 func dbListEffectLogs(ctx context.Context, store *clientDB, f effectLogFilter) (effectLogPage, error) {
 	if store == nil {
 		return effectLogPage{}, fmt.Errorf("client db is nil")
 	}
-	if store.ent == nil {
-		return effectLogPage{}, fmt.Errorf("client db ent client is nil")
-	}
-	q := store.ent.ProcEffectLogs.Query()
-	if f.CommandID != "" {
-		q = q.Where(bitfsproceffectlogs.CommandIDEQ(f.CommandID))
-	}
-	if f.GatewayPeerID != "" {
-		q = q.Where(bitfsproceffectlogs.GatewayPubkeyHexEQ(f.GatewayPeerID))
-	}
-	if f.EffectType != "" {
-		q = q.Where(bitfsproceffectlogs.EffectTypeEQ(f.EffectType))
-	}
-	if f.Stage != "" {
-		q = q.Where(bitfsproceffectlogs.StageEQ(f.Stage))
-	}
-	if f.Status != "" {
-		q = q.Where(bitfsproceffectlogs.StatusEQ(f.Status))
-	}
-	total, err := q.Clone().Count(ctx)
-	if err != nil {
-		return effectLogPage{}, err
-	}
-	nodes, err := q.Order(bitfsproceffectlogs.ByID(entsql.OrderDesc())).Limit(f.Limit).Offset(f.Offset).All(ctx)
-	if err != nil {
-		return effectLogPage{}, err
-	}
-	out := effectLogPage{
-		Total: total,
-		Items: make([]effectLogItem, 0, len(nodes)),
-	}
-	for _, node := range nodes {
-		out.Items = append(out.Items, effectLogItemFromEnt(node))
-	}
-	return out, nil
+	return readEntValue(ctx, store, func(root EntReadRoot) (effectLogPage, error) {
+		q := root.ProcEffectLogs.Query()
+		if f.CommandID != "" {
+			q = q.Where(bitfsproceffectlogs.CommandIDEQ(f.CommandID))
+		}
+		if f.GatewayPeerID != "" {
+			q = q.Where(bitfsproceffectlogs.GatewayPubkeyHexEQ(f.GatewayPeerID))
+		}
+		if f.EffectType != "" {
+			q = q.Where(bitfsproceffectlogs.EffectTypeEQ(f.EffectType))
+		}
+		if f.Stage != "" {
+			q = q.Where(bitfsproceffectlogs.StageEQ(f.Stage))
+		}
+		if f.Status != "" {
+			q = q.Where(bitfsproceffectlogs.StatusEQ(f.Status))
+		}
+		total, err := q.Clone().Count(ctx)
+		if err != nil {
+			return effectLogPage{}, err
+		}
+		nodes, err := q.Order(bitfsproceffectlogs.ByID(entsql.OrderDesc())).Limit(f.Limit).Offset(f.Offset).All(ctx)
+		if err != nil {
+			return effectLogPage{}, err
+		}
+		out := effectLogPage{
+			Total: total,
+			Items: make([]effectLogItem, 0, len(nodes)),
+		}
+		for _, node := range nodes {
+			out.Items = append(out.Items, effectLogItemFromEnt(node))
+		}
+		return out, nil
+	})
 }
 
 func dbGetEffectLogItem(ctx context.Context, store *clientDB, id int64) (effectLogItem, error) {
 	if store == nil {
 		return effectLogItem{}, fmt.Errorf("client db is nil")
 	}
-	if store.ent == nil {
-		return effectLogItem{}, fmt.Errorf("client db ent client is nil")
-	}
-	node, err := store.ent.ProcEffectLogs.Query().Where(bitfsproceffectlogs.IDEQ(int(id))).Only(ctx)
-	if err != nil {
-		if gen.IsNotFound(err) {
-			return effectLogItem{}, sql.ErrNoRows
+	return readEntValue(ctx, store, func(root EntReadRoot) (effectLogItem, error) {
+		node, err := root.ProcEffectLogs.Query().Where(bitfsproceffectlogs.IDEQ(int(id))).Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return effectLogItem{}, sql.ErrNoRows
+			}
+			return effectLogItem{}, err
 		}
-		return effectLogItem{}, err
-	}
-	return effectLogItemFromEnt(node), nil
+		return effectLogItemFromEnt(node), nil
+	})
 }
 
 func commandJournalItemFromEnt(node *gen.ProcCommandJournal) commandJournalItem {

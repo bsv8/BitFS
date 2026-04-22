@@ -11,6 +11,7 @@ import (
 	"time"
 
 	entsql "entgo.io/ent/dialect/sql"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlements"
 )
@@ -107,7 +108,7 @@ func orderSettlementToFinanceBusinessItem(n *gen.OrderSettlements) financeBusine
 // 设计说明：
 // - 桥接链路已经切到 ent，这里只保留同一口径的 ent 入口；
 // - 失败时直接返回，不再做旧 SQL 兜底。
-func dbUpdateBusinessSettlementOutcomeEntTx(ctx context.Context, tx *gen.Tx, e businessSettlementOutcomeEntry) error {
+func dbUpdateBusinessSettlementOutcomeEntTx(ctx context.Context, tx EntWriteRoot, e businessSettlementOutcomeEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -148,7 +149,7 @@ func dbUpdateBusinessSettlementOutcomeEntTx(ctx context.Context, tx *gen.Tx, e b
 // 设计说明：
 // - 这条入口和 SQL 版保持同样的幂等语义，但不再向上层扩散旧事务句柄；
 // - 桥接层已经切到 ent 后，只允许走这个入口。
-func dbUpsertBusinessSettlementEntTx(ctx context.Context, tx *gen.Tx, e businessSettlementEntry) error {
+func dbUpsertBusinessSettlementEntTx(ctx context.Context, tx EntWriteRoot, e businessSettlementEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -249,21 +250,23 @@ func claimBusinessSettlementExecutionTx(ctx context.Context, store *clientDB, or
 		Item    BusinessSettlementItem
 		Claimed bool
 	}
-	res, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (claimResult, error) {
+	var res claimResult
+	err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		current, err := tx.OrderSettlements.Query().
 			Where(ordersettlements.OrderIDEQ(orderID)).
 			Order(ordersettlements.BySettlementNo(entsql.OrderDesc()), ordersettlements.ByUpdatedAtUnix(entsql.OrderDesc()), ordersettlements.BySettlementID(entsql.OrderDesc())).
 			First(ctx)
 		if err != nil {
 			if gen.IsNotFound(err) {
-				return claimResult{}, sql.ErrNoRows
+				return sql.ErrNoRows
 			}
-			return claimResult{}, err
+			return err
 		}
 		currentItem := orderSettlementToBusinessSettlementItem(current)
 		currentStatus := strings.ToLower(strings.TrimSpace(currentItem.Status))
 		if currentStatus != "pending" && currentStatus != "waiting_fund" {
-			return claimResult{Item: currentItem, Claimed: false}, nil
+			res = claimResult{Item: currentItem, Claimed: false}
+			return nil
 		}
 		affected, err := tx.OrderSettlements.Update().
 			Where(
@@ -276,25 +279,27 @@ func claimBusinessSettlementExecutionTx(ctx context.Context, store *clientDB, or
 			SetUpdatedAtUnix(time.Now().Unix()).
 			Save(ctx)
 		if err != nil {
-			return claimResult{}, err
+			return err
 		}
 		if affected > 0 {
 			currentItem.Status = "processing"
-			return claimResult{Item: currentItem, Claimed: true}, nil
+			res = claimResult{Item: currentItem, Claimed: true}
+			return nil
 		}
 		current, err = tx.OrderSettlements.Query().
 			Where(ordersettlements.SettlementIDEQ(current.SettlementID)).
 			Only(ctx)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return claimResult{}, fmt.Errorf("business record not found for order_id=%s", orderID)
+				return fmt.Errorf("business record not found for order_id=%s", orderID)
 			}
 			if gen.IsNotFound(err) {
-				return claimResult{}, fmt.Errorf("business record not found for order_id=%s", orderID)
+				return fmt.Errorf("business record not found for order_id=%s", orderID)
 			}
-			return claimResult{}, err
+			return err
 		}
-		return claimResult{Item: orderSettlementToBusinessSettlementItem(current), Claimed: false}, nil
+		res = claimResult{Item: orderSettlementToBusinessSettlementItem(current), Claimed: false}
+		return nil
 	})
 	if err != nil {
 		return BusinessSettlementItem{}, false, err
@@ -377,19 +382,25 @@ func dbGetBusinessSettlementByBusinessID(ctx context.Context, store *clientDB, b
 	if businessID == "" {
 		return BusinessSettlementItem{}, fmt.Errorf("order_id is required")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (BusinessSettlementItem, error) {
+	var out BusinessSettlementItem
+	err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		node, err := tx.OrderSettlements.Query().
 			Where(ordersettlements.OrderIDEQ(businessID)).
 			Order(ordersettlements.BySettlementNo(entsql.OrderDesc()), ordersettlements.ByUpdatedAtUnix(entsql.OrderDesc()), ordersettlements.BySettlementID(entsql.OrderDesc())).
 			First(ctx)
 		if err != nil {
 			if gen.IsNotFound(err) {
-				return BusinessSettlementItem{}, sql.ErrNoRows
+				return sql.ErrNoRows
 			}
-			return BusinessSettlementItem{}, err
+			return err
 		}
-		return orderSettlementToBusinessSettlementItem(node), nil
+		out = orderSettlementToBusinessSettlementItem(node)
+		return nil
 	})
+	if err != nil {
+		return BusinessSettlementItem{}, err
+	}
+	return out, nil
 }
 
 // dbListBusinessSettlementsByTarget 按 target_type + target_id 查询业务结算出口列表
@@ -405,7 +416,7 @@ func dbUpdateBusinessSettlementStatus(ctx context.Context, store *clientDB, sett
 	if settlementID == "" {
 		return fmt.Errorf("settlement_id is required")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		_, err := tx.OrderSettlements.Update().
 			Where(ordersettlements.SettlementIDEQ(settlementID)).
 			SetSettlementStatus(strings.TrimSpace(status)).
@@ -427,7 +438,7 @@ func dbUpdateBusinessSettlementTarget(ctx context.Context, store *clientDB, sett
 	if settlementID == "" {
 		return fmt.Errorf("settlement_id is required")
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		_, err := tx.OrderSettlements.Update().
 			Where(ordersettlements.SettlementIDEQ(settlementID)).
 			SetTargetType(strings.TrimSpace(targetType)).
@@ -459,9 +470,6 @@ func ListBusinessesByFrontOrderID(ctx context.Context, store *clientDB, frontOrd
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	if store.ent == nil {
-		return nil, fmt.Errorf("client db ent client is nil")
-	}
 	frontOrderID = strings.TrimSpace(frontOrderID)
 	if frontOrderID == "" {
 		return nil, fmt.Errorf("front_order_id is required")
@@ -478,10 +486,11 @@ func ListBusinessesByFrontOrderID(ctx context.Context, store *clientDB, frontOrd
 	}
 
 	// 第二步：按 order_id 查 order_settlements（ent 主路径）
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]financeBusinessItem, error) {
-		out := make([]financeBusinessItem, 0, len(businessIDs))
+	var out []financeBusinessItem
+	err = store.ReadEnt(ctx, func(root EntReadRoot) error {
+		out = make([]financeBusinessItem, 0, len(businessIDs))
 		for _, bizID := range businessIDs {
-			row, err := tx.OrderSettlements.Query().
+			row, err := root.OrderSettlements.Query().
 				Where(ordersettlements.OrderIDEQ(bizID)).
 				Order(
 					ordersettlements.BySettlementNo(entsql.OrderDesc()),
@@ -490,12 +499,16 @@ func ListBusinessesByFrontOrderID(ctx context.Context, store *clientDB, frontOrd
 				).
 				First(ctx)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			out = append(out, orderSettlementToFinanceBusinessItem(row))
 		}
-		return out, nil
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // GetLatestBusinessByFrontOrderID 按 front_order_id 查最近一条 business
@@ -517,14 +530,12 @@ func dbGetLatestBusinessBySettlementPaymentAttemptID(ctx context.Context, store 
 	if store == nil {
 		return financeBusinessItem{}, fmt.Errorf("client db is nil")
 	}
-	if store.ent == nil {
-		return financeBusinessItem{}, fmt.Errorf("client db ent client is nil")
-	}
 	if settlementPaymentAttemptID <= 0 {
 		return financeBusinessItem{}, fmt.Errorf("settlement_payment_attempt_id is required")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (financeBusinessItem, error) {
-		row, err := tx.OrderSettlements.Query().
+	var out financeBusinessItem
+	err := store.ReadEnt(ctx, func(root EntReadRoot) error {
+		row, err := root.OrderSettlements.Query().
 			Where(
 				ordersettlements.SourceTypeEQ("settlement_payment_attempt"),
 				ordersettlements.SourceIDEQ(fmt.Sprintf("%d", settlementPaymentAttemptID)),
@@ -533,12 +544,17 @@ func dbGetLatestBusinessBySettlementPaymentAttemptID(ctx context.Context, store 
 			First(ctx)
 		if err != nil {
 			if gen.IsNotFound(err) {
-				return financeBusinessItem{}, sql.ErrNoRows
+				return sql.ErrNoRows
 			}
-			return financeBusinessItem{}, err
+			return err
 		}
-		return orderSettlementToFinanceBusinessItem(row), nil
+		out = orderSettlementToFinanceBusinessItem(row)
+		return nil
 	})
+	if err != nil {
+		return financeBusinessItem{}, err
+	}
+	return out, nil
 }
 
 // GetSettlementByBusinessID 按 order_id 查 settlement
@@ -625,13 +641,13 @@ func GetChainPaymentByIDAndTargetType(ctx context.Context, store *clientDB, id i
 	if tableName == "" {
 		return ChainPaymentItem{}, fmt.Errorf("unsupported target_type: %s", targetType)
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (ChainPaymentItem, error) {
-		var item ChainPaymentItem
+	var item ChainPaymentItem
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
 		var payload string
 		query := fmt.Sprintf(`SELECT id,txid,payment_subtype,status,wallet_input_satoshi,wallet_output_satoshi,net_amount_satoshi,
 				block_height,occurred_at_unix,from_party_id,to_party_id,updated_at_unix,payload_json
 			 FROM %s WHERE id=?`, tableName)
-		err := QueryRowContext(ctx, db,
+		err := rc.QueryRowContext(ctx,
 			query,
 			id,
 		).Scan(
@@ -640,11 +656,15 @@ func GetChainPaymentByIDAndTargetType(ctx context.Context, store *clientDB, id i
 			&item.BlockHeight, &item.OccurredAtUnix, &item.FromPartyID, &item.ToPartyID, &item.UpdatedAtUnix, &payload,
 		)
 		if err != nil {
-			return ChainPaymentItem{}, err
+			return err
 		}
 		item.Payload = json.RawMessage(payload)
-		return item, nil
+		return nil
 	})
+	if err != nil {
+		return ChainPaymentItem{}, err
+	}
+	return item, nil
 }
 
 // GetFullSettlementChainByFrontOrderID 按 front_order_id 查完整结算链
@@ -768,9 +788,9 @@ func GetPoolAllocationByID(ctx context.Context, store *clientDB, id int64) (Pool
 	if store == nil {
 		return PoolAllocationItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (PoolAllocationItem, error) {
-		var item PoolAllocationItem
-		err := QueryRowContext(ctx, db,
+	var item PoolAllocationItem
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
+		err := rc.QueryRowContext(ctx,
 			`SELECT id,allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,
 					payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
 			 FROM fact_pool_session_events WHERE id=?`,
@@ -781,10 +801,14 @@ func GetPoolAllocationByID(ctx context.Context, store *clientDB, id int64) (Pool
 			&item.TxID, &item.TxHex, &item.CreatedAtUnix,
 		)
 		if err != nil {
-			return PoolAllocationItem{}, err
+			return err
 		}
-		return item, nil
+		return nil
 	})
+	if err != nil {
+		return PoolAllocationItem{}, err
+	}
+	return item, nil
 }
 
 // GetPoolSessionByID 按 id 查 fact_settlement_channel_pool_session_quote_pay（通过 pool_session_id）
@@ -796,9 +820,9 @@ func GetPoolSessionByID(ctx context.Context, store *clientDB, poolSessionID stri
 	if poolSessionID == "" {
 		return PoolSessionItem{}, fmt.Errorf("pool_session_id is required")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (PoolSessionItem, error) {
-		var item PoolSessionItem
-		err := QueryRowContext(ctx, db,
+	var item PoolSessionItem
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
+		err := rc.QueryRowContext(ctx,
 			`SELECT pool_session_id,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
 					gateway_pubkey_hex,pool_amount_satoshi,spend_tx_fee_satoshi,fee_rate_sat_byte,lock_blocks,
 					open_base_txid,status,created_at_unix,updated_at_unix
@@ -810,10 +834,14 @@ func GetPoolSessionByID(ctx context.Context, store *clientDB, poolSessionID stri
 			&item.OpenBaseTxID, &item.Status, &item.CreatedAtUnix, &item.UpdatedAtUnix,
 		)
 		if err != nil {
-			return PoolSessionItem{}, err
+			return err
 		}
-		return item, nil
+		return nil
 	})
+	if err != nil {
+		return PoolSessionItem{}, err
+	}
+	return item, nil
 }
 
 // ListPoolAllocationsBySession 按 pool_session_id 列该池下 events
@@ -825,18 +853,19 @@ func ListPoolAllocationsBySession(ctx context.Context, store *clientDB, poolSess
 	if poolSessionID == "" {
 		return nil, fmt.Errorf("pool_session_id is required")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) ([]PoolAllocationItem, error) {
-		rows, err := QueryContext(ctx, db,
+	var out []PoolAllocationItem
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
+		rows, err := rc.QueryContext(ctx,
 			`SELECT id,allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,
 					payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
 			 FROM fact_pool_session_events WHERE pool_session_id=? AND event_kind=? ORDER BY allocation_no DESC`,
 			poolSessionID, PoolFactEventKindPoolEvent,
 		)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		defer rows.Close()
-		var out []PoolAllocationItem
+		out = make([]PoolAllocationItem, 0)
 		for rows.Next() {
 			var item PoolAllocationItem
 			if err := rows.Scan(
@@ -844,15 +873,16 @@ func ListPoolAllocationsBySession(ctx context.Context, store *clientDB, poolSess
 				&item.SequenceNum, &item.PayeeAmountAfter, &item.PayerAmountAfter,
 				&item.TxID, &item.TxHex, &item.CreatedAtUnix,
 			); err != nil {
-				return nil, err
+				return err
 			}
 			out = append(out, item)
 		}
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		return out, nil
+		return rows.Err()
 	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // GetFullPoolSettlementChainByFrontOrderID 按 front_order 返回 business -> settlement -> pool_allocation -> pool_session。
@@ -909,7 +939,8 @@ func GetSettlementByPoolAllocationID(ctx context.Context, store *clientDB, poolA
 	if store == nil {
 		return BusinessSettlementItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (BusinessSettlementItem, error) {
+	var out BusinessSettlementItem
+	err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		node, err := tx.OrderSettlements.Query().
 			Where(
 				ordersettlements.SettlementMethodEQ(string(SettlementMethodPool)),
@@ -918,10 +949,15 @@ func GetSettlementByPoolAllocationID(ctx context.Context, store *clientDB, poolA
 			Only(ctx)
 		if err != nil {
 			if gen.IsNotFound(err) {
-				return BusinessSettlementItem{}, sql.ErrNoRows
+				return sql.ErrNoRows
 			}
-			return BusinessSettlementItem{}, err
+			return err
 		}
-		return orderSettlementToBusinessSettlementItem(node), nil
+		out = orderSettlementToBusinessSettlementItem(node)
+		return nil
 	})
+	if err != nil {
+		return BusinessSettlementItem{}, err
+	}
+	return out, nil
 }

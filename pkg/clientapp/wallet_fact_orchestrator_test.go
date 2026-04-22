@@ -12,6 +12,7 @@ import (
 
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 )
 
@@ -519,8 +520,8 @@ func TestSQLTraceDebugGateAndCallerChain(t *testing.T) {
 		}
 	})
 	storeFalse := newClientDB(openedFalse.DB, openedFalse.Actor)
-	if err := storeFalse.Do(context.Background(), func(db sqlConn) error {
-		_, err := db.Exec(`CREATE TABLE trace_gate(id INTEGER PRIMARY KEY, value TEXT)`)
+	if err := storeFalse.WriteTx(context.Background(), func(db moduleapi.WriteTx) error {
+		_, err := db.ExecContext(context.Background(), `CREATE TABLE trace_gate(id INTEGER PRIMARY KEY, value TEXT)`)
 		return err
 	}); err != nil {
 		t.Fatalf("disabled trace exec: %v", err)
@@ -633,17 +634,17 @@ func TestSQLTraceDebugGateAndCallerChain(t *testing.T) {
 
 func runSQLTraceReplay(store *clientDB, roundID string, trigger string) error {
 	ctx := sqlTraceContextWithMeta(context.Background(), roundID, trigger, "sql_trace_replay", "wallet_fact_orchestrator_test.runSQLTraceReplay")
-	return store.Do(ctx, func(db sqlConn) error {
-		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS trace_gate(id INTEGER PRIMARY KEY, value TEXT)`); err != nil {
+	return store.WriteTx(ctx, func(db moduleapi.WriteTx) error {
+		if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS trace_gate(id INTEGER PRIMARY KEY, value TEXT)`); err != nil {
 			return err
 		}
-		if _, err := db.Exec(`INSERT INTO trace_gate(id, value) VALUES(?, ?)`, int64(1), "a"); err != nil {
+		if _, err := db.ExecContext(ctx, `INSERT INTO trace_gate(id, value) VALUES(?, ?)`, int64(1), "a"); err != nil {
 			return err
 		}
-		if _, err := db.Exec(`UPDATE trace_gate SET value=? WHERE id=?`, "b", int64(1)); err != nil {
+		if _, err := db.ExecContext(ctx, `UPDATE trace_gate SET value=? WHERE id=?`, "b", int64(1)); err != nil {
 			return err
 		}
-		if _, err := db.Exec(`UPDATE trace_gate SET value=? WHERE id=?`, "c", int64(1)); err != nil {
+		if _, err := db.ExecContext(ctx, `UPDATE trace_gate SET value=? WHERE id=?`, "c", int64(1)); err != nil {
 			return err
 		}
 		return nil

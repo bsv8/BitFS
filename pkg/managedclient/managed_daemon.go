@@ -106,6 +106,8 @@ const (
 	controlActionGatewayPublishDemandChainTxQuotePay = "gateway.publish_demand_chain_tx_quote_pay"
 	controlActionGatewayReachabilityAnnounce         = "gateway.reachability_announce"
 	controlActionGatewayReachabilityQuery            = "gateway.reachability_query"
+	controlActionFeePoolEnsureActive                 = "feepool.ensure_active"
+	controlActionFeePoolClose                        = "feepool.close"
 
 	controlActionDomainResolve   = "domain.resolve"
 	controlActionDomainRegister  = "domain.register"
@@ -254,6 +256,9 @@ type managedDaemon struct {
 func RunManagedDaemon(opts DaemonOptions) error {
 	rootCtx, rootCancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer rootCancel()
+	if err := clientapp.ApplyConfigDefaults(&opts.Config); err != nil {
+		return err
+	}
 	logFile, logConsoleMinLevel := clientapp.ResolveLogConfig(&opts.Config)
 	if err := obs.Init(logFile, logConsoleMinLevel); err != nil {
 		return err
@@ -957,6 +962,8 @@ func (d *managedDaemon) executeManagedControlCommand(req controlCommandRequest) 
 		controlActionGatewayPublishDemandChainTxQuotePay,
 		controlActionGatewayReachabilityAnnounce,
 		controlActionGatewayReachabilityQuery,
+		controlActionFeePoolEnsureActive,
+		controlActionFeePoolClose,
 		controlActionDomainResolve,
 		controlActionDomainRegister,
 		controlActionDomainSetTarget,

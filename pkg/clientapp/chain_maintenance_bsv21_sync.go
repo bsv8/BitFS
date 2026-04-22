@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 )
 
 type walletBSV21UnspentSnapshotItem struct {
@@ -56,7 +57,7 @@ func syncWalletBSV21HoldingsFromUnspent(ctx context.Context, store *clientDB, ad
 
 	upserted := 0
 	cleared := 0
-	err := store.Tx(ctx, func(db sqlConn) error {
+	err := store.WriteTx(ctx, func(db moduleapi.WriteTx) error {
 		for _, item := range present {
 			lotID := walletBSV21SnapshotLotID(item.TokenID, item.TxID, item.Vout)
 			linkID := walletBSV21SnapshotLinkID(item.TokenID, item.TxID, item.Vout)

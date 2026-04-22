@@ -122,7 +122,7 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 		triggerID = "trg_" + in.BusinessID
 	}
 
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		now := time.Now().Unix()
 
 		// 1. 确保 front_order 存在
@@ -235,7 +235,7 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 // 设计说明：
 // - 这里直接收口到 ent，避免桥接层再碰旧 SQL；
 // - order_id 仍然是唯一定位，不再靠旧主键语义猜行。
-func dbUpsertFrontOrderEntTx(ctx context.Context, tx *gen.Tx, e frontOrderEntry) error {
+func dbUpsertFrontOrderEntTx(ctx context.Context, tx EntWriteRoot, e frontOrderEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -296,7 +296,7 @@ func dbUpsertFrontOrderEntTx(ctx context.Context, tx *gen.Tx, e frontOrderEntry)
 // - 业务和结算一起落，不再把同一 order_id 压成一行；
 // - settlement_id 负责精确定位，后续新执行单会顺延新增；
 // - 这个入口只做桥接，不自己拼旧式 UPSERT。
-func dbUpsertSettleRecordTx(ctx context.Context, tx *gen.Tx, e finBusinessEntry) error {
+func dbUpsertSettleRecordTx(ctx context.Context, tx EntWriteRoot, e finBusinessEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -306,7 +306,7 @@ func dbUpsertSettleRecordTx(ctx context.Context, tx *gen.Tx, e finBusinessEntry)
 // dbAppendBusinessTriggerTx 事务内插入业务触发桥接记录
 // 幂等约束在 (order_id, trigger_type, trigger_id_value, trigger_role) 上
 // 支持"一前台单多条 business"：同一 trigger_type+trigger_id_value 可触发多个不同 business
-func dbAppendBusinessTriggerTx(ctx context.Context, tx *gen.Tx, e businessTriggerEntry) error {
+func dbAppendBusinessTriggerTx(ctx context.Context, tx EntWriteRoot, e businessTriggerEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -370,7 +370,7 @@ func dbAppendBusinessTriggerTx(ctx context.Context, tx *gen.Tx, e businessTrigge
 
 // dbUpsertBusinessSettlementTx 事务内插入或更新业务结算出口
 // 校验：settlement_method 只允许 'pool' 或 'chain'
-func dbUpsertSettleRecordSettlementTx(ctx context.Context, tx *gen.Tx, e businessSettlementEntry) error {
+func dbUpsertSettleRecordSettlementTx(ctx context.Context, tx EntWriteRoot, e businessSettlementEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}

@@ -15,6 +15,7 @@ import (
 	ncall "github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/payflow"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/BFTP/pkg/infra/pproto"
 	"github.com/bsv8/BFTP/pkg/obs"
 	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -66,7 +67,7 @@ func requestPeerCallChainTxQuote(ctx context.Context, rt *Runtime, store ClientS
 	if err != nil {
 		return peerCallChainTxQuoteBuilt{}, err
 	}
-	quotedResp, err := callNodeRoute(ctx, rt, peerID, protoID, ncall.CallReq{
+	quotedResp, err := callGatewayRoute(ctx, rt, peerID, protoID, ncall.CallReq{
 		To:          buildPeerCallQuoteTarget(req),
 		ContentType: strings.TrimSpace(req.ContentType),
 		Body:        append([]byte(nil), req.Body...),
@@ -133,7 +134,7 @@ func payPeerCallWithChainTxQuote(ctx context.Context, rt *Runtime, store ClientS
 	paidReq := req
 	paidReq.PaymentScheme = ncall.PaymentSchemeChainTxV1
 	paidReq.PaymentPayload = paymentPayload
-	out, err := callNodeRoute(ctx, rt, peerID, protoID, paidReq)
+	out, err := callGatewayRoute(ctx, rt, peerID, protoID, paidReq)
 	if err != nil {
 		return ncall.CallResp{}, err
 	}
@@ -147,7 +148,11 @@ func payPeerCallWithChainTxQuote(ctx context.Context, rt *Runtime, store ClientS
 	if txid := strings.ToLower(strings.TrimSpace(receipt.PaymentTxID)); txid != "" && !strings.EqualFold(txid, built.TxID) {
 		return ncall.CallResp{}, fmt.Errorf("payment receipt txid mismatch")
 	}
-	if err := applyLocalBroadcastWalletTxBytes(ctx, store, rt, built.RawTx, "peer_call_chain_tx"); err != nil {
+	rawStore, ok := any(store).(moduleBootstrapStore)
+	if !ok || rawStore == nil {
+		return out, fmt.Errorf("submitted_unknown_projection: client store raw capability missing")
+	}
+	if err := applyLocalBroadcastWalletTxBytes(ctx, rawStore, rt, built.RawTx, "peer_call_chain_tx"); err != nil {
 		return out, fmt.Errorf("submitted_unknown_projection: %w", err)
 	}
 	// 资金流水已迁移到 fact_* 事实表组装
@@ -294,6 +299,15 @@ func buildPeerCallChainTxWithUTXOs(actor *poolcore.Actor, selected []poolcore.UT
 		MinerFeeSatoshi: fee,
 		ChangeSatoshi:   change,
 	}, nil
+}
+
+func callGatewayRoute(ctx context.Context, rt *Runtime, peerID peer.ID, protoID protocol.ID, req ncall.CallReq) (ncall.CallResp, error) {
+	var out ncall.CallResp
+	// 这条链的接收端挂在 gateway 的 proto 域名下，不是 bitfs-node。
+	if err := pproto.CallProto(ctx, rt.Host, peerID, protoID, gwSec(rt.rpcTrace), req, &out); err != nil {
+		return ncall.CallResp{}, err
+	}
+	return out, nil
 }
 
 func verifyPeerCallServiceReceipt(rt *Runtime, gatewayPeerID peer.ID, expected expectedServiceReceipt, receiptRaw []byte) error {

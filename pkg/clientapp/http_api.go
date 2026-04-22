@@ -20,6 +20,7 @@ import (
 
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
 	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	"github.com/libp2p/go-libp2p/core/host"
 	libnetwork "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -635,16 +636,23 @@ func walletUTXOSyncStateStaleness(syncState walletUTXOSyncState, runtimeStartedA
 	return false, ""
 }
 
-func dbLoadSchedulerTaskSnapshot(ctx context.Context, store *clientDB, taskName string) (schedulerTaskSnapshot, error) {
+func dbLoadSchedulerTaskSnapshot(ctx context.Context, store moduleBootstrapStore, taskName string) (schedulerTaskSnapshot, error) {
 	if store == nil {
 		return schedulerTaskSnapshot{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (schedulerTaskSnapshot, error) {
-		return loadSchedulerTaskSnapshot(ctx, db, taskName)
+	var out schedulerTaskSnapshot
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
+		next, err := loadSchedulerTaskSnapshot(ctx, rc, taskName)
+		if err != nil {
+			return err
+		}
+		out = next
+		return nil
 	})
+	return out, err
 }
 
-func loadSchedulerTaskSnapshot(ctx context.Context, db sqlConn, taskName string) (schedulerTaskSnapshot, error) {
+func loadSchedulerTaskSnapshot(ctx context.Context, db moduleapi.ReadConn, taskName string) (schedulerTaskSnapshot, error) {
 	if db == nil {
 		return schedulerTaskSnapshot{}, fmt.Errorf("db is nil")
 	}
@@ -2131,6 +2139,10 @@ func (s *httpAPIServer) handleFileHash(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *httpAPIServer) handleWorkspaceSyncOnce(w http.ResponseWriter, r *http.Request) {
+	obs.Business(ServiceName, "http_workspace_sync_once_enter", map[string]any{
+		"method": r.Method,
+		"path":   r.URL.Path,
+	})
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
@@ -2181,6 +2193,10 @@ func (s *httpAPIServer) handleWorkspaceFiles(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *httpAPIServer) handleWorkspaceSeeds(w http.ResponseWriter, r *http.Request) {
+	obs.Business(ServiceName, "http_workspace_seeds_enter", map[string]any{
+		"method": r.Method,
+		"path":   r.URL.Path,
+	})
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return

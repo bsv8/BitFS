@@ -16,8 +16,8 @@ func dbGetSeedChunkCount(ctx context.Context, store *clientDB, seedHash string) 
 	if store == nil {
 		return 0, false
 	}
-	out, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (uint32, error) {
-		row, err := tx.BizSeeds.Query().Where(bizseeds.SeedHashEQ(normalizeSeedHashHex(seedHash))).Only(ctx)
+	out, err := readEntValue(ctx, store, func(root EntReadRoot) (uint32, error) {
+		row, err := root.BizSeeds.Query().Where(bizseeds.SeedHashEQ(normalizeSeedHashHex(seedHash))).Only(ctx)
 		if err != nil {
 			if gen.IsNotFound(err) {
 				return 0, sql.ErrNoRows
@@ -42,8 +42,8 @@ func dbGetSeedChunkCountForPricing(ctx context.Context, store *clientDB, seedHas
 	if seedHash == "" {
 		return 0, fmt.Errorf("seed_hash is required")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (uint32, error) {
-		row, err := tx.BizSeeds.Query().Where(bizseeds.SeedHashEQ(seedHash)).Only(ctx)
+	return readEntValue(ctx, store, func(root EntReadRoot) (uint32, error) {
+		row, err := root.BizSeeds.Query().Where(bizseeds.SeedHashEQ(seedHash)).Only(ctx)
 		if err != nil {
 			if gen.IsNotFound(err) {
 				return 0, sql.ErrNoRows
@@ -58,17 +58,17 @@ func dbRecommendedFileNameBySeedHash(ctx context.Context, store *clientDB, seedH
 	if store == nil {
 		return ""
 	}
-	out, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (string, error) {
+	out, err := readEntValue(ctx, store, func(root EntReadRoot) (string, error) {
 		seedHash = normalizeSeedHashHex(seedHash)
 		if seedHash == "" {
 			return "", nil
 		}
-		if row, err := tx.BizSeeds.Query().Where(bizseeds.SeedHashEQ(seedHash)).Only(ctx); err == nil {
+		if row, err := root.BizSeeds.Query().Where(bizseeds.SeedHashEQ(seedHash)).Only(ctx); err == nil {
 			if normalized := sanitizeRecommendedFileName(row.RecommendedFileName); normalized != "" {
 				return normalized, nil
 			}
 		}
-		row, err := tx.BizWorkspaceFiles.Query().
+		row, err := root.BizWorkspaceFiles.Query().
 			Where(bizworkspacefiles.SeedHashEQ(seedHash)).
 			Order(bizworkspacefiles.ByWorkspacePath(), bizworkspacefiles.ByFilePath()).
 			First(ctx)
@@ -87,12 +87,12 @@ func dbMimeHintBySeedHash(ctx context.Context, store *clientDB, seedHash string)
 	if store == nil {
 		return ""
 	}
-	out, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (string, error) {
+	out, err := readEntValue(ctx, store, func(root EntReadRoot) (string, error) {
 		seedHash = normalizeSeedHashHex(seedHash)
 		if seedHash == "" {
 			return "", nil
 		}
-		row, err := tx.BizSeeds.Query().Where(bizseeds.SeedHashEQ(seedHash)).Only(ctx)
+		row, err := root.BizSeeds.Query().Where(bizseeds.SeedHashEQ(seedHash)).Only(ctx)
 		if err != nil {
 			return "", nil
 		}

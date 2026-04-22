@@ -23,7 +23,7 @@ func dbPersistLiveFollowStatus(ctx context.Context, store *clientDB, st LiveFoll
 	if b, err := json.Marshal(st.LastDecision); err == nil {
 		decisionJSON = string(b)
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		st.StreamID = strings.TrimSpace(st.StreamID)
 		existing, err := tx.ProcLiveFollows.Query().Where(proclivefollows.StreamIDEQ(st.StreamID)).Only(ctx)
 		if err != nil {
@@ -67,8 +67,8 @@ func dbLoadLiveFollowStatus(ctx context.Context, store *clientDB, streamID strin
 	if store == nil {
 		return LiveFollowStatus{}, false, nil
 	}
-	out, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (LiveFollowStatus, error) {
-		node, err := tx.ProcLiveFollows.Query().Where(proclivefollows.StreamIDEQ(strings.ToLower(strings.TrimSpace(streamID)))).Only(ctx)
+	out, err := readEntValue(ctx, store, func(root EntReadRoot) (LiveFollowStatus, error) {
+		node, err := root.ProcLiveFollows.Query().Where(proclivefollows.StreamIDEQ(strings.ToLower(strings.TrimSpace(streamID)))).Only(ctx)
 		if err != nil {
 			return LiveFollowStatus{}, err
 		}
@@ -103,8 +103,8 @@ func dbListRunningLiveFollowStatuses(ctx context.Context, store *clientDB) ([]Li
 	if store == nil {
 		return nil, nil
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]LiveFollowStatus, error) {
-		nodes, err := tx.ProcLiveFollows.Query().
+	return readEntValue(ctx, store, func(root EntReadRoot) ([]LiveFollowStatus, error) {
+		nodes, err := root.ProcLiveFollows.Query().
 			Where(proclivefollows.StatusEQ("running")).
 			Order(proclivefollows.ByUpdatedAtUnix()).
 			All(ctx)
@@ -143,8 +143,8 @@ func dbLoadCachedNodeReachability(ctx context.Context, store *clientDB, targetNo
 	if err != nil {
 		return broadcastmodule.NodeReachabilityAnnouncement{}, false, err
 	}
-	out, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (broadcastmodule.NodeReachabilityAnnouncement, error) {
-		node, err := tx.ProcNodeReachabilityCache.Query().
+	out, err := readEntValue(ctx, store, func(root EntReadRoot) (broadcastmodule.NodeReachabilityAnnouncement, error) {
+		node, err := root.ProcNodeReachabilityCache.Query().
 			Where(
 				procnodereachabilitycache.TargetNodePubkeyHexEQ(targetNodePubkeyHex),
 				procnodereachabilitycache.ExpiresAtUnixGT(nowUnix),
@@ -185,7 +185,7 @@ func dbSaveNodeReachabilityCache(ctx context.Context, store *clientDB, sourceGat
 	if err != nil {
 		return err
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		now := time.Now().Unix()
 		existing, err := tx.ProcNodeReachabilityCache.Query().
 			Where(procnodereachabilitycache.TargetNodePubkeyHexEQ(ann.NodePubkeyHex)).
@@ -225,7 +225,7 @@ func dbSaveSelfNodeReachabilityState(ctx context.Context, store *clientDB, state
 	if store == nil {
 		return nil
 	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		now := time.Now().Unix()
 		nodePubkeyHex := strings.ToLower(strings.TrimSpace(state.NodePubkeyHex))
 		existing, err := tx.ProcSelfNodeReachabilityState.Query().
@@ -256,8 +256,8 @@ func dbLoadSelfNodeReachabilityState(ctx context.Context, store *clientDB, nodeP
 	if store == nil {
 		return selfNodeReachabilityState{}, false, nil
 	}
-	out, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (selfNodeReachabilityState, error) {
-		node, err := tx.ProcSelfNodeReachabilityState.Query().
+	out, err := readEntValue(ctx, store, func(root EntReadRoot) (selfNodeReachabilityState, error) {
+		node, err := root.ProcSelfNodeReachabilityState.Query().
 			Where(procselfnodereachabilitystate.NodePubkeyHexEQ(strings.ToLower(strings.TrimSpace(nodePubkeyHex)))).
 			Only(ctx)
 		if err != nil {

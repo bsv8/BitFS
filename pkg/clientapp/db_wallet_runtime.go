@@ -7,7 +7,6 @@ import (
 
 	"github.com/bsv8/BFTP/pkg/infra/fundalloc"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/factbsvutxos"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxo"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxosyncstate"
@@ -18,13 +17,13 @@ import (
 // - 只保留当前还在用的查询，不再带旧 create 状态逻辑。
 
 func dbLoadCurrentWalletUTXOStateRows(ctx context.Context, store *clientDB, address string) (map[string]utxoStateRow, error) {
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (map[string]utxoStateRow, error) {
+	return readEntValue(ctx, store, func(root EntReadRoot) (map[string]utxoStateRow, error) {
 		address = strings.TrimSpace(address)
 		if address == "" {
 			return map[string]utxoStateRow{}, fmt.Errorf("wallet address is empty")
 		}
 		walletID := walletIDByAddress(address)
-		rows, err := tx.WalletUtxo.Query().
+		rows, err := root.WalletUtxo.Query().
 			Where(walletutxo.WalletIDEQ(walletID), walletutxo.AddressEQ(address)).
 			Order(walletutxo.ByCreatedAtUnix(), walletutxo.ByUtxoID()).
 			All(ctx)
@@ -59,7 +58,7 @@ func dbLoadCurrentWalletUTXOStateRows(ctx context.Context, store *clientDB, addr
 }
 
 func dbLoadWalletUTXOsByID(ctx context.Context, store *clientDB, address string, utxoIDs []string) ([]poolcore.UTXO, error) {
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]poolcore.UTXO, error) {
+	return readEntValue(ctx, store, func(root EntReadRoot) ([]poolcore.UTXO, error) {
 		address = strings.TrimSpace(address)
 		if address == "" {
 			return []poolcore.UTXO{}, fmt.Errorf("wallet address is empty")
@@ -84,7 +83,7 @@ func dbLoadWalletUTXOsByID(ctx context.Context, store *clientDB, address string,
 		if len(placeholders) == 0 {
 			return []poolcore.UTXO{}, nil
 		}
-		rows, err := tx.WalletUtxo.Query().
+		rows, err := root.WalletUtxo.Query().
 			Where(
 				walletutxo.WalletIDEQ(walletID),
 				walletutxo.AddressEQ(address),
@@ -113,14 +112,14 @@ func dbLoadWalletUTXOsByID(ctx context.Context, store *clientDB, address string,
 }
 
 func dbListPlainBSVFundingCandidates(ctx context.Context, store *clientDB, address string) ([]fundalloc.Candidate, error) {
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]fundalloc.Candidate, error) {
+	return readEntValue(ctx, store, func(root EntReadRoot) ([]fundalloc.Candidate, error) {
 		address = strings.TrimSpace(address)
 		if address == "" {
 			return []fundalloc.Candidate{}, nil
 		}
 		ownerPubkeyHex := strings.ToLower(strings.TrimPrefix(address, "wallet:"))
 		walletID := walletIDByAddress(ownerPubkeyHex)
-		rows, err := tx.FactBsvUtxos.Query().
+		rows, err := root.FactBsvUtxos.Query().
 			Where(
 				factbsvutxos.OwnerPubkeyHexIn(ownerPubkeyHex, walletID),
 				factbsvutxos.UtxoStateEQ("unspent"),
@@ -149,15 +148,15 @@ func dbListPlainBSVFundingCandidates(ctx context.Context, store *clientDB, addre
 }
 
 func dbResolveWalletAddress(ctx context.Context, store *clientDB) (string, error) {
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (string, error) {
+	return readEntValue(ctx, store, func(root EntReadRoot) (string, error) {
 		var address string
-		row, err := tx.WalletUtxoSyncState.Query().
+		row, err := root.WalletUtxoSyncState.Query().
 			Order(walletutxosyncstate.ByUpdatedAtUnix()).
 			First(ctx)
 		if err == nil && strings.TrimSpace(row.Address) != "" {
 			return strings.TrimSpace(row.Address), nil
 		}
-		if row2, err := tx.WalletUtxo.Query().Order(walletutxo.ByUpdatedAtUnix()).First(ctx); err == nil {
+		if row2, err := root.WalletUtxo.Query().Order(walletutxo.ByUpdatedAtUnix()).First(ctx); err == nil {
 			address = row2.Address
 			if strings.TrimSpace(address) != "" {
 				return strings.TrimSpace(address), nil

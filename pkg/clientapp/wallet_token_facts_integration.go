@@ -12,6 +12,7 @@ import (
 
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/facttokencarrierlinks"
 )
@@ -80,7 +81,7 @@ func hasFactTokenHistory(ctx context.Context, store *clientDB, walletID string, 
 	ownerPubkeyHex = strings.TrimPrefix(ownerPubkeyHex, "wallet:")
 
 	var count int
-	err := store.Do(ctx, func(db sqlConn) error {
+	err := store.Read(ctx, func(db moduleapi.ReadConn) error {
 		return QueryRowContext(ctx, db,
 			`SELECT COUNT(1) FROM fact_token_lots WHERE owner_pubkey_hex=? AND token_standard=? AND token_id=?`,
 			ownerPubkeyHex, assetKind, tokenID,
@@ -221,7 +222,7 @@ func loadWalletBSV21SpendableCandidates(ctx context.Context, store *clientDB, rt
 // - 这里只服务“本地已广播、尚未上链确认”的测试场景；
 // - 真实业务不应再依赖这条路径，只保留给老测试和最小夹具使用；
 // - 候选要同时满足：本地广播表里有 tx_hex，wallet_utxo 里有对应输出。
-func loadWalletBSV21LocalSpendableCandidates(ctx context.Context, store *clientDB, address string, assetKey string) ([]walletTokenPreviewCandidate, error) {
+func loadWalletBSV21LocalSpendableCandidates(ctx context.Context, store moduleBootstrapStore, address string, assetKey string) ([]walletTokenPreviewCandidate, error) {
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
@@ -248,9 +249,10 @@ func loadWalletBSV21LocalSpendableCandidates(ctx context.Context, store *clientD
 		AllocationReason string
 		UpdatedAt        int64
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) ([]walletTokenPreviewCandidate, error) {
+	var out []walletTokenPreviewCandidate
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
 		txRows := map[string]txRow{}
-		records, err := QueryContext(ctx, db, `
+		records, err := QueryContext(ctx, rc, `
 			SELECT txid, tx_hex, updated_at_unix
 			  FROM wallet_local_broadcast_txs
 			 WHERE wallet_id=? AND address=?
@@ -258,7 +260,7 @@ func loadWalletBSV21LocalSpendableCandidates(ctx context.Context, store *clientD
 			walletID, address,
 		)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		for records.Next() {
 			var row struct {
@@ -268,7 +270,7 @@ func loadWalletBSV21LocalSpendableCandidates(ctx context.Context, store *clientD
 			}
 			if err := records.Scan(&row.TxID, &row.TxHex, &row.UpdatedAt); err != nil {
 				_ = records.Close()
-				return nil, err
+				return err
 			}
 			row.TxID = strings.ToLower(strings.TrimSpace(row.TxID))
 			row.TxHex = strings.ToLower(strings.TrimSpace(row.TxHex))
@@ -279,15 +281,16 @@ func loadWalletBSV21LocalSpendableCandidates(ctx context.Context, store *clientD
 		}
 		if err := records.Err(); err != nil {
 			_ = records.Close()
-			return nil, err
+			return err
 		}
 		_ = records.Close()
 		if len(txRows) == 0 {
-			return []walletTokenPreviewCandidate{}, nil
+			out = []walletTokenPreviewCandidate{}
+			return nil
 		}
 
 		utxoRows := make([]utxoRow, 0, 8)
-		utxos, err := QueryContext(ctx, db, `
+		utxos, err := QueryContext(ctx, rc, `
 			SELECT utxo_id, txid, vout, value_satoshi, state, allocation_class, allocation_reason, updated_at_unix
 			  FROM wallet_utxo
 			 WHERE wallet_id=? AND address=?
@@ -295,14 +298,14 @@ func loadWalletBSV21LocalSpendableCandidates(ctx context.Context, store *clientD
 			walletID, address,
 		)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		for utxos.Next() {
 			var row utxoRow
 			var vout int64
 			if err := utxos.Scan(&row.UTXOID, &row.TxID, &vout, &row.ValueSatoshi, &row.State, &row.AllocationClass, &row.AllocationReason, &row.UpdatedAt); err != nil {
 				_ = utxos.Close()
-				return nil, err
+				return err
 			}
 			row.UTXOID = strings.ToLower(strings.TrimSpace(row.UTXOID))
 			row.TxID = strings.ToLower(strings.TrimSpace(row.TxID))
@@ -317,11 +320,11 @@ func loadWalletBSV21LocalSpendableCandidates(ctx context.Context, store *clientD
 		}
 		if err := utxos.Err(); err != nil {
 			_ = utxos.Close()
-			return nil, err
+			return err
 		}
 		_ = utxos.Close()
 
-		out := make([]walletTokenPreviewCandidate, 0, len(utxoRows))
+		out = make([]walletTokenPreviewCandidate, 0, len(utxoRows))
 		for _, row := range utxoRows {
 			if row.State != "unspent" {
 				continue
@@ -393,8 +396,9 @@ func loadWalletBSV21LocalSpendableCandidates(ctx context.Context, store *clientD
 				CreatedAtUnix: txRowData.UpdatedAt,
 			})
 		}
-		return out, nil
+		return nil
 	})
+	return out, err
 }
 
 func splitUTXOID(utxoID string) (string, uint32, bool) {
@@ -450,7 +454,7 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 	walletID := walletIDByAddress(walletAddr)
 	now := time.Now().Unix()
 
-	return clientDBEntTx(ctx, store, func(dbtx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(dbtx EntWriteRoot) error {
 		lots, consumedText, err := collectBSV21TokenSendLotsForTx(ctx, dbtx, parsed, walletScriptHex)
 		if err != nil {
 			return err
@@ -644,7 +648,7 @@ type bsv21TokenSendLotPlan struct {
 	UsedText      string
 }
 
-func collectBSV21TokenSendLotsForTx(ctx context.Context, db *gen.Tx, tx *txsdk.Transaction, walletScriptHex string) ([]bsv21TokenSendLotPlan, string, error) {
+func collectBSV21TokenSendLotsForTx(ctx context.Context, db EntWriteRoot, tx *txsdk.Transaction, walletScriptHex string) ([]bsv21TokenSendLotPlan, string, error) {
 	if db == nil {
 		return nil, "", fmt.Errorf("db is nil")
 	}
@@ -753,7 +757,7 @@ func collectBSV21TokenSendConsumedText(tx *txsdk.Transaction, walletScriptHex st
 	return total, nil
 }
 
-func collectBSVInputFactsForTx(ctx context.Context, db *gen.Tx, tx *txsdk.Transaction) ([]chainPaymentUTXOLinkEntry, error) {
+func collectBSVInputFactsForTx(ctx context.Context, db EntWriteRoot, tx *txsdk.Transaction) ([]chainPaymentUTXOLinkEntry, error) {
 	if db == nil {
 		return nil, fmt.Errorf("db is nil")
 	}
@@ -787,7 +791,7 @@ func collectBSVInputFactsForTx(ctx context.Context, db *gen.Tx, tx *txsdk.Transa
 
 // dbGetLotByCarrierUTXO 根据 carrier UTXO 查询 lot_id。
 // 设计说明：只给本文件的 token send 结算入口使用，避免把 lot 查询再散到业务层。
-func dbGetLotByCarrierUTXOEntTx(ctx context.Context, db *gen.Tx, utxoID string) (string, error) {
+func dbGetLotByCarrierUTXOEntTx(ctx context.Context, db EntWriteRoot, utxoID string) (string, error) {
 	if db == nil {
 		return "", fmt.Errorf("db is nil")
 	}

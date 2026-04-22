@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 )
 
 type PricingSetBaseResult struct {
@@ -204,16 +205,16 @@ func TriggerPricingSetBase(ctx context.Context, rt *Runtime, base uint64) (Prici
 		}
 	}
 	now := time.Now()
-	if err := store.Tx(ctx, func(conn SQLConn) error {
-		seedHashes, err := dbListAllPricingSeedHashesOnConn(ctx, conn)
+	if err := store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
+		seedHashes, err := dbListAllPricingSeedHashesOnConn(ctx, wtx)
 		if err != nil {
 			return err
 		}
-		if err := dbUpsertPricingAutopilotConfigOnConn(ctx, conn, PricingConfig{BasePriceSatPer64K: base}, now.Unix()); err != nil {
+		if err := dbUpsertPricingAutopilotConfigOnConn(ctx, wtx, PricingConfig{BasePriceSatPer64K: base}, now.Unix()); err != nil {
 			return err
 		}
 		for _, seedHash := range seedHashes {
-			state, ok, err := loadPricingStateForSeedOnConn(ctx, conn, seedHash, base, now.Unix())
+			state, ok, err := loadPricingStateForSeedOnConn(ctx, wtx, seedHash, base, now.Unix())
 			if err != nil {
 				return err
 			}
@@ -221,7 +222,7 @@ func TriggerPricingSetBase(ctx context.Context, rt *Runtime, base uint64) (Prici
 				continue
 			}
 			nextState := pricingAutopilotSetBaseState(state, base, now)
-			if err := dbUpsertPricingAutopilotStateOnConn(ctx, conn, nextState, now.Unix()); err != nil {
+			if err := dbUpsertPricingAutopilotStateOnConn(ctx, wtx, nextState, now.Unix()); err != nil {
 				return err
 			}
 		}
@@ -267,8 +268,8 @@ func TriggerPricingResetSeed(ctx context.Context, rt *Runtime, seedHash string) 
 	var audit PricingAuditItem
 	now := time.Now()
 	base := rt.pricingCurrentBase(ctx)
-	err = store.Tx(ctx, func(conn SQLConn) error {
-		nextSeed, ok, err := loadPricingStateForSeedOnConn(ctx, conn, seedHash, base, now.Unix())
+	err = store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
+		nextSeed, ok, err := loadPricingStateForSeedOnConn(ctx, wtx, seedHash, base, now.Unix())
 		if err != nil {
 			return err
 		}
@@ -276,10 +277,10 @@ func TriggerPricingResetSeed(ctx context.Context, rt *Runtime, seedHash string) 
 			return fmt.Errorf("seed not found")
 		}
 		seed, audit = pricingAutopilotResetSeed(nextSeed, base, now)
-		if err := dbUpsertPricingAutopilotStateOnConn(ctx, conn, seed, now.Unix()); err != nil {
+		if err := dbUpsertPricingAutopilotStateOnConn(ctx, wtx, seed, now.Unix()); err != nil {
 			return err
 		}
-		return dbAppendPricingAutopilotAuditOnConn(ctx, conn, audit)
+		return dbAppendPricingAutopilotAuditOnConn(ctx, wtx, audit)
 	})
 	if err != nil {
 		return PricingStateResult{}, err
@@ -303,7 +304,7 @@ func TriggerPricingFeedSeed(ctx context.Context, rt *Runtime, req PricingFeedReq
 	var seed PricingState
 	now := time.Now()
 	base := rt.pricingCurrentBase(ctx)
-	err = store.Tx(ctx, func(conn SQLConn) error {
+	err = store.WriteTx(ctx, func(conn moduleapi.WriteTx) error {
 		nextSeed, ok, err := loadPricingStateForSeedOnConn(ctx, conn, seedHash, base, now.Unix())
 		if err != nil {
 			return err
@@ -348,7 +349,7 @@ func TriggerPricingSetForce(ctx context.Context, rt *Runtime, req ForcePriceRequ
 	var audit PricingAuditItem
 	now := time.Now()
 	base := rt.pricingCurrentBase(ctx)
-	err = store.Tx(ctx, func(conn SQLConn) error {
+	err = store.WriteTx(ctx, func(conn moduleapi.WriteTx) error {
 		nextSeed, ok, err := loadPricingStateForSeedOnConn(ctx, conn, seedHash, base, now.Unix())
 		if err != nil {
 			return err
@@ -389,7 +390,7 @@ func TriggerPricingReleaseForce(ctx context.Context, rt *Runtime, seedHash strin
 	var audit PricingAuditItem
 	now := time.Now()
 	base := rt.pricingCurrentBase(ctx)
-	err = store.Tx(ctx, func(conn SQLConn) error {
+	err = store.WriteTx(ctx, func(conn moduleapi.WriteTx) error {
 		nextSeed, ok, err := loadPricingStateForSeedOnConn(ctx, conn, seedHash, base, now.Unix())
 		if err != nil {
 			return err
@@ -427,7 +428,7 @@ func TriggerPricingRunTick(ctx context.Context, rt *Runtime, hours uint32) (Pric
 	var cfg PricingConfig
 	var states []PricingState
 	var audits []PricingAuditItem
-	if err := store.Tx(ctx, func(conn SQLConn) error {
+	if err := store.WriteTx(ctx, func(conn moduleapi.WriteTx) error {
 		if row, ok, err := dbLoadPricingAutopilotConfigOnConn(ctx, conn); err != nil {
 			return err
 		} else if ok && row.BasePriceSatPer64K > 0 {
@@ -500,7 +501,7 @@ func TriggerPricingReconcile(ctx context.Context, rt *Runtime, seedHash string, 
 	var state PricingState
 	var audits []PricingAuditItem
 	var changed bool
-	if err := store.Tx(ctx, func(conn SQLConn) error {
+	if err := store.WriteTx(ctx, func(conn moduleapi.WriteTx) error {
 		if row, ok, err := dbLoadPricingAutopilotConfigOnConn(ctx, conn); err != nil {
 			return err
 		} else if ok && row.BasePriceSatPer64K > 0 {

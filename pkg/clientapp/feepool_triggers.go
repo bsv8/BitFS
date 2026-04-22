@@ -140,8 +140,11 @@ func TriggerGatewayFeePoolEnsureActive(ctx context.Context, store *clientDB, rt 
 		requestedBy = "trigger_fee_pool_ensure_active"
 	}
 	cmd := prepareClientKernelCommand(clientKernelCommand{
-		CommandType:     clientKernelCommandFeePoolEnsureActive,
-		GatewayPeerID:   gw.ID.String(),
+		CommandType: clientKernelCommandFeePoolEnsureActive,
+		// 这里必须传业务网关 ID（公钥 hex），不能传 libp2p peer id。
+		// 内核入口会再次按业务 ID 选网关；如果这里混入传输层 peer id，
+		// 触发层看似已连上网关，但内核重解一次时会判定“网关未连接”。
+		GatewayPeerID:   gatewayID,
 		RequestedBy:     requestedBy,
 		AllowWhenPaused: p.AllowWhenPaused,
 		Payload: map[string]any{

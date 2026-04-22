@@ -4,47 +4,31 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"sync"
+
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 )
 
-// Conn 是模块内使用的最小数据库连接能力。
-type Conn interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}
-
-// SerialExecutor 表示把整段 DB 闭包串行执行的能力。
-type SerialExecutor interface {
-	Do(context.Context, func(Conn) error) error
-}
-
 type dbStore struct {
-	db     Conn
-	serial SerialExecutor
-	mu     sync.Mutex
+	store moduleapi.Store
 }
 
-// BootstrapStore 创建并初始化 inbox message store。
-func BootstrapStore(ctx context.Context, db Conn, serial SerialExecutor) (*dbStore, error) {
-	if db == nil {
-		return nil, fmt.Errorf("db is nil")
+func BootstrapStore(ctx context.Context, store moduleapi.Store) (*dbStore, error) {
+	if store == nil {
+		return nil, fmt.Errorf("store is nil")
 	}
 	if ctx == nil {
 		return nil, fmt.Errorf("ctx is required")
 	}
-	if err := bootstrapSchema(ctx, db); err != nil {
-		return nil, err
-	}
-	return &dbStore{db: db, serial: serial}, nil
+	return &dbStore{store: store}, nil
 }
 
 func (s *dbStore) WriteInboxMessage(ctx context.Context, messageID, senderPubKeyHex, targetInput, route, contentType string, body []byte, receivedAtUnix int64) (InboxReceipt, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.store == nil {
 		return InboxReceipt{}, fmt.Errorf("inbox message store is disabled")
 	}
 	var receipt InboxReceipt
-	err := s.withConn(ctx, func(conn Conn) error {
-		row, err := conn.QueryContext(ctx, `
+	err := s.store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
+		row, err := wtx.QueryContext(ctx, `
 			SELECT id, received_at_unix
 			  FROM proc_inbox_messages
 			 WHERE sender_pubkey_hex=? AND message_id=?`,
@@ -63,7 +47,7 @@ func (s *dbStore) WriteInboxMessage(ctx context.Context, messageID, senderPubKey
 		if err := row.Err(); err != nil {
 			return err
 		}
-		_, err = conn.ExecContext(ctx, `
+		_, err = wtx.ExecContext(ctx, `
 			INSERT INTO proc_inbox_messages(message_id,sender_pubkey_hex,target_input,route,content_type,body_bytes,body_size_bytes,received_at_unix)
 			VALUES(?,?,?,?,?,?,?,?)`,
 			messageID, senderPubKeyHex, targetInput, route, contentType, body, int64(len(body)), receivedAtUnix,
@@ -71,7 +55,7 @@ func (s *dbStore) WriteInboxMessage(ctx context.Context, messageID, senderPubKey
 		if err != nil {
 			return err
 		}
-		row2, err := conn.QueryContext(ctx, `SELECT last_insert_rowid()`)
+		row2, err := wtx.QueryContext(ctx, `SELECT last_insert_rowid()`)
 		if err != nil {
 			return err
 		}
@@ -88,12 +72,12 @@ func (s *dbStore) WriteInboxMessage(ctx context.Context, messageID, senderPubKey
 }
 
 func (s *dbStore) ListInboxMessages(ctx context.Context) ([]InboxMessageListItem, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.store == nil {
 		return nil, fmt.Errorf("inbox message store is disabled")
 	}
 	var out []InboxMessageListItem
-	err := s.withConn(ctx, func(conn Conn) error {
-		rows, err := conn.QueryContext(ctx, `
+	err := s.store.Read(ctx, func(rc moduleapi.ReadConn) error {
+		rows, err := rc.QueryContext(ctx, `
 			SELECT id, message_id, sender_pubkey_hex, target_input, route, content_type, body_size_bytes, received_at_unix
 			  FROM proc_inbox_messages
 			 ORDER BY received_at_unix DESC, id DESC`)
@@ -114,12 +98,12 @@ func (s *dbStore) ListInboxMessages(ctx context.Context) ([]InboxMessageListItem
 }
 
 func (s *dbStore) GetInboxMessageDetail(ctx context.Context, id int64) (InboxMessageDetailItem, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.store == nil {
 		return InboxMessageDetailItem{}, fmt.Errorf("inbox message store is disabled")
 	}
 	var out InboxMessageDetailItem
-	err := s.withConn(ctx, func(conn Conn) error {
-		rows, err := conn.QueryContext(ctx, `
+	err := s.store.Read(ctx, func(rc moduleapi.ReadConn) error {
+		rows, err := rc.QueryContext(ctx, `
 			SELECT id, message_id, sender_pubkey_hex, target_input, route, content_type, body_bytes, body_size_bytes, received_at_unix
 			  FROM proc_inbox_messages
 			 WHERE id=?`, id,
@@ -140,22 +124,4 @@ func (s *dbStore) GetInboxMessageDetail(ctx context.Context, id int64) (InboxMes
 		return rows.Err()
 	})
 	return out, err
-}
-
-func (s *dbStore) withConn(ctx context.Context, fn func(Conn) error) error {
-	if s == nil {
-		return fmt.Errorf("inbox message store is nil")
-	}
-	if ctx == nil {
-		return fmt.Errorf("ctx is required")
-	}
-	if fn == nil {
-		return fmt.Errorf("store conn func is nil")
-	}
-	if s.serial != nil {
-		return s.serial.Do(ctx, fn)
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return fn(s.db)
 }

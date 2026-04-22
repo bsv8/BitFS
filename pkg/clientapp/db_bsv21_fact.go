@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 )
 
 // 设计说明：
@@ -68,8 +70,8 @@ func upsertFactBSV21Create(ctx context.Context, store *clientDB, item factBSV21C
 	if item.PayloadJSON == "" {
 		item.PayloadJSON = "{}"
 	}
-	return store.Do(ctx, func(db sqlConn) error {
-		_, err := ExecContext(ctx, db, `INSERT INTO fact_bsv21(
+	return store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
+		_, err := wtx.ExecContext(ctx, `INSERT INTO fact_bsv21(
 			token_id,create_txid,wallet_id,address,token_standard,symbol,max_supply,decimals,icon,created_at_unix,submitted_at_unix,updated_at_unix,payload_json
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(token_id) DO UPDATE SET
@@ -124,8 +126,8 @@ func appendFactBSV21Event(ctx context.Context, store *clientDB, item factBSV21Ev
 	if item.PayloadJSON == "" {
 		item.PayloadJSON = "{}"
 	}
-	return store.Do(ctx, func(db sqlConn) error {
-		_, err := ExecContext(ctx, db, `INSERT INTO fact_bsv21_events(
+	return store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
+		_, err := wtx.ExecContext(ctx, `INSERT INTO fact_bsv21_events(
 			token_id,event_kind,event_at_unix,txid,note,payload_json
 		) VALUES(?,?,?,?,?,?)`,
 			item.TokenID,

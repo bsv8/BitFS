@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 )
 
 // walletFundFlowFilter 资金流水过滤条件（历史兼容层）
@@ -84,7 +86,8 @@ func dbListWalletFundFlows(ctx context.Context, store *clientDB, f walletFundFlo
 	if store == nil {
 		return walletFundFlowPage{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (walletFundFlowPage, error) {
+	var out walletFundFlowPage
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
 		args := make([]any, 0, 12)
 		where := ""
 
@@ -127,19 +130,17 @@ func dbListWalletFundFlows(ctx context.Context, store *clientDB, f walletFundFlo
 			args = append(args, like, like, like, like)
 		}
 
-		var out walletFundFlowPage
-
 		// 计数查询
 		countSQL := `SELECT COUNT(1) FROM (` + unionAllQuery() + `) AS unified WHERE 1=1` + where
-		if err := QueryRowContext(ctx, db, countSQL, args...).Scan(&out.Total); err != nil {
-			return walletFundFlowPage{}, err
+		if err := rc.QueryRowContext(ctx, countSQL, args...).Scan(&out.Total); err != nil {
+			return err
 		}
 
 		// 明细查询：全局排序 + 分页
 		detailSQL := `SELECT id, created_at_unix, flow_id, flow_type, ref_id, stage, direction, purpose, asset_kind, token_id, token_standard, amount_satoshi, used_satoshi, returned_satoshi, related_txid, note, payload, visit_id FROM (` + unionAllQuery() + `) AS unified WHERE 1=1` + where + ` ORDER BY created_at_unix DESC, flow_type, id DESC LIMIT ? OFFSET ?`
-		rows, err := QueryContext(ctx, db, detailSQL, append(args, f.Limit, f.Offset)...)
+		rows, err := rc.QueryContext(ctx, detailSQL, append(args, f.Limit, f.Offset)...)
 		if err != nil {
-			return walletFundFlowPage{}, err
+			return err
 		}
 		defer rows.Close()
 
@@ -147,7 +148,7 @@ func dbListWalletFundFlows(ctx context.Context, store *clientDB, f walletFundFlo
 		for rows.Next() {
 			var src unionSource
 			if err := rows.Scan(&src.ID, &src.CreatedAtUnix, &src.FlowID, &src.FlowType, &src.RefID, &src.Stage, &src.Direction, &src.Purpose, &src.AssetKind, &src.TokenID, &src.TokenStandard, &src.AmountSatoshi, &src.UsedSatoshi, &src.ReturnedSatoshi, &src.RelatedTxID, &src.Note, &src.Payload, &src.VisitID); err != nil {
-				return walletFundFlowPage{}, err
+				return err
 			}
 			out.Items = append(out.Items, walletFundFlowItem{
 				ID:              src.ID,
@@ -171,11 +172,12 @@ func dbListWalletFundFlows(ctx context.Context, store *clientDB, f walletFundFlo
 				Payload:         json.RawMessage(src.Payload),
 			})
 		}
-		if err := rows.Err(); err != nil {
-			return walletFundFlowPage{}, err
-		}
-		return out, nil
+		return rows.Err()
 	})
+	if err != nil {
+		return walletFundFlowPage{}, err
+	}
+	return out, nil
 }
 
 // unionAllQuery 构建三张 fact 表的 UNION ALL 统一视图
@@ -261,14 +263,14 @@ func dbGetWalletFundFlowItem(ctx context.Context, store *clientDB, refID string,
 	if store == nil {
 		return walletFundFlowItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (walletFundFlowItem, error) {
-		var out walletFundFlowItem
+	var out walletFundFlowItem
+	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
 		var src unionSource
 
 		// flow_type 已由 API 层校验，直接查询
-		err := queryUnionSourceByRefID(ctx, db, refID, flowType, &src)
+		err := queryUnionSourceByRefID(ctx, rc, refID, flowType, &src)
 		if err != nil {
-			return walletFundFlowItem{}, err
+			return err
 		}
 
 		out = walletFundFlowItem{
@@ -289,8 +291,12 @@ func dbGetWalletFundFlowItem(ctx context.Context, store *clientDB, refID string,
 			Note:            src.Note,
 			Payload:         json.RawMessage(src.Payload),
 		}
-		return out, nil
+		return nil
 	})
+	if err != nil {
+		return walletFundFlowItem{}, err
+	}
+	return out, nil
 }
 
 // queryUnionSourceByRefID 按 flow_type 和 ref_id 路由查询单条记录
@@ -298,11 +304,11 @@ func dbGetWalletFundFlowItem(ctx context.Context, store *clientDB, refID string,
 // - 只支持新 schema 的 flow_type：chain_bsv_in, chain_bsv_out, chain_token_in
 // - 从 fact_bsv_utxos 和 fact_token_lots 查询
 // - 使用 ref_id（文本）替代 id（int64），因为新表使用 utxo_id/lot_id 作为主键
-func queryUnionSourceByRefID(ctx context.Context, db sqlConn, refID string, flowType string, src *unionSource) error {
+func queryUnionSourceByRefID(ctx context.Context, rc moduleapi.ReadConn, refID string, flowType string, src *unionSource) error {
 	var err error
 	switch flowType {
 	case "chain_bsv_in":
-		err = QueryRowContext(ctx, db, `
+		err = rc.QueryRowContext(ctx, `
 			SELECT rowid, created_at_unix, utxo_id, 'chain_bsv_in', utxo_id, 'confirmed', 'IN', carrier_type,
 				'BSV', '', '', value_satoshi, 0, 0, txid, COALESCE(note,''), COALESCE(payload_json,'{}'), ''
 			FROM fact_bsv_utxos WHERE utxo_id=? AND utxo_state='unspent'`, refID).
@@ -310,7 +316,7 @@ func queryUnionSourceByRefID(ctx context.Context, db sqlConn, refID string, flow
 				&src.Direction, &src.Purpose, &src.AssetKind, &src.TokenID, &src.TokenStandard, &src.AmountSatoshi, &src.UsedSatoshi, &src.ReturnedSatoshi,
 				&src.RelatedTxID, &src.Note, &src.Payload, &src.VisitID)
 	case "chain_bsv_out":
-		err = QueryRowContext(ctx, db, `
+		err = rc.QueryRowContext(ctx, `
 			SELECT rowid, spent_at_unix, utxo_id, 'chain_bsv_out', utxo_id, 'confirmed', 'OUT', carrier_type,
 				'BSV', '', '', value_satoshi, value_satoshi, 0, spent_by_txid, COALESCE(note,''), COALESCE(payload_json,'{}'), ''
 			FROM fact_bsv_utxos WHERE utxo_id=? AND utxo_state='spent'`, refID).
@@ -318,7 +324,7 @@ func queryUnionSourceByRefID(ctx context.Context, db sqlConn, refID string, flow
 				&src.Direction, &src.Purpose, &src.AssetKind, &src.TokenID, &src.TokenStandard, &src.AmountSatoshi, &src.UsedSatoshi, &src.ReturnedSatoshi,
 				&src.RelatedTxID, &src.Note, &src.Payload, &src.VisitID)
 	case "chain_token_in":
-		err = QueryRowContext(ctx, db, `
+		err = rc.QueryRowContext(ctx, `
 			SELECT rowid, created_at_unix, lot_id, 'chain_token_in', lot_id, 'confirmed', 'IN', token_standard,
 				token_standard, token_id, token_standard, 0, 0, 0, mint_txid, COALESCE(note,''), COALESCE(payload_json,'{}'), ''
 			FROM fact_token_lots WHERE lot_id=?`, refID).

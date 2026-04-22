@@ -17,9 +17,6 @@ import (
 )
 
 type sqlConn interface {
-	Exec(query string, args ...any) (sql.Result, error)
-	QueryRow(query string, args ...any) *sql.Row
-	Query(query string, args ...any) (*sql.Rows, error)
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 	QueryRowContext(context.Context, string, ...any) *sql.Row
@@ -88,7 +85,7 @@ func settlementPaymentAttemptStateForChainPayment(status string) string {
 }
 
 // dbUpsertChainPaymentEntTx 在 ent 事务内写链支付事实并回补 cycle。
-func dbUpsertChainPaymentEntTx(ctx context.Context, tx *gen.Tx, e chainPaymentEntry, writeSettlementPaymentAttempt bool) (int64, error) {
+func dbUpsertChainPaymentEntTx(ctx context.Context, tx EntWriteRoot, e chainPaymentEntry, writeSettlementPaymentAttempt bool) (int64, error) {
 	if tx == nil {
 		return 0, fmt.Errorf("tx is nil")
 	}
@@ -212,7 +209,7 @@ func dbUpsertChainPaymentEntTx(ctx context.Context, tx *gen.Tx, e chainPaymentEn
 	return paymentID, nil
 }
 
-func dbUpsertChainChannelWithSettlementPaymentAttempt(ctx context.Context, tx *gen.Tx, e chainPaymentEntry, sourceType string, paymentAttemptPrefix string, bindNote string) (int64, int64, error) {
+func dbUpsertChainChannelWithSettlementPaymentAttempt(ctx context.Context, tx EntWriteRoot, e chainPaymentEntry, sourceType string, paymentAttemptPrefix string, bindNote string) (int64, int64, error) {
 	if tx == nil {
 		return 0, 0, fmt.Errorf("tx is nil")
 	}
@@ -414,12 +411,12 @@ func dbGetChainPaymentByTxID(ctx context.Context, store *clientDB, txid string) 
 	if store == nil {
 		return 0, fmt.Errorf("client db is nil")
 	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int64, error) {
+	return readEntValue(ctx, store, func(root EntReadRoot) (int64, error) {
 		txid = strings.ToLower(strings.TrimSpace(txid))
 		if txid == "" {
 			return 0, fmt.Errorf("txid is required")
 		}
-		node, err := tx.FactSettlementChannelChainQuotePay.Query().
+		node, err := root.FactSettlementChannelChainQuotePay.Query().
 			Where(factsettlementchannelchainquotepay.TxidEQ(txid)).
 			Only(ctx)
 		if err != nil {
@@ -431,7 +428,7 @@ func dbGetChainPaymentByTxID(ctx context.Context, store *clientDB, txid string) 
 
 // dbGetChainPaymentByID 按 id 查 fact_settlement_channel_chain_quote_pay（验证存在性）
 
-func dbWalletUTXOValueConn(ctx context.Context, tx *gen.Tx, utxoID string) (int64, bool, error) {
+func dbWalletUTXOValueConn(ctx context.Context, tx EntWriteRoot, utxoID string) (int64, bool, error) {
 	if tx == nil {
 		return 0, false, fmt.Errorf("tx is nil")
 	}
@@ -488,11 +485,7 @@ func recordChainPaymentAccountingAfterBroadcast(ctx context.Context, store Clien
 		return fmt.Errorf("parse tx hex: %w", err)
 	}
 	now := time.Now().Unix()
-	realStore, ok := store.(*clientDB)
-	if !ok || realStore == nil {
-		return fmt.Errorf("client store is not initialized")
-	}
-	return clientDBEntTx(ctx, realStore, func(tx *gen.Tx) error {
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		inputFacts, grossInput, err := collectWalletInputFactsTx(ctx, tx, parsed, txID, "chain_payment input")
 		if err != nil {
 			return err
@@ -589,7 +582,7 @@ func recordChainPaymentAccountingAfterBroadcast(ctx context.Context, store Clien
 	})
 }
 
-func collectWalletInputFactsTx(ctx context.Context, tx *gen.Tx, txObj *txsdk.Transaction, txID string, note string) ([]string, int64, error) {
+func collectWalletInputFactsTx(ctx context.Context, tx EntWriteRoot, txObj *txsdk.Transaction, txID string, note string) ([]string, int64, error) {
 	if tx == nil {
 		return nil, 0, fmt.Errorf("tx is nil")
 	}
