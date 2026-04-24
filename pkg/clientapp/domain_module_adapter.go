@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	"github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/ordersettlements"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -279,19 +278,12 @@ func (a domainModuleAdapter) GetChainPaymentByTxID(ctx context.Context, txID str
 	return dbGetChainPaymentByTxID(ctx, a.store, txID)
 }
 
+// UpdateOrderSettlement 已废弃
+// 第九阶段整改：order_settlements 已删除，此函数返回错误
 func (a domainModuleAdapter) UpdateOrderSettlement(ctx context.Context, settlementID, status, targetType, targetID, errMsg string, updatedAtUnix int64) error {
 	if a.store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return a.store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-		_, err := tx.OrderSettlements.Update().
-			Where(ordersettlements.SettlementIDEQ(strings.TrimSpace(settlementID))).
-			SetSettlementStatus(strings.TrimSpace(status)).
-			SetTargetType(strings.TrimSpace(targetType)).
-			SetTargetID(strings.TrimSpace(targetID)).
-			SetErrorMessage(strings.TrimSpace(errMsg)).
-			SetUpdatedAtUnix(updatedAtUnix).
-			Save(ctx)
-		return err
-	})
+	// 第九阶段：order_settlements schema 已删除
+	return fmt.Errorf("UpdateOrderSettlement is no longer available: order_settlements schema has been removed")
 }

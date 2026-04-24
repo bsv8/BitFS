@@ -44,6 +44,45 @@ func shortHex(s string) string {
 
 // ==================== Token / BSV 兼容入口 ====================
 
+// businessTriggerEntry order_settlement_events schema 已删除，保留结构体定义仅供编译通过
+type businessTriggerEntry struct {
+	TriggerID      string
+	OrderID        string
+	SettlementID   string
+	TriggerType    string
+	TriggerIDValue string
+	TriggerRole    string
+	CreatedAtUnix  int64
+	Note           string
+	Payload        any
+}
+
+// businessSettlementEntry order_settlements schema 已删除，保留结构体定义仅供编译通过
+type businessSettlementEntry struct {
+	SettlementID     string
+	OrderID          string
+	SettlementMethod string
+	Status           string
+	TargetType       string
+	TargetID         string
+	ErrorMessage     string
+	CreatedAtUnix    int64
+	UpdatedAtUnix    int64
+	Payload          any
+}
+
+// chainPaymentUTXOLinkEntry fact_settlement_channel_chain_asset_create schema 已删除，保留结构体定义仅供编译通过
+type chainPaymentUTXOLinkEntry struct {
+	UTXOID        string
+	IOSide        string
+	UTXORole      string
+	AmountSatoshi int64
+	QuantityText  string
+	CreatedAtUnix int64
+	Note          string
+	Payload       any
+}
+
 // dbUpsertTokenLot 幂等写入/更新 Token Lot。
 func dbUpsertTokenLot(ctx context.Context, store *clientDB, e tokenLotEntry) error {
 	if store == nil {
@@ -636,343 +675,7 @@ func getFactBSV21ByTokenID(ctx context.Context, store *clientDB, tokenID string)
 	return result, err
 }
 
-// dbUpsertChainPayment 按 txid 写入链支付事实。
-func dbUpsertChainPayment(ctx context.Context, store *clientDB, e chainPaymentEntry) (int64, error) {
-	if store == nil {
-		return 0, fmt.Errorf("client db is nil")
-	}
-	var result int64
-	err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-		id, err := dbUpsertChainPaymentEntTx(ctx, tx, e, false)
-		if err != nil {
-			return err
-		}
-		result = id
-		return nil
-	})
-	return result, err
-}
-
-// dbUpsertChainPaymentWithSettlementPaymentAttempt 按 txid 写入链支付事实，并补 settlement_payment_attempt。
-func dbUpsertChainPaymentWithSettlementPaymentAttempt(ctx context.Context, store *clientDB, e chainPaymentEntry) (int64, error) {
-	if store == nil {
-		return 0, fmt.Errorf("client db is nil")
-	}
-	var result int64
-	err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-		id, err := dbUpsertChainPaymentEntTx(ctx, tx, e, true)
-		if err != nil {
-			return err
-		}
-		result = id
-		return nil
-	})
-	return result, err
-}
-
-// dbUpsertChainDirectPayWithSettlementPaymentAttempt 写入 chain_direct_pay。
-// 设计说明：旧测试还在用这个名字，内部直接走统一的 chain payment 事务入口。
-func dbUpsertChainDirectPayWithSettlementPaymentAttempt(ctx context.Context, store *clientDB, e chainPaymentEntry) (int64, error) {
-	if store == nil {
-		return 0, fmt.Errorf("client db is nil")
-	}
-	var result int64
-	err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-		channelID, _, err := dbUpsertChainChannelWithSettlementPaymentAttempt(ctx, tx, e, "chain_direct_pay", "payment_attempt_chain_direct_pay", "bind chain direct pay channel id")
-		if err != nil {
-			return err
-		}
-		result = channelID
-		return nil
-	})
-	return result, err
-}
-
-// dbUpsertBusinessSettlement 写入业务结算出口。
-func dbUpsertBusinessSettlement(ctx context.Context, store *clientDB, e businessSettlementEntry) error {
-	if store == nil {
-		return fmt.Errorf("client db is nil")
-	}
-	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-		return dbUpsertBusinessSettlementEntTx(ctx, tx, e)
-	})
-}
-
-// dbGetBusinessSettlement 按 settlement_id 查询业务结算出口。
-func dbGetBusinessSettlement(ctx context.Context, store *clientDB, settlementID string) (BusinessSettlementItem, error) {
-	if store == nil {
-		return BusinessSettlementItem{}, fmt.Errorf("client db is nil")
-	}
-	settlementID = strings.TrimSpace(settlementID)
-	if settlementID == "" {
-		return BusinessSettlementItem{}, fmt.Errorf("settlement_id is required")
-	}
-	var result BusinessSettlementItem
-	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
-		var item BusinessSettlementItem
-		var payload string
-		err := rc.QueryRowContext(ctx, `
-			SELECT settlement_id,order_id,settlement_method,settlement_status,target_type,target_id,error_message,created_at_unix,updated_at_unix,COALESCE(settlement_payload_json,'{}')
-			  FROM order_settlements
-			 WHERE settlement_id=?
-			 LIMIT 1`,
-			settlementID,
-		).Scan(
-			&item.SettlementID, &item.OrderID, &item.SettlementMethod, &item.Status, &item.TargetType, &item.TargetID,
-			&item.ErrorMessage, &item.CreatedAtUnix, &item.UpdatedAtUnix, &payload,
-		)
-		if err != nil {
-			return err
-		}
-		item.Payload = json.RawMessage(payload)
-		result = item
-		return nil
-	})
-	return result, err
-}
-
-// dbListBusinessSettlementsByTarget 按 target_type + target_id 查询业务结算出口列表。
-func dbListBusinessSettlementsByTarget(ctx context.Context, store *clientDB, targetType string, targetID string, limit int, offset int) (businessSettlementPage, error) {
-	return dbListBusinessSettlements(ctx, store, businessSettlementFilter{
-		Limit:      limit,
-		Offset:     offset,
-		TargetType: strings.TrimSpace(targetType),
-		TargetID:   strings.TrimSpace(targetID),
-	})
-}
-
-// dbListBusinessSettlements 查询业务结算出口列表。
-func dbListBusinessSettlements(ctx context.Context, store *clientDB, filter businessSettlementFilter) (businessSettlementPage, error) {
-	if store == nil {
-		return businessSettlementPage{}, fmt.Errorf("client db is nil")
-	}
-	if filter.Limit <= 0 {
-		filter.Limit = 50
-	}
-	if filter.Offset < 0 {
-		filter.Offset = 0
-	}
-	type rowItem struct {
-		item    BusinessSettlementItem
-		payload string
-	}
-	var result businessSettlementPage
-	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
-		where := make([]string, 0, 6)
-		args := make([]any, 0, 6)
-		if filter.SettlementID != "" {
-			where = append(where, "settlement_id=?")
-			args = append(args, strings.TrimSpace(filter.SettlementID))
-		}
-		if filter.OrderID != "" {
-			where = append(where, "order_id=?")
-			args = append(args, strings.TrimSpace(filter.OrderID))
-		}
-		if filter.SettlementMethod != "" {
-			where = append(where, "settlement_method=?")
-			args = append(args, strings.TrimSpace(filter.SettlementMethod))
-		}
-		if filter.Status != "" {
-			where = append(where, "settlement_status=?")
-			args = append(args, strings.TrimSpace(filter.Status))
-		}
-		if filter.TargetType != "" {
-			where = append(where, "target_type=?")
-			args = append(args, strings.TrimSpace(filter.TargetType))
-		}
-		if filter.TargetID != "" {
-			where = append(where, "target_id=?")
-			args = append(args, strings.TrimSpace(filter.TargetID))
-		}
-
-		countSQL := "SELECT COUNT(1) FROM order_settlements"
-		listSQL := `
-			SELECT settlement_id,order_id,settlement_method,settlement_status,target_type,target_id,error_message,created_at_unix,updated_at_unix,COALESCE(settlement_payload_json,'{}')
-			  FROM order_settlements`
-		if len(where) > 0 {
-			clause := " WHERE " + strings.Join(where, " AND ")
-			countSQL += clause
-			listSQL += clause
-		}
-		countSQL += ""
-		listSQL += " ORDER BY settlement_no DESC, updated_at_unix DESC, settlement_id DESC LIMIT ? OFFSET ?"
-
-		var page businessSettlementPage
-		if err := rc.QueryRowContext(ctx, countSQL, args...).Scan(&page.Total); err != nil {
-			return err
-		}
-		rows, err := rc.QueryContext(ctx, listSQL, append(args, filter.Limit, filter.Offset)...)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-
-		items := make([]BusinessSettlementItem, 0, filter.Limit)
-		for rows.Next() {
-			var item BusinessSettlementItem
-			var payload string
-			if err := rows.Scan(&item.SettlementID, &item.OrderID, &item.SettlementMethod, &item.Status, &item.TargetType, &item.TargetID,
-				&item.ErrorMessage, &item.CreatedAtUnix, &item.UpdatedAtUnix, &payload); err != nil {
-				return err
-			}
-			item.Payload = json.RawMessage(payload)
-			items = append(items, item)
-		}
-		if err := rows.Err(); err != nil {
-			return err
-		}
-		page.Items = items
-		result = page
-		return nil
-	})
-	return result, err
-}
-
-// dbUpdateBusinessSettlementOutcome 同步回写业务状态和结算出口状态。
-func dbUpdateBusinessSettlementOutcome(ctx context.Context, store *clientDB, e businessSettlementOutcomeEntry) error {
-	if store == nil {
-		return fmt.Errorf("client db is nil")
-	}
-	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-		return dbUpdateBusinessSettlementOutcomeEntTx(ctx, tx, e)
-	})
-}
-
-// dbAppendBusinessTrigger 新版业务触发桥接写入口。
-func dbAppendBusinessTrigger(ctx context.Context, store *clientDB, e businessTriggerEntry) error {
-	if store == nil {
-		return fmt.Errorf("client db is nil")
-	}
-	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-		return dbAppendBusinessTriggerTx(ctx, tx, e)
-	})
-}
-
-// dbGetBusinessTrigger 按 trigger_id 查询旧桥接记录。
-func dbGetBusinessTrigger(ctx context.Context, store *clientDB, triggerID string) (businessTriggerItem, error) {
-	if store == nil {
-		return businessTriggerItem{}, fmt.Errorf("client db is nil")
-	}
-	triggerID = strings.TrimSpace(triggerID)
-	if triggerID == "" {
-		return businessTriggerItem{}, fmt.Errorf("trigger_id is required")
-	}
-	var result businessTriggerItem
-	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
-		var item businessTriggerItem
-		var payload string
-		err := rc.QueryRowContext(ctx, `
-			SELECT e.process_id, COALESCE(s.order_id,''), e.source_type, e.source_id, e.accounting_subtype, e.occurred_at_unix, e.note, COALESCE(e.payload_json,'{}')
-			  FROM order_settlement_events e
-			  LEFT JOIN order_settlements s ON s.settlement_id=e.settlement_id
-			 WHERE e.event_type='bridge_trigger' AND e.process_id=?
-			 ORDER BY e.occurred_at_unix DESC, e.id DESC
-			 LIMIT 1`,
-			triggerID,
-		).Scan(&item.TriggerID, &item.OrderID, &item.TriggerType, &item.TriggerIDValue, &item.TriggerRole, &item.CreatedAtUnix, &item.Note, &payload)
-		if err != nil {
-			return err
-		}
-		item.Payload = json.RawMessage(payload)
-		result = item
-		return nil
-	})
-	return result, err
-}
-
-// dbListBusinessTriggersByOrderID 按 order_id 查询旧桥接记录列表。
-func dbListBusinessTriggersByOrderID(ctx context.Context, store *clientDB, orderID string, limit int, offset int) (businessTriggerPage, error) {
-	return dbListBusinessTriggers(ctx, store, businessTriggerFilter{
-		Limit:   limit,
-		Offset:  offset,
-		OrderID: strings.TrimSpace(orderID),
-	})
-}
-
-// dbListBusinessTriggers 查询旧桥接记录列表。
-func dbListBusinessTriggers(ctx context.Context, store *clientDB, filter businessTriggerFilter) (businessTriggerPage, error) {
-	if store == nil {
-		return businessTriggerPage{}, fmt.Errorf("client db is nil")
-	}
-	if filter.Limit <= 0 {
-		filter.Limit = 50
-	}
-	if filter.Offset < 0 {
-		filter.Offset = 0
-	}
-	var result businessTriggerPage
-	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
-		where := make([]string, 0, 5)
-		args := make([]any, 0, 5)
-		if filter.TriggerID != "" {
-			where = append(where, "e.process_id=?")
-			args = append(args, strings.TrimSpace(filter.TriggerID))
-		}
-		if filter.OrderID != "" {
-			where = append(where, "(s.order_id=? OR e.settlement_id=?)")
-			args = append(args, strings.TrimSpace(filter.OrderID), strings.TrimSpace(filter.OrderID))
-		}
-		if filter.TriggerType != "" {
-			where = append(where, "e.source_type=?")
-			args = append(args, strings.TrimSpace(filter.TriggerType))
-		}
-		if filter.TriggerIDValue != "" {
-			where = append(where, "e.source_id=?")
-			args = append(args, strings.TrimSpace(filter.TriggerIDValue))
-		}
-		if filter.TriggerRole != "" {
-			where = append(where, "e.accounting_subtype=?")
-			args = append(args, strings.TrimSpace(filter.TriggerRole))
-		}
-
-		countSQL := `
-			SELECT COUNT(1)
-			  FROM order_settlement_events e
-			  LEFT JOIN order_settlements s ON s.settlement_id=e.settlement_id
-			 WHERE e.event_type='bridge_trigger'`
-		listSQL := `
-			SELECT e.process_id, COALESCE(s.order_id,''), e.source_type, e.source_id, e.accounting_subtype, e.occurred_at_unix, e.note, COALESCE(e.payload_json,'{}')
-			  FROM order_settlement_events e
-			  LEFT JOIN order_settlements s ON s.settlement_id=e.settlement_id
-			 WHERE e.event_type='bridge_trigger'`
-		if len(where) > 0 {
-			clause := " AND " + strings.Join(where, " AND ")
-			countSQL += clause
-			listSQL += clause
-		}
-		listSQL += " ORDER BY e.occurred_at_unix DESC, e.id DESC LIMIT ? OFFSET ?"
-
-		var page businessTriggerPage
-		if err := rc.QueryRowContext(ctx, countSQL, args...).Scan(&page.Total); err != nil {
-			return err
-		}
-		rows, err := rc.QueryContext(ctx, listSQL, append(args, filter.Limit, filter.Offset)...)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-
-		items := make([]businessTriggerItem, 0, filter.Limit)
-		for rows.Next() {
-			var item businessTriggerItem
-			var payload string
-			if err := rows.Scan(&item.TriggerID, &item.OrderID, &item.TriggerType, &item.TriggerIDValue, &item.TriggerRole, &item.CreatedAtUnix, &item.Note, &payload); err != nil {
-				return err
-			}
-			item.Payload = json.RawMessage(payload)
-			items = append(items, item)
-		}
-		if err := rows.Err(); err != nil {
-			return err
-		}
-		page.Items = items
-		result = page
-		return nil
-	})
-	return result, err
-}
-
-// dbAppendFinBusiness 是共享财务业务写入口。
+// ==================== 财务业务与前台单 ====================
 func dbAppendFinBusiness(ctx context.Context, store *clientDB, e finBusinessEntry) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
@@ -1070,42 +773,6 @@ func dbListFrontOrders(ctx context.Context, store *clientDB, filter frontOrderFi
 	return result, err
 }
 
-// dbUpsertSettlementPaymentAttemptStore 写入结算支付尝试。
-func dbUpsertSettlementPaymentAttemptStore(ctx context.Context, store *clientDB, paymentAttemptID string, sourceType string, sourceID string, state string,
-	grossSatoshi int64, gateFeeSatoshi int64, netSatoshi int64,
-	paymentAttemptIndex int, occurredAtUnix int64, note string, payload any) (int64, error) {
-	if store == nil {
-		return 0, fmt.Errorf("client db is nil")
-	}
-	var result int64
-	err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-		id, err := dbUpsertSettlementPaymentAttemptEntTx(ctx, tx, paymentAttemptID, sourceType, sourceID, state, grossSatoshi, gateFeeSatoshi, netSatoshi, paymentAttemptIndex, occurredAtUnix, note, payload)
-		if err != nil {
-			return err
-		}
-		result = id
-		return nil
-	})
-	return result, err
-}
-
-// dbGetSettlementPaymentAttemptSourceTxIDStore 兼容 store 入口。
-func dbGetSettlementPaymentAttemptSourceTxIDStore(ctx context.Context, store *clientDB, settlementPaymentAttemptID int64) (string, error) {
-	if store == nil {
-		return "", fmt.Errorf("client db is nil")
-	}
-	var result string
-	err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-		txid, err := dbGetSettlementPaymentAttemptSourceTxIDEntTx(ctx, tx, settlementPaymentAttemptID)
-		if err != nil {
-			return err
-		}
-		result = txid
-		return nil
-	})
-	return result, err
-}
-
 // defaultArbiterPubHex 统一给下载链路挑一个默认仲裁者。
 // 设计说明：
 // - 优先返回已连通仲裁者的 pub hex；
@@ -1128,164 +795,4 @@ func defaultArbiterPubHex(rt *Runtime) string {
 		}
 	}
 	return ""
-}
-
-// dbAppendTokenConsumptionsForSettlementPaymentAttemptCtx 写入 Token 消耗记录。
-// 设计说明：
-// - 先落结算记录，再按 lot 重算 used_quantity；
-// - 这样重复回放同一批记录时不会重复累加。
-func dbAppendTokenConsumptionsForSettlementPaymentAttemptCtx(ctx context.Context, db sqlConn, settlementPaymentAttemptID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	if settlementPaymentAttemptID <= 0 {
-		return fmt.Errorf("settlement_payment_attempt_id is required")
-	}
-	spentByTxid, err := dbGetSettlementPaymentAttemptSourceTxIDCtx(ctx, db, settlementPaymentAttemptID)
-	if err != nil {
-		return fmt.Errorf("resolve settlement payment attempt txid failed: %w", err)
-	}
-	if occurredAtUnix <= 0 {
-		occurredAtUnix = time.Now().Unix()
-	}
-
-	updates := make(map[string]struct{})
-
-	for _, fact := range utxoFacts {
-		if strings.TrimSpace(fact.IOSide) != "input" {
-			continue
-		}
-		utxoID := strings.ToLower(strings.TrimSpace(fact.UTXOID))
-		if utxoID == "" {
-			continue
-		}
-		quantityText := strings.TrimSpace(fact.QuantityText)
-		if quantityText == "" {
-			return fmt.Errorf("quantity_text is required for token input utxo %s", utxoID)
-		}
-
-		var lotID string
-		var ownerPubkeyHex string
-		if err := QueryRowContext(ctx, db, `
-			SELECT lot_id, owner_pubkey_hex
-			  FROM fact_token_carrier_links
-			 WHERE carrier_utxo_id=? AND link_state='active'
-			 LIMIT 1`,
-			utxoID,
-		).Scan(&lotID, &ownerPubkeyHex); err != nil {
-			if err == sql.ErrNoRows {
-				return fmt.Errorf("token carrier link not found for utxo %s", utxoID)
-			}
-			return fmt.Errorf("lookup token carrier link for utxo %s failed: %w", utxoID, err)
-		}
-		lotID = strings.TrimSpace(lotID)
-		ownerPubkeyHex = strings.ToLower(strings.TrimSpace(ownerPubkeyHex))
-		if lotID == "" || ownerPubkeyHex == "" {
-			return fmt.Errorf("token carrier link for utxo %s is invalid", utxoID)
-		}
-
-		recordID := fmt.Sprintf("rec_token_%d_%s", settlementPaymentAttemptID, lotID)
-		_, err = ExecContext(ctx, db, `
-			INSERT INTO fact_settlement_records(
-				record_id, settlement_payment_attempt_id, asset_type, owner_pubkey_hex,
-				source_utxo_id, source_lot_id, used_satoshi, used_quantity_text,
-				state, occurred_at_unix, confirmed_at_unix, note, payload_json
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(settlement_payment_attempt_id, asset_type, source_utxo_id, source_lot_id) DO UPDATE SET
-				owner_pubkey_hex=excluded.owner_pubkey_hex,
-				used_quantity_text=excluded.used_quantity_text,
-				state=excluded.state,
-				occurred_at_unix=excluded.occurred_at_unix,
-				confirmed_at_unix=excluded.confirmed_at_unix,
-				note=excluded.note,
-				payload_json=excluded.payload_json`,
-			recordID, settlementPaymentAttemptID, "TOKEN", ownerPubkeyHex, utxoID, lotID, int64(0), quantityText,
-			"confirmed", occurredAtUnix, occurredAtUnix, "Token consumed by settlement payment attempt", mustJSONString(fact.Payload),
-		)
-		if err != nil {
-			return fmt.Errorf("append token settlement record for lot %s failed: %w", lotID, err)
-		}
-		updates[lotID] = struct{}{}
-	}
-
-	for lotID := range updates {
-		var quantityText string
-		var ownerPubkeyHex string
-		var tokenID string
-		var tokenStandard string
-		var mintTxid string
-		var lastSpendTxid string
-		var note string
-		var payloadJSON string
-		var createdAtUnix int64
-		var updatedAtUnix int64
-		if err := QueryRowContext(ctx, db, `
-			SELECT quantity_text, owner_pubkey_hex, token_id, token_standard, mint_txid, last_spend_txid, note, COALESCE(payload_json,'{}'), created_at_unix, updated_at_unix
-			  FROM fact_token_lots
-			 WHERE lot_id=?
-			 LIMIT 1`,
-			lotID,
-		).Scan(&quantityText, &ownerPubkeyHex, &tokenID, &tokenStandard, &mintTxid, &lastSpendTxid, &note, &payloadJSON, &createdAtUnix, &updatedAtUnix); err != nil {
-			if err == sql.ErrNoRows {
-				return fmt.Errorf("token lot not found: %s", lotID)
-			}
-			return fmt.Errorf("lookup token lot %s failed: %w", lotID, err)
-		}
-
-		rows, err := QueryContext(ctx, db, `
-			SELECT used_quantity_text
-			  FROM fact_settlement_records
-			 WHERE asset_type='TOKEN' AND source_lot_id=? AND state='confirmed'
-			 ORDER BY id ASC`,
-			lotID,
-		)
-		if err != nil {
-			return err
-		}
-		totalUsed := "0"
-		for rows.Next() {
-			var usedText string
-			if err := rows.Scan(&usedText); err != nil {
-				_ = rows.Close()
-				return err
-			}
-			nextUsed, err := sumDecimalTexts(totalUsed + "," + usedText)
-			if err != nil {
-				_ = rows.Close()
-				return err
-			}
-			totalUsed = nextUsed
-		}
-		if err := rows.Err(); err != nil {
-			_ = rows.Close()
-			return err
-		}
-		_ = rows.Close()
-
-		lotState := "unspent"
-		if compareDecimalText(totalUsed, quantityText) >= 0 {
-			lotState = "spent"
-		}
-		now := time.Now().Unix()
-		_, err = ExecContext(ctx, db, `
-			UPDATE fact_token_lots
-			   SET owner_pubkey_hex=?,
-			       token_id=?,
-			       token_standard=?,
-			       quantity_text=?,
-			       used_quantity_text=?,
-			       lot_state=?,
-			       mint_txid=?,
-			       last_spend_txid=?,
-			       updated_at_unix=?,
-			       note=?,
-			       payload_json=?
-			 WHERE lot_id=?`,
-			ownerPubkeyHex, tokenID, tokenStandard, quantityText, totalUsed, lotState, mintTxid, spentByTxid, now, note, payloadJSON, lotID,
-		)
-		if err != nil {
-			return fmt.Errorf("update token lot %s failed: %w", lotID, err)
-		}
-	}
-	return nil
 }

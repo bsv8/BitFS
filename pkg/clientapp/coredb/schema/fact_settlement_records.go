@@ -4,7 +4,6 @@ import (
 	"entgo.io/ent"
 	"entgo.io/ent/dialect/entsql"
 	"entgo.io/ent/schema"
-	"entgo.io/ent/schema/edge"
 	"entgo.io/ent/schema/field"
 	"entgo.io/ent/schema/index"
 )
@@ -41,12 +40,7 @@ func (FactSettlementRecords) Fields() []ent.Field {
 }
 
 func (FactSettlementRecords) Edges() []ent.Edge {
-	return []ent.Edge{
-		edge.To("settlement_payment_attempt", FactSettlementPaymentAttempts.Type).
-			Field("settlement_payment_attempt_id").
-			Required().
-			Unique(),
-	}
+	return []ent.Edge{}
 }
 
 func (FactSettlementRecords) Indexes() []ent.Index {

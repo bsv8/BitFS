@@ -198,61 +198,6 @@ var (
 			},
 		},
 	}
-	// BizPoolColumns holds the columns for the "biz_pool" table.
-	BizPoolColumns = []*schema.Column{
-		{Name: "id", Type: field.TypeInt, Increment: true},
-		{Name: "pool_session_id", Type: field.TypeString, Unique: true},
-		{Name: "pool_scheme", Type: field.TypeString},
-		{Name: "counterparty_pubkey_hex", Type: field.TypeString, Default: ""},
-		{Name: "seller_pubkey_hex", Type: field.TypeString, Default: ""},
-		{Name: "arbiter_pubkey_hex", Type: field.TypeString, Default: ""},
-		{Name: "gateway_pubkey_hex", Type: field.TypeString, Default: ""},
-		{Name: "pool_amount_satoshi", Type: field.TypeInt64, Default: 0},
-		{Name: "spend_tx_fee_satoshi", Type: field.TypeInt64, Default: 0},
-		{Name: "allocated_satoshi", Type: field.TypeInt64, Default: 0},
-		{Name: "cycle_fee_satoshi", Type: field.TypeInt64, Default: 0},
-		{Name: "available_satoshi", Type: field.TypeInt64, Default: 0},
-		{Name: "next_sequence_num", Type: field.TypeInt64, Default: 1},
-		{Name: "status", Type: field.TypeString},
-		{Name: "open_base_txid", Type: field.TypeString, Default: ""},
-		{Name: "open_allocation_id", Type: field.TypeString, Default: ""},
-		{Name: "close_allocation_id", Type: field.TypeString, Default: ""},
-		{Name: "created_at_unix", Type: field.TypeInt64},
-		{Name: "updated_at_unix", Type: field.TypeInt64},
-	}
-	// BizPoolTable holds the schema information for the "biz_pool" table.
-	BizPoolTable = &schema.Table{
-		Name:       "biz_pool",
-		Columns:    BizPoolColumns,
-		PrimaryKey: []*schema.Column{BizPoolColumns[0]},
-	}
-	// BizPoolAllocationsColumns holds the columns for the "biz_pool_allocations" table.
-	BizPoolAllocationsColumns = []*schema.Column{
-		{Name: "id", Type: field.TypeInt, Increment: true},
-		{Name: "allocation_id", Type: field.TypeString, Unique: true},
-		{Name: "pool_session_id", Type: field.TypeString},
-		{Name: "allocation_no", Type: field.TypeInt64},
-		{Name: "allocation_kind", Type: field.TypeString},
-		{Name: "sequence_num", Type: field.TypeInt64},
-		{Name: "payee_amount_after", Type: field.TypeInt64, Default: 0},
-		{Name: "payer_amount_after", Type: field.TypeInt64, Default: 0},
-		{Name: "txid", Type: field.TypeString},
-		{Name: "tx_hex", Type: field.TypeString},
-		{Name: "created_at_unix", Type: field.TypeInt64},
-	}
-	// BizPoolAllocationsTable holds the schema information for the "biz_pool_allocations" table.
-	BizPoolAllocationsTable = &schema.Table{
-		Name:       "biz_pool_allocations",
-		Columns:    BizPoolAllocationsColumns,
-		PrimaryKey: []*schema.Column{BizPoolAllocationsColumns[0]},
-		Indexes: []*schema.Index{
-			{
-				Name:    "bizpoolallocations_pool_session_id_allocation_kind_sequence_num",
-				Unique:  true,
-				Columns: []*schema.Column{BizPoolAllocationsColumns[2], BizPoolAllocationsColumns[4], BizPoolAllocationsColumns[5]},
-			},
-		},
-	}
 	// BizPricingAutopilotAuditColumns holds the columns for the "biz_pricing_autopilot_audit" table.
 	BizPricingAutopilotAuditColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeInt64, Increment: true},
@@ -505,356 +450,11 @@ var (
 			},
 		},
 	}
-	// FactPoolSessionEventsColumns holds the columns for the "fact_pool_session_events" table.
-	FactPoolSessionEventsColumns = []*schema.Column{
-		{Name: "id", Type: field.TypeInt, Increment: true},
-		{Name: "allocation_id", Type: field.TypeString},
-		{Name: "pool_session_id", Type: field.TypeString, Default: ""},
-		{Name: "allocation_no", Type: field.TypeInt64, Default: 0},
-		{Name: "allocation_kind", Type: field.TypeString, Default: ""},
-		{Name: "event_kind", Type: field.TypeString, Default: "pool_event"},
-		{Name: "sequence_num", Type: field.TypeInt64, Default: 0},
-		{Name: "state", Type: field.TypeString, Default: "confirmed"},
-		{Name: "direction", Type: field.TypeString, Default: ""},
-		{Name: "amount_satoshi", Type: field.TypeInt64, Default: 0},
-		{Name: "purpose", Type: field.TypeString, Default: ""},
-		{Name: "note", Type: field.TypeString, Default: ""},
-		{Name: "msg_id", Type: field.TypeString, Default: ""},
-		{Name: "cycle_index", Type: field.TypeInt64, Default: 0},
-		{Name: "payee_amount_after", Type: field.TypeInt64, Default: 0},
-		{Name: "payer_amount_after", Type: field.TypeInt64, Default: 0},
-		{Name: "txid", Type: field.TypeString, Default: ""},
-		{Name: "tx_hex", Type: field.TypeString, Default: ""},
-		{Name: "gateway_pubkey_hex", Type: field.TypeString, Default: ""},
-		{Name: "created_at_unix", Type: field.TypeInt64},
-		{Name: "payload_json", Type: field.TypeString, Default: "{}"},
-	}
-	// FactPoolSessionEventsTable holds the schema information for the "fact_pool_session_events" table.
-	FactPoolSessionEventsTable = &schema.Table{
-		Name:       "fact_pool_session_events",
-		Columns:    FactPoolSessionEventsColumns,
-		PrimaryKey: []*schema.Column{FactPoolSessionEventsColumns[0]},
-		Indexes: []*schema.Index{
-			{
-				Name:    "factpoolsessionevents_allocation_id",
-				Unique:  true,
-				Columns: []*schema.Column{FactPoolSessionEventsColumns[1]},
-			},
-			{
-				Name:    "factpoolsessionevents_created_at_unix_id",
-				Unique:  false,
-				Columns: []*schema.Column{FactPoolSessionEventsColumns[19], FactPoolSessionEventsColumns[0]},
-			},
-			{
-				Name:    "factpoolsessionevents_created_at_unix",
-				Unique:  false,
-				Columns: []*schema.Column{FactPoolSessionEventsColumns[19]},
-			},
-			{
-				Name:    "factpoolsessionevents_pool_session_id_event_kind_sequence_num",
-				Unique:  false,
-				Columns: []*schema.Column{FactPoolSessionEventsColumns[2], FactPoolSessionEventsColumns[5], FactPoolSessionEventsColumns[6]},
-			},
-			{
-				Name:    "factpoolsessionevents_pool_session_id_allocation_no",
-				Unique:  false,
-				Columns: []*schema.Column{FactPoolSessionEventsColumns[2], FactPoolSessionEventsColumns[3]},
-			},
-			{
-				Name:    "factpoolsessionevents_txid",
-				Unique:  false,
-				Columns: []*schema.Column{FactPoolSessionEventsColumns[16]},
-			},
-		},
-	}
-	// FactSettlementChannelChainAssetCreateColumns holds the columns for the "fact_settlement_channel_chain_asset_create" table.
-	FactSettlementChannelChainAssetCreateColumns = []*schema.Column{
-		{Name: "id", Type: field.TypeInt, Increment: true},
-		{Name: "txid", Type: field.TypeString},
-		{Name: "payment_subtype", Type: field.TypeString},
-		{Name: "status", Type: field.TypeString},
-		{Name: "wallet_input_satoshi", Type: field.TypeInt64},
-		{Name: "wallet_output_satoshi", Type: field.TypeInt64},
-		{Name: "net_amount_satoshi", Type: field.TypeInt64},
-		{Name: "block_height", Type: field.TypeInt64},
-		{Name: "occurred_at_unix", Type: field.TypeInt64},
-		{Name: "submitted_at_unix", Type: field.TypeInt64, Default: 0},
-		{Name: "wallet_observed_at_unix", Type: field.TypeInt64, Default: 0},
-		{Name: "from_party_id", Type: field.TypeString},
-		{Name: "to_party_id", Type: field.TypeString},
-		{Name: "payload_json", Type: field.TypeString},
-		{Name: "updated_at_unix", Type: field.TypeInt64},
-		{Name: "settlement_payment_attempt_id", Type: field.TypeInt64},
-	}
-	// FactSettlementChannelChainAssetCreateTable holds the schema information for the "fact_settlement_channel_chain_asset_create" table.
-	FactSettlementChannelChainAssetCreateTable = &schema.Table{
-		Name:       "fact_settlement_channel_chain_asset_create",
-		Columns:    FactSettlementChannelChainAssetCreateColumns,
-		PrimaryKey: []*schema.Column{FactSettlementChannelChainAssetCreateColumns[0]},
-		ForeignKeys: []*schema.ForeignKey{
-			{
-				Symbol:     "fact_settlement_channel_chain_asset_create_fact_settlement_payment_attempts_settlement_payment_attempt",
-				Columns:    []*schema.Column{FactSettlementChannelChainAssetCreateColumns[15]},
-				RefColumns: []*schema.Column{FactSettlementPaymentAttemptsColumns[0]},
-				OnDelete:   schema.NoAction,
-			},
-		},
-		Indexes: []*schema.Index{
-			{
-				Name:    "factsettlementchannelchainassetcreate_txid",
-				Unique:  true,
-				Columns: []*schema.Column{FactSettlementChannelChainAssetCreateColumns[1]},
-			},
-			{
-				Name:    "factsettlementchannelchainassetcreate_occurred_at_unix_id",
-				Unique:  false,
-				Columns: []*schema.Column{FactSettlementChannelChainAssetCreateColumns[8], FactSettlementChannelChainAssetCreateColumns[0]},
-			},
-			{
-				Name:    "factsettlementchannelchainassetcreate_status_occurred_at_unix",
-				Unique:  false,
-				Columns: []*schema.Column{FactSettlementChannelChainAssetCreateColumns[3], FactSettlementChannelChainAssetCreateColumns[8]},
-			},
-			{
-				Name:    "factsettlementchannelchainassetcreate_payment_subtype_occurred_at_unix",
-				Unique:  false,
-				Columns: []*schema.Column{FactSettlementChannelChainAssetCreateColumns[2], FactSettlementChannelChainAssetCreateColumns[8]},
-			},
-		},
-	}
-	// FactSettlementChannelChainDirectPayColumns holds the columns for the "fact_settlement_channel_chain_direct_pay" table.
-	FactSettlementChannelChainDirectPayColumns = []*schema.Column{
-		{Name: "id", Type: field.TypeInt, Increment: true},
-		{Name: "txid", Type: field.TypeString},
-		{Name: "payment_subtype", Type: field.TypeString},
-		{Name: "status", Type: field.TypeString},
-		{Name: "wallet_input_satoshi", Type: field.TypeInt64},
-		{Name: "wallet_output_satoshi", Type: field.TypeInt64},
-		{Name: "net_amount_satoshi", Type: field.TypeInt64},
-		{Name: "block_height", Type: field.TypeInt64},
-		{Name: "occurred_at_unix", Type: field.TypeInt64},
-		{Name: "submitted_at_unix", Type: field.TypeInt64, Default: 0},
-		{Name: "wallet_observed_at_unix", Type: field.TypeInt64, Default: 0},
-		{Name: "from_party_id", Type: field.TypeString},
-		{Name: "to_party_id", Type: field.TypeString},
-		{Name: "payload_json", Type: field.TypeString},
-		{Name: "updated_at_unix", Type: field.TypeInt64},
-		{Name: "settlement_payment_attempt_id", Type: field.TypeInt64},
-	}
-	// FactSettlementChannelChainDirectPayTable holds the schema information for the "fact_settlement_channel_chain_direct_pay" table.
-	FactSettlementChannelChainDirectPayTable = &schema.Table{
-		Name:       "fact_settlement_channel_chain_direct_pay",
-		Columns:    FactSettlementChannelChainDirectPayColumns,
-		PrimaryKey: []*schema.Column{FactSettlementChannelChainDirectPayColumns[0]},
-		ForeignKeys: []*schema.ForeignKey{
-			{
-				Symbol:     "fact_settlement_channel_chain_direct_pay_fact_settlement_payment_attempts_settlement_payment_attempt",
-				Columns:    []*schema.Column{FactSettlementChannelChainDirectPayColumns[15]},
-				RefColumns: []*schema.Column{FactSettlementPaymentAttemptsColumns[0]},
-				OnDelete:   schema.NoAction,
-			},
-		},
-		Indexes: []*schema.Index{
-			{
-				Name:    "factsettlementchannelchaindirectpay_txid",
-				Unique:  true,
-				Columns: []*schema.Column{FactSettlementChannelChainDirectPayColumns[1]},
-			},
-			{
-				Name:    "factsettlementchannelchaindirectpay_occurred_at_unix_id",
-				Unique:  false,
-				Columns: []*schema.Column{FactSettlementChannelChainDirectPayColumns[8], FactSettlementChannelChainDirectPayColumns[0]},
-			},
-			{
-				Name:    "factsettlementchannelchaindirectpay_status_occurred_at_unix",
-				Unique:  false,
-				Columns: []*schema.Column{FactSettlementChannelChainDirectPayColumns[3], FactSettlementChannelChainDirectPayColumns[8]},
-			},
-			{
-				Name:    "factsettlementchannelchaindirectpay_payment_subtype_occurred_at_unix",
-				Unique:  false,
-				Columns: []*schema.Column{FactSettlementChannelChainDirectPayColumns[2], FactSettlementChannelChainDirectPayColumns[8]},
-			},
-		},
-	}
-	// FactSettlementChannelChainQuotePayColumns holds the columns for the "fact_settlement_channel_chain_quote_pay" table.
-	FactSettlementChannelChainQuotePayColumns = []*schema.Column{
-		{Name: "id", Type: field.TypeInt, Increment: true},
-		{Name: "txid", Type: field.TypeString},
-		{Name: "payment_subtype", Type: field.TypeString},
-		{Name: "status", Type: field.TypeString},
-		{Name: "wallet_input_satoshi", Type: field.TypeInt64},
-		{Name: "wallet_output_satoshi", Type: field.TypeInt64},
-		{Name: "net_amount_satoshi", Type: field.TypeInt64},
-		{Name: "block_height", Type: field.TypeInt64},
-		{Name: "occurred_at_unix", Type: field.TypeInt64},
-		{Name: "submitted_at_unix", Type: field.TypeInt64, Default: 0},
-		{Name: "wallet_observed_at_unix", Type: field.TypeInt64, Default: 0},
-		{Name: "from_party_id", Type: field.TypeString},
-		{Name: "to_party_id", Type: field.TypeString},
-		{Name: "payload_json", Type: field.TypeString},
-		{Name: "updated_at_unix", Type: field.TypeInt64},
-		{Name: "settlement_payment_attempt_id", Type: field.TypeInt64},
-	}
-	// FactSettlementChannelChainQuotePayTable holds the schema information for the "fact_settlement_channel_chain_quote_pay" table.
-	FactSettlementChannelChainQuotePayTable = &schema.Table{
-		Name:       "fact_settlement_channel_chain_quote_pay",
-		Columns:    FactSettlementChannelChainQuotePayColumns,
-		PrimaryKey: []*schema.Column{FactSettlementChannelChainQuotePayColumns[0]},
-		ForeignKeys: []*schema.ForeignKey{
-			{
-				Symbol:     "fact_settlement_channel_chain_quote_pay_fact_settlement_payment_attempts_settlement_payment_attempt",
-				Columns:    []*schema.Column{FactSettlementChannelChainQuotePayColumns[15]},
-				RefColumns: []*schema.Column{FactSettlementPaymentAttemptsColumns[0]},
-				OnDelete:   schema.NoAction,
-			},
-		},
-		Indexes: []*schema.Index{
-			{
-				Name:    "factsettlementchannelchainquotepay_txid",
-				Unique:  true,
-				Columns: []*schema.Column{FactSettlementChannelChainQuotePayColumns[1]},
-			},
-			{
-				Name:    "factsettlementchannelchainquotepay_occurred_at_unix_id",
-				Unique:  false,
-				Columns: []*schema.Column{FactSettlementChannelChainQuotePayColumns[8], FactSettlementChannelChainQuotePayColumns[0]},
-			},
-			{
-				Name:    "factsettlementchannelchainquotepay_status_occurred_at_unix",
-				Unique:  false,
-				Columns: []*schema.Column{FactSettlementChannelChainQuotePayColumns[3], FactSettlementChannelChainQuotePayColumns[8]},
-			},
-			{
-				Name:    "factsettlementchannelchainquotepay_payment_subtype_occurred_at_unix",
-				Unique:  false,
-				Columns: []*schema.Column{FactSettlementChannelChainQuotePayColumns[2], FactSettlementChannelChainQuotePayColumns[8]},
-			},
-		},
-	}
-	// FactSettlementChannelPoolSessionQuotePayColumns holds the columns for the "fact_settlement_channel_pool_session_quote_pay" table.
-	FactSettlementChannelPoolSessionQuotePayColumns = []*schema.Column{
-		{Name: "id", Type: field.TypeInt, Increment: true},
-		{Name: "pool_session_id", Type: field.TypeString, Unique: true},
-		{Name: "txid", Type: field.TypeString, Default: ""},
-		{Name: "pool_scheme", Type: field.TypeString},
-		{Name: "counterparty_pubkey_hex", Type: field.TypeString, Default: ""},
-		{Name: "seller_pubkey_hex", Type: field.TypeString, Default: ""},
-		{Name: "arbiter_pubkey_hex", Type: field.TypeString, Default: ""},
-		{Name: "gateway_pubkey_hex", Type: field.TypeString, Default: ""},
-		{Name: "pool_amount_satoshi", Type: field.TypeInt64},
-		{Name: "spend_tx_fee_satoshi", Type: field.TypeInt64},
-		{Name: "fee_rate_sat_byte", Type: field.TypeFloat64, Default: 0},
-		{Name: "lock_blocks", Type: field.TypeInt64, Default: 0},
-		{Name: "open_base_txid", Type: field.TypeString, Default: ""},
-		{Name: "status", Type: field.TypeString},
-		{Name: "created_at_unix", Type: field.TypeInt64},
-		{Name: "updated_at_unix", Type: field.TypeInt64},
-		{Name: "settlement_payment_attempt_id", Type: field.TypeInt64},
-	}
-	// FactSettlementChannelPoolSessionQuotePayTable holds the schema information for the "fact_settlement_channel_pool_session_quote_pay" table.
-	FactSettlementChannelPoolSessionQuotePayTable = &schema.Table{
-		Name:       "fact_settlement_channel_pool_session_quote_pay",
-		Columns:    FactSettlementChannelPoolSessionQuotePayColumns,
-		PrimaryKey: []*schema.Column{FactSettlementChannelPoolSessionQuotePayColumns[0]},
-		ForeignKeys: []*schema.ForeignKey{
-			{
-				Symbol:     "fact_settlement_channel_pool_session_quote_pay_fact_settlement_payment_attempts_settlement_payment_attempt",
-				Columns:    []*schema.Column{FactSettlementChannelPoolSessionQuotePayColumns[16]},
-				RefColumns: []*schema.Column{FactSettlementPaymentAttemptsColumns[0]},
-				OnDelete:   schema.NoAction,
-			},
-		},
-		Indexes: []*schema.Index{
-			{
-				Name:    "factsettlementchannelpoolsessionquotepay_counterparty_pubkey_hex_status",
-				Unique:  false,
-				Columns: []*schema.Column{FactSettlementChannelPoolSessionQuotePayColumns[4], FactSettlementChannelPoolSessionQuotePayColumns[13]},
-			},
-			{
-				Name:    "factsettlementchannelpoolsessionquotepay_pool_scheme_status_updated_at_unix",
-				Unique:  false,
-				Columns: []*schema.Column{FactSettlementChannelPoolSessionQuotePayColumns[3], FactSettlementChannelPoolSessionQuotePayColumns[13], FactSettlementChannelPoolSessionQuotePayColumns[15]},
-			},
-			{
-				Name:    "factsettlementchannelpoolsessionquotepay_txid",
-				Unique:  false,
-				Columns: []*schema.Column{FactSettlementChannelPoolSessionQuotePayColumns[2]},
-			},
-		},
-	}
-	// FactSettlementCyclesColumns holds the columns for the "fact_settlement_cycles" table.
-	FactSettlementCyclesColumns = []*schema.Column{
-		{Name: "id", Type: field.TypeInt, Increment: true},
-		{Name: "cycle_id", Type: field.TypeString, Unique: true},
-		{Name: "source_type", Type: field.TypeString},
-		{Name: "source_id", Type: field.TypeString},
-		{Name: "state", Type: field.TypeString, Default: "confirmed"},
-		{Name: "gross_amount_satoshi", Type: field.TypeInt64, Default: 0},
-		{Name: "gate_fee_satoshi", Type: field.TypeInt64, Default: 0},
-		{Name: "net_amount_satoshi", Type: field.TypeInt64, Default: 0},
-		{Name: "cycle_index", Type: field.TypeInt64, Default: 0},
-		{Name: "occurred_at_unix", Type: field.TypeInt64},
-		{Name: "confirmed_at_unix", Type: field.TypeInt64, Default: 0},
-		{Name: "note", Type: field.TypeString, Default: ""},
-		{Name: "payload_json", Type: field.TypeString, Default: "{}"},
-	}
-	// FactSettlementCyclesTable holds the schema information for the "fact_settlement_cycles" table.
-	FactSettlementCyclesTable = &schema.Table{
-		Name:       "fact_settlement_cycles",
-		Columns:    FactSettlementCyclesColumns,
-		PrimaryKey: []*schema.Column{FactSettlementCyclesColumns[0]},
-		Indexes: []*schema.Index{
-			{
-				Name:    "factsettlementcycles_source_type_source_id",
-				Unique:  true,
-				Columns: []*schema.Column{FactSettlementCyclesColumns[2], FactSettlementCyclesColumns[3]},
-			},
-			{
-				Name:    "factsettlementcycles_source_type_state_occurred_at_unix",
-				Unique:  false,
-				Columns: []*schema.Column{FactSettlementCyclesColumns[2], FactSettlementCyclesColumns[4], FactSettlementCyclesColumns[9]},
-			},
-		},
-	}
-	// FactSettlementPaymentAttemptsColumns holds the columns for the "fact_settlement_payment_attempts" table.
-	FactSettlementPaymentAttemptsColumns = []*schema.Column{
-		{Name: "id", Type: field.TypeInt64, Increment: true},
-		{Name: "payment_attempt_id", Type: field.TypeString, Unique: true},
-		{Name: "source_type", Type: field.TypeString},
-		{Name: "source_id", Type: field.TypeString},
-		{Name: "state", Type: field.TypeString},
-		{Name: "gross_amount_satoshi", Type: field.TypeInt64, Default: 0},
-		{Name: "gate_fee_satoshi", Type: field.TypeInt64, Default: 0},
-		{Name: "net_amount_satoshi", Type: field.TypeInt64, Default: 0},
-		{Name: "cycle_index", Type: field.TypeInt64, Default: 0},
-		{Name: "occurred_at_unix", Type: field.TypeInt64},
-		{Name: "confirmed_at_unix", Type: field.TypeInt64, Default: 0},
-		{Name: "note", Type: field.TypeString, Default: ""},
-		{Name: "payload_json", Type: field.TypeString, Default: "{}"},
-	}
-	// FactSettlementPaymentAttemptsTable holds the schema information for the "fact_settlement_payment_attempts" table.
-	FactSettlementPaymentAttemptsTable = &schema.Table{
-		Name:       "fact_settlement_payment_attempts",
-		Columns:    FactSettlementPaymentAttemptsColumns,
-		PrimaryKey: []*schema.Column{FactSettlementPaymentAttemptsColumns[0]},
-		Indexes: []*schema.Index{
-			{
-				Name:    "factsettlementpaymentattempts_source_type_source_id",
-				Unique:  true,
-				Columns: []*schema.Column{FactSettlementPaymentAttemptsColumns[2], FactSettlementPaymentAttemptsColumns[3]},
-			},
-			{
-				Name:    "factsettlementpaymentattempts_source_type_state_occurred_at_unix",
-				Unique:  false,
-				Columns: []*schema.Column{FactSettlementPaymentAttemptsColumns[2], FactSettlementPaymentAttemptsColumns[4], FactSettlementPaymentAttemptsColumns[9]},
-			},
-		},
-	}
 	// FactSettlementRecordsColumns holds the columns for the "fact_settlement_records" table.
 	FactSettlementRecordsColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeInt, Increment: true},
 		{Name: "record_id", Type: field.TypeString, Unique: true},
+		{Name: "settlement_payment_attempt_id", Type: field.TypeInt64},
 		{Name: "asset_type", Type: field.TypeString},
 		{Name: "owner_pubkey_hex", Type: field.TypeString},
 		{Name: "source_utxo_id", Type: field.TypeString, Default: ""},
@@ -866,51 +466,42 @@ var (
 		{Name: "confirmed_at_unix", Type: field.TypeInt64, Default: 0},
 		{Name: "note", Type: field.TypeString, Default: ""},
 		{Name: "payload_json", Type: field.TypeString, Default: "{}"},
-		{Name: "settlement_payment_attempt_id", Type: field.TypeInt64},
 	}
 	// FactSettlementRecordsTable holds the schema information for the "fact_settlement_records" table.
 	FactSettlementRecordsTable = &schema.Table{
 		Name:       "fact_settlement_records",
 		Columns:    FactSettlementRecordsColumns,
 		PrimaryKey: []*schema.Column{FactSettlementRecordsColumns[0]},
-		ForeignKeys: []*schema.ForeignKey{
-			{
-				Symbol:     "fact_settlement_records_fact_settlement_payment_attempts_settlement_payment_attempt",
-				Columns:    []*schema.Column{FactSettlementRecordsColumns[13]},
-				RefColumns: []*schema.Column{FactSettlementPaymentAttemptsColumns[0]},
-				OnDelete:   schema.NoAction,
-			},
-		},
 		Indexes: []*schema.Index{
 			{
 				Name:    "factsettlementrecords_settlement_payment_attempt_id_asset_type_source_utxo_id_source_lot_id",
 				Unique:  true,
-				Columns: []*schema.Column{FactSettlementRecordsColumns[13], FactSettlementRecordsColumns[2], FactSettlementRecordsColumns[4], FactSettlementRecordsColumns[5]},
+				Columns: []*schema.Column{FactSettlementRecordsColumns[2], FactSettlementRecordsColumns[3], FactSettlementRecordsColumns[5], FactSettlementRecordsColumns[6]},
 			},
 			{
 				Name:    "factsettlementrecords_settlement_payment_attempt_id_asset_type_occurred_at_unix",
 				Unique:  false,
-				Columns: []*schema.Column{FactSettlementRecordsColumns[13], FactSettlementRecordsColumns[2], FactSettlementRecordsColumns[9]},
+				Columns: []*schema.Column{FactSettlementRecordsColumns[2], FactSettlementRecordsColumns[3], FactSettlementRecordsColumns[10]},
 			},
 			{
 				Name:    "factsettlementrecords_owner_pubkey_hex_state_occurred_at_unix",
 				Unique:  false,
-				Columns: []*schema.Column{FactSettlementRecordsColumns[3], FactSettlementRecordsColumns[8], FactSettlementRecordsColumns[9]},
+				Columns: []*schema.Column{FactSettlementRecordsColumns[4], FactSettlementRecordsColumns[9], FactSettlementRecordsColumns[10]},
 			},
 			{
 				Name:    "factsettlementrecords_source_lot_id_occurred_at_unix",
 				Unique:  false,
-				Columns: []*schema.Column{FactSettlementRecordsColumns[5], FactSettlementRecordsColumns[9]},
+				Columns: []*schema.Column{FactSettlementRecordsColumns[6], FactSettlementRecordsColumns[10]},
 			},
 			{
 				Name:    "factsettlementrecords_source_utxo_id_occurred_at_unix",
 				Unique:  false,
-				Columns: []*schema.Column{FactSettlementRecordsColumns[4], FactSettlementRecordsColumns[9]},
+				Columns: []*schema.Column{FactSettlementRecordsColumns[5], FactSettlementRecordsColumns[10]},
 			},
 			{
 				Name:    "factsettlementrecords_state_occurred_at_unix",
 				Unique:  false,
-				Columns: []*schema.Column{FactSettlementRecordsColumns[8], FactSettlementRecordsColumns[9]},
+				Columns: []*schema.Column{FactSettlementRecordsColumns[9], FactSettlementRecordsColumns[10]},
 			},
 		},
 	}
@@ -1019,104 +610,6 @@ var (
 				Name:    "facttokenlots_token_standard_token_id_updated_at_unix",
 				Unique:  false,
 				Columns: []*schema.Column{FactTokenLotsColumns[4], FactTokenLotsColumns[3], FactTokenLotsColumns[11]},
-			},
-		},
-	}
-	// OrderSettlementEventsColumns holds the columns for the "order_settlement_events" table.
-	OrderSettlementEventsColumns = []*schema.Column{
-		{Name: "id", Type: field.TypeInt64, Increment: true},
-		{Name: "process_id", Type: field.TypeString},
-		{Name: "settlement_id", Type: field.TypeString},
-		{Name: "order_id", Type: field.TypeString},
-		{Name: "source_type", Type: field.TypeString},
-		{Name: "source_id", Type: field.TypeString},
-		{Name: "accounting_scene", Type: field.TypeString},
-		{Name: "accounting_subtype", Type: field.TypeString},
-		{Name: "event_type", Type: field.TypeString},
-		{Name: "status", Type: field.TypeString},
-		{Name: "note", Type: field.TypeString, Default: ""},
-		{Name: "payload_json", Type: field.TypeString, Default: "{}"},
-		{Name: "occurred_at_unix", Type: field.TypeInt64},
-	}
-	// OrderSettlementEventsTable holds the schema information for the "order_settlement_events" table.
-	OrderSettlementEventsTable = &schema.Table{
-		Name:       "order_settlement_events",
-		Columns:    OrderSettlementEventsColumns,
-		PrimaryKey: []*schema.Column{OrderSettlementEventsColumns[0]},
-		Indexes: []*schema.Index{
-			{
-				Name:    "idx_order_settlement_events_settlement",
-				Unique:  false,
-				Columns: []*schema.Column{OrderSettlementEventsColumns[2], OrderSettlementEventsColumns[12]},
-			},
-			{
-				Name:    "idx_order_settlement_events_type",
-				Unique:  false,
-				Columns: []*schema.Column{OrderSettlementEventsColumns[8], OrderSettlementEventsColumns[12]},
-			},
-			{
-				Name:    "ordersettlementevents_settlement_id_event_type_order_id",
-				Unique:  true,
-				Columns: []*schema.Column{OrderSettlementEventsColumns[2], OrderSettlementEventsColumns[8], OrderSettlementEventsColumns[3]},
-			},
-		},
-	}
-	// OrderSettlementsColumns holds the columns for the "order_settlements" table.
-	OrderSettlementsColumns = []*schema.Column{
-		{Name: "id", Type: field.TypeInt, Increment: true},
-		{Name: "settlement_id", Type: field.TypeString, Unique: true},
-		{Name: "order_id", Type: field.TypeString},
-		{Name: "settlement_no", Type: field.TypeInt64},
-		{Name: "business_role", Type: field.TypeString, Default: ""},
-		{Name: "source_type", Type: field.TypeString, Default: ""},
-		{Name: "source_id", Type: field.TypeString, Default: ""},
-		{Name: "accounting_scene", Type: field.TypeString, Default: ""},
-		{Name: "accounting_subtype", Type: field.TypeString, Default: ""},
-		{Name: "settlement_method", Type: field.TypeString},
-		{Name: "status", Type: field.TypeString},
-		{Name: "settlement_status", Type: field.TypeString, Default: ""},
-		{Name: "amount_satoshi", Type: field.TypeInt64, Default: 0},
-		{Name: "from_party_id", Type: field.TypeString},
-		{Name: "to_party_id", Type: field.TypeString},
-		{Name: "target_type", Type: field.TypeString},
-		{Name: "target_id", Type: field.TypeString},
-		{Name: "note", Type: field.TypeString, Default: ""},
-		{Name: "error_message", Type: field.TypeString, Default: ""},
-		{Name: "payload_json", Type: field.TypeString, Default: "{}"},
-		{Name: "settlement_payload_json", Type: field.TypeString, Default: "{}"},
-		{Name: "created_at_unix", Type: field.TypeInt64},
-		{Name: "updated_at_unix", Type: field.TypeInt64},
-	}
-	// OrderSettlementsTable holds the schema information for the "order_settlements" table.
-	OrderSettlementsTable = &schema.Table{
-		Name:       "order_settlements",
-		Columns:    OrderSettlementsColumns,
-		PrimaryKey: []*schema.Column{OrderSettlementsColumns[0]},
-		Indexes: []*schema.Index{
-			{
-				Name:    "ordersettlements_order_id_settlement_no",
-				Unique:  true,
-				Columns: []*schema.Column{OrderSettlementsColumns[2], OrderSettlementsColumns[3]},
-			},
-			{
-				Name:    "idx_order_settlements_order",
-				Unique:  false,
-				Columns: []*schema.Column{OrderSettlementsColumns[2], OrderSettlementsColumns[21]},
-			},
-			{
-				Name:    "idx_order_settlements_status",
-				Unique:  false,
-				Columns: []*schema.Column{OrderSettlementsColumns[10], OrderSettlementsColumns[22]},
-			},
-			{
-				Name:    "idx_order_settlements_method",
-				Unique:  false,
-				Columns: []*schema.Column{OrderSettlementsColumns[9], OrderSettlementsColumns[10], OrderSettlementsColumns[22]},
-			},
-			{
-				Name:    "idx_order_settlements_target",
-				Unique:  false,
-				Columns: []*schema.Column{OrderSettlementsColumns[15], OrderSettlementsColumns[16]},
 			},
 		},
 	}
@@ -1302,34 +795,6 @@ var (
 		Name:       "proc_direct_deals",
 		Columns:    ProcDirectDealsColumns,
 		PrimaryKey: []*schema.Column{ProcDirectDealsColumns[0]},
-	}
-	// ProcDirectTransferPoolsColumns holds the columns for the "proc_direct_transfer_pools" table.
-	ProcDirectTransferPoolsColumns = []*schema.Column{
-		{Name: "id", Type: field.TypeInt, Increment: true},
-		{Name: "session_id", Type: field.TypeString, Unique: true},
-		{Name: "deal_id", Type: field.TypeString},
-		{Name: "buyer_pubkey_hex", Type: field.TypeString},
-		{Name: "seller_pubkey_hex", Type: field.TypeString},
-		{Name: "arbiter_pubkey_hex", Type: field.TypeString},
-		{Name: "pool_amount", Type: field.TypeInt64},
-		{Name: "spend_tx_fee", Type: field.TypeInt64},
-		{Name: "sequence_num", Type: field.TypeInt64},
-		{Name: "seller_amount", Type: field.TypeInt64},
-		{Name: "buyer_amount", Type: field.TypeInt64},
-		{Name: "current_tx_hex", Type: field.TypeString},
-		{Name: "base_tx_hex", Type: field.TypeString},
-		{Name: "base_txid", Type: field.TypeString},
-		{Name: "status", Type: field.TypeString},
-		{Name: "fee_rate_sat_byte", Type: field.TypeFloat64},
-		{Name: "lock_blocks", Type: field.TypeInt64},
-		{Name: "created_at_unix", Type: field.TypeInt64},
-		{Name: "updated_at_unix", Type: field.TypeInt64},
-	}
-	// ProcDirectTransferPoolsTable holds the schema information for the "proc_direct_transfer_pools" table.
-	ProcDirectTransferPoolsTable = &schema.Table{
-		Name:       "proc_direct_transfer_pools",
-		Columns:    ProcDirectTransferPoolsColumns,
-		PrimaryKey: []*schema.Column{ProcDirectTransferPoolsColumns[0]},
 	}
 	// ProcDomainEventsColumns holds the columns for the "proc_domain_events" table.
 	ProcDomainEventsColumns = []*schema.Column{
@@ -1994,8 +1459,6 @@ var (
 		BizDemandsTable,
 		BizFrontOrdersTable,
 		BizLiveQuotesTable,
-		BizPoolTable,
-		BizPoolAllocationsTable,
 		BizPricingAutopilotAuditTable,
 		BizPricingAutopilotConfigTable,
 		BizPricingAutopilotStateTable,
@@ -2006,25 +1469,15 @@ var (
 		FactBsv21Table,
 		FactBsv21EventsTable,
 		FactBsvUtxosTable,
-		FactPoolSessionEventsTable,
-		FactSettlementChannelChainAssetCreateTable,
-		FactSettlementChannelChainDirectPayTable,
-		FactSettlementChannelChainQuotePayTable,
-		FactSettlementChannelPoolSessionQuotePayTable,
-		FactSettlementCyclesTable,
-		FactSettlementPaymentAttemptsTable,
 		FactSettlementRecordsTable,
 		FactTokenCarrierLinksTable,
 		FactTokenLotsTable,
-		OrderSettlementEventsTable,
-		OrderSettlementsTable,
 		OrdersTable,
 		ProcChainTipStateTable,
 		ProcChainTipWorkerLogsTable,
 		ProcChainUtxoWorkerLogsTable,
 		ProcCommandJournalTable,
 		ProcDirectDealsTable,
-		ProcDirectTransferPoolsTable,
 		ProcDomainEventsTable,
 		ProcEffectLogsTable,
 		ProcGatewayEventsTable,
@@ -2067,12 +1520,6 @@ func init() {
 	BizLiveQuotesTable.Annotation = &entsql.Annotation{
 		Table: "biz_live_quotes",
 	}
-	BizPoolTable.Annotation = &entsql.Annotation{
-		Table: "biz_pool",
-	}
-	BizPoolAllocationsTable.Annotation = &entsql.Annotation{
-		Table: "biz_pool_allocations",
-	}
 	BizPricingAutopilotAuditTable.Annotation = &entsql.Annotation{
 		Table: "biz_pricing_autopilot_audit",
 	}
@@ -2104,36 +1551,6 @@ func init() {
 		Table: "fact_bsv_utxos",
 		Check: "utxo_state IN ('unspent','spent') AND carrier_type IN ('plain_bsv','token_carrier','fee_change','unknown')",
 	}
-	FactPoolSessionEventsTable.Annotation = &entsql.Annotation{
-		Table: "fact_pool_session_events",
-	}
-	FactSettlementChannelChainAssetCreateTable.ForeignKeys[0].RefTable = FactSettlementPaymentAttemptsTable
-	FactSettlementChannelChainAssetCreateTable.Annotation = &entsql.Annotation{
-		Table: "fact_settlement_channel_chain_asset_create",
-	}
-	FactSettlementChannelChainDirectPayTable.ForeignKeys[0].RefTable = FactSettlementPaymentAttemptsTable
-	FactSettlementChannelChainDirectPayTable.Annotation = &entsql.Annotation{
-		Table: "fact_settlement_channel_chain_direct_pay",
-	}
-	FactSettlementChannelChainQuotePayTable.ForeignKeys[0].RefTable = FactSettlementPaymentAttemptsTable
-	FactSettlementChannelChainQuotePayTable.Annotation = &entsql.Annotation{
-		Table: "fact_settlement_channel_chain_quote_pay",
-	}
-	FactSettlementChannelPoolSessionQuotePayTable.ForeignKeys[0].RefTable = FactSettlementPaymentAttemptsTable
-	FactSettlementChannelPoolSessionQuotePayTable.Annotation = &entsql.Annotation{
-		Table: "fact_settlement_channel_pool_session_quote_pay",
-	}
-	FactSettlementCyclesTable.Annotation = &entsql.Annotation{
-		Table: "fact_settlement_cycles",
-	}
-	FactSettlementPaymentAttemptsTable.Annotation = &entsql.Annotation{
-		Table: "fact_settlement_payment_attempts",
-	}
-	FactSettlementPaymentAttemptsTable.Annotation.Checks = map[string]string{
-		"valid_source_type": "source_type IN ('pool_session_quote_pay', 'chain_quote_pay', 'chain_direct_pay', 'chain_asset_create')",
-		"valid_state":       "state IN ('pending', 'confirmed', 'failed')",
-	}
-	FactSettlementRecordsTable.ForeignKeys[0].RefTable = FactSettlementPaymentAttemptsTable
 	FactSettlementRecordsTable.Annotation = &entsql.Annotation{
 		Table: "fact_settlement_records",
 		Check: "asset_type IN ('BSV','TOKEN') AND state IN ('pending','confirmed','reverted')",
@@ -2145,12 +1562,6 @@ func init() {
 	FactTokenLotsTable.Annotation = &entsql.Annotation{
 		Table: "fact_token_lots",
 		Check: "token_standard IN ('BSV20','BSV21') AND lot_state IN ('unspent','spent','locked')",
-	}
-	OrderSettlementEventsTable.Annotation = &entsql.Annotation{
-		Table: "order_settlement_events",
-	}
-	OrderSettlementsTable.Annotation = &entsql.Annotation{
-		Table: "order_settlements",
 	}
 	OrdersTable.Annotation = &entsql.Annotation{
 		Table: "orders",
@@ -2170,9 +1581,6 @@ func init() {
 	}
 	ProcDirectDealsTable.Annotation = &entsql.Annotation{
 		Table: "proc_direct_deals",
-	}
-	ProcDirectTransferPoolsTable.Annotation = &entsql.Annotation{
-		Table: "proc_direct_transfer_pools",
 	}
 	ProcDomainEventsTable.Annotation = &entsql.Annotation{
 		Table: "proc_domain_events",

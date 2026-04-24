@@ -24,10 +24,6 @@ type Tx struct {
 	BizFrontOrders *BizFrontOrdersClient
 	// BizLiveQuotes is the client for interacting with the BizLiveQuotes builders.
 	BizLiveQuotes *BizLiveQuotesClient
-	// BizPool is the client for interacting with the BizPool builders.
-	BizPool *BizPoolClient
-	// BizPoolAllocations is the client for interacting with the BizPoolAllocations builders.
-	BizPoolAllocations *BizPoolAllocationsClient
 	// BizPricingAutopilotAudit is the client for interacting with the BizPricingAutopilotAudit builders.
 	BizPricingAutopilotAudit *BizPricingAutopilotAuditClient
 	// BizPricingAutopilotConfig is the client for interacting with the BizPricingAutopilotConfig builders.
@@ -48,30 +44,12 @@ type Tx struct {
 	FactBsv21Events *FactBsv21EventsClient
 	// FactBsvUtxos is the client for interacting with the FactBsvUtxos builders.
 	FactBsvUtxos *FactBsvUtxosClient
-	// FactPoolSessionEvents is the client for interacting with the FactPoolSessionEvents builders.
-	FactPoolSessionEvents *FactPoolSessionEventsClient
-	// FactSettlementChannelChainAssetCreate is the client for interacting with the FactSettlementChannelChainAssetCreate builders.
-	FactSettlementChannelChainAssetCreate *FactSettlementChannelChainAssetCreateClient
-	// FactSettlementChannelChainDirectPay is the client for interacting with the FactSettlementChannelChainDirectPay builders.
-	FactSettlementChannelChainDirectPay *FactSettlementChannelChainDirectPayClient
-	// FactSettlementChannelChainQuotePay is the client for interacting with the FactSettlementChannelChainQuotePay builders.
-	FactSettlementChannelChainQuotePay *FactSettlementChannelChainQuotePayClient
-	// FactSettlementChannelPoolSessionQuotePay is the client for interacting with the FactSettlementChannelPoolSessionQuotePay builders.
-	FactSettlementChannelPoolSessionQuotePay *FactSettlementChannelPoolSessionQuotePayClient
-	// FactSettlementCycles is the client for interacting with the FactSettlementCycles builders.
-	FactSettlementCycles *FactSettlementCyclesClient
-	// FactSettlementPaymentAttempts is the client for interacting with the FactSettlementPaymentAttempts builders.
-	FactSettlementPaymentAttempts *FactSettlementPaymentAttemptsClient
 	// FactSettlementRecords is the client for interacting with the FactSettlementRecords builders.
 	FactSettlementRecords *FactSettlementRecordsClient
 	// FactTokenCarrierLinks is the client for interacting with the FactTokenCarrierLinks builders.
 	FactTokenCarrierLinks *FactTokenCarrierLinksClient
 	// FactTokenLots is the client for interacting with the FactTokenLots builders.
 	FactTokenLots *FactTokenLotsClient
-	// OrderSettlementEvents is the client for interacting with the OrderSettlementEvents builders.
-	OrderSettlementEvents *OrderSettlementEventsClient
-	// OrderSettlements is the client for interacting with the OrderSettlements builders.
-	OrderSettlements *OrderSettlementsClient
 	// Orders is the client for interacting with the Orders builders.
 	Orders *OrdersClient
 	// ProcChainTipState is the client for interacting with the ProcChainTipState builders.
@@ -84,8 +62,6 @@ type Tx struct {
 	ProcCommandJournal *ProcCommandJournalClient
 	// ProcDirectDeals is the client for interacting with the ProcDirectDeals builders.
 	ProcDirectDeals *ProcDirectDealsClient
-	// ProcDirectTransferPools is the client for interacting with the ProcDirectTransferPools builders.
-	ProcDirectTransferPools *ProcDirectTransferPoolsClient
 	// ProcDomainEvents is the client for interacting with the ProcDomainEvents builders.
 	ProcDomainEvents *ProcDomainEventsClient
 	// ProcEffectLogs is the client for interacting with the ProcEffectLogs builders.
@@ -263,8 +239,6 @@ func (tx *Tx) init() {
 	tx.BizDemands = NewBizDemandsClient(tx.config)
 	tx.BizFrontOrders = NewBizFrontOrdersClient(tx.config)
 	tx.BizLiveQuotes = NewBizLiveQuotesClient(tx.config)
-	tx.BizPool = NewBizPoolClient(tx.config)
-	tx.BizPoolAllocations = NewBizPoolAllocationsClient(tx.config)
 	tx.BizPricingAutopilotAudit = NewBizPricingAutopilotAuditClient(tx.config)
 	tx.BizPricingAutopilotConfig = NewBizPricingAutopilotConfigClient(tx.config)
 	tx.BizPricingAutopilotState = NewBizPricingAutopilotStateClient(tx.config)
@@ -275,25 +249,15 @@ func (tx *Tx) init() {
 	tx.FactBsv21 = NewFactBsv21Client(tx.config)
 	tx.FactBsv21Events = NewFactBsv21EventsClient(tx.config)
 	tx.FactBsvUtxos = NewFactBsvUtxosClient(tx.config)
-	tx.FactPoolSessionEvents = NewFactPoolSessionEventsClient(tx.config)
-	tx.FactSettlementChannelChainAssetCreate = NewFactSettlementChannelChainAssetCreateClient(tx.config)
-	tx.FactSettlementChannelChainDirectPay = NewFactSettlementChannelChainDirectPayClient(tx.config)
-	tx.FactSettlementChannelChainQuotePay = NewFactSettlementChannelChainQuotePayClient(tx.config)
-	tx.FactSettlementChannelPoolSessionQuotePay = NewFactSettlementChannelPoolSessionQuotePayClient(tx.config)
-	tx.FactSettlementCycles = NewFactSettlementCyclesClient(tx.config)
-	tx.FactSettlementPaymentAttempts = NewFactSettlementPaymentAttemptsClient(tx.config)
 	tx.FactSettlementRecords = NewFactSettlementRecordsClient(tx.config)
 	tx.FactTokenCarrierLinks = NewFactTokenCarrierLinksClient(tx.config)
 	tx.FactTokenLots = NewFactTokenLotsClient(tx.config)
-	tx.OrderSettlementEvents = NewOrderSettlementEventsClient(tx.config)
-	tx.OrderSettlements = NewOrderSettlementsClient(tx.config)
 	tx.Orders = NewOrdersClient(tx.config)
 	tx.ProcChainTipState = NewProcChainTipStateClient(tx.config)
 	tx.ProcChainTipWorkerLogs = NewProcChainTipWorkerLogsClient(tx.config)
 	tx.ProcChainUtxoWorkerLogs = NewProcChainUtxoWorkerLogsClient(tx.config)
 	tx.ProcCommandJournal = NewProcCommandJournalClient(tx.config)
 	tx.ProcDirectDeals = NewProcDirectDealsClient(tx.config)
-	tx.ProcDirectTransferPools = NewProcDirectTransferPoolsClient(tx.config)
 	tx.ProcDomainEvents = NewProcDomainEventsClient(tx.config)
 	tx.ProcEffectLogs = NewProcEffectLogsClient(tx.config)
 	tx.ProcGatewayEvents = NewProcGatewayEventsClient(tx.config)

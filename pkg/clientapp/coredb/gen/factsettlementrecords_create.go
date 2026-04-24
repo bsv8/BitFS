@@ -9,7 +9,6 @@ import (
 
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementpaymentattempts"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementrecords"
 )
 
@@ -160,11 +159,6 @@ func (_c *FactSettlementRecordsCreate) SetID(v int) *FactSettlementRecordsCreate
 	return _c
 }
 
-// SetSettlementPaymentAttempt sets the "settlement_payment_attempt" edge to the FactSettlementPaymentAttempts entity.
-func (_c *FactSettlementRecordsCreate) SetSettlementPaymentAttempt(v *FactSettlementPaymentAttempts) *FactSettlementRecordsCreate {
-	return _c.SetSettlementPaymentAttemptID(v.ID)
-}
-
 // Mutation returns the FactSettlementRecordsMutation object of the builder.
 func (_c *FactSettlementRecordsCreate) Mutation() *FactSettlementRecordsMutation {
 	return _c.mutation
@@ -271,9 +265,6 @@ func (_c *FactSettlementRecordsCreate) check() error {
 	if _, ok := _c.mutation.PayloadJSON(); !ok {
 		return &ValidationError{Name: "payload_json", err: errors.New(`gen: missing required field "FactSettlementRecords.payload_json"`)}
 	}
-	if len(_c.mutation.SettlementPaymentAttemptIDs()) == 0 {
-		return &ValidationError{Name: "settlement_payment_attempt", err: errors.New(`gen: missing required edge "FactSettlementRecords.settlement_payment_attempt"`)}
-	}
 	return nil
 }
 
@@ -309,6 +300,10 @@ func (_c *FactSettlementRecordsCreate) createSpec() (*FactSettlementRecords, *sq
 	if value, ok := _c.mutation.RecordID(); ok {
 		_spec.SetField(factsettlementrecords.FieldRecordID, field.TypeString, value)
 		_node.RecordID = value
+	}
+	if value, ok := _c.mutation.SettlementPaymentAttemptID(); ok {
+		_spec.SetField(factsettlementrecords.FieldSettlementPaymentAttemptID, field.TypeInt64, value)
+		_node.SettlementPaymentAttemptID = value
 	}
 	if value, ok := _c.mutation.AssetType(); ok {
 		_spec.SetField(factsettlementrecords.FieldAssetType, field.TypeString, value)
@@ -353,23 +348,6 @@ func (_c *FactSettlementRecordsCreate) createSpec() (*FactSettlementRecords, *sq
 	if value, ok := _c.mutation.PayloadJSON(); ok {
 		_spec.SetField(factsettlementrecords.FieldPayloadJSON, field.TypeString, value)
 		_node.PayloadJSON = value
-	}
-	if nodes := _c.mutation.SettlementPaymentAttemptIDs(); len(nodes) > 0 {
-		edge := &sqlgraph.EdgeSpec{
-			Rel:     sqlgraph.M2O,
-			Inverse: false,
-			Table:   factsettlementrecords.SettlementPaymentAttemptTable,
-			Columns: []string{factsettlementrecords.SettlementPaymentAttemptColumn},
-			Bidi:    false,
-			Target: &sqlgraph.EdgeTarget{
-				IDSpec: sqlgraph.NewFieldSpec(factsettlementpaymentattempts.FieldID, field.TypeInt64),
-			},
-		}
-		for _, k := range nodes {
-			edge.Target.Nodes = append(edge.Target.Nodes, k)
-		}
-		_node.SettlementPaymentAttemptID = nodes[0]
-		_spec.Edges = append(_spec.Edges, edge)
 	}
 	return _node, _spec
 }

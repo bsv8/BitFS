@@ -168,6 +168,16 @@ type LivePlanResult struct {
 	Decision         LivePurchaseDecision `json:"decision"`
 }
 
+type livePlanDispatchResult struct {
+	Accepted    bool
+	Status      string
+	ErrorCode   string
+	ErrorMessage string
+	StateBefore string
+	StateAfter  string
+	Data        map[string]any
+}
+
 // TriggerLivePlan 触发直播价速策略命令。
 func TriggerLivePlan(ctx context.Context, store *clientDB, rt *Runtime, p LivePlanParams) (LivePlanResult, error) {
 	if rt == nil || rt.Host == nil {
@@ -201,12 +211,12 @@ func TriggerLivePlan(ctx context.Context, store *clientDB, rt *Runtime, p LivePl
 }
 
 // dispatchLivePlanPurchase 执行直播购决策逻辑并写 command journal。
-func dispatchLivePlanPurchase(ctx context.Context, store *clientDB, rt *Runtime, streamID string, haveSegmentIndex int64) feePoolKernelResult {
+func dispatchLivePlanPurchase(ctx context.Context, store *clientDB, rt *Runtime, streamID string, haveSegmentIndex int64) livePlanDispatchResult {
 	if rt == nil {
-		return feePoolKernelResult{Accepted: false, Status: "failed", ErrorCode: "runtime_not_initialized"}
+		return livePlanDispatchResult{Accepted: false, Status: "failed", ErrorCode: "runtime_not_initialized"}
 	}
 	if store == nil {
-		return feePoolKernelResult{Accepted: false, Status: "failed", ErrorCode: "client_db_not_initialized"}
+		return livePlanDispatchResult{Accepted: false, Status: "failed", ErrorCode: "client_db_not_initialized"}
 	}
 	cmdID := newActionID()
 	now := time.Now()
@@ -230,7 +240,7 @@ func dispatchLivePlanPurchase(ctx context.Context, store *clientDB, rt *Runtime,
 			Payload:       map[string]any{"stream_id": streamID},
 			Result:        map[string]any{"accepted": true, "status": "failed"},
 		})
-		return feePoolKernelResult{Accepted: true, Status: "failed", ErrorCode: "live_snapshot_failed", ErrorMessage: err.Error()}
+		return livePlanDispatchResult{Accepted: true, Status: "failed", ErrorCode: "live_snapshot_failed", ErrorMessage: err.Error()}
 	}
 	cfg := rt.ConfigSnapshot()
 	decision, err := PlanLivePurchaseBySeed(snap, haveSegmentIndex, LiveBuyerStrategy{
@@ -259,9 +269,9 @@ func dispatchLivePlanPurchase(ctx context.Context, store *clientDB, rt *Runtime,
 			Payload:       map[string]any{"stream_id": streamID, "have_segment_index": haveSegmentIndex},
 			Result:        map[string]any{"accepted": true, "status": "failed"},
 		})
-		return feePoolKernelResult{Accepted: true, Status: "failed", ErrorCode: "live_plan_failed", ErrorMessage: err.Error()}
+		return livePlanDispatchResult{Accepted: true, Status: "failed", ErrorCode: "live_plan_failed", ErrorMessage: err.Error()}
 	}
-	out := feePoolKernelResult{
+	out := livePlanDispatchResult{
 		Accepted:    true,
 		Status:      "applied",
 		StateBefore: "live_plan",
@@ -426,22 +436,6 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, store *clientDB, rt *R
 		return contractmessage.LiveDemandPublishPaidResp{}, err
 	}
 	return resp, nil
-}
-
-// applyFeePoolChargeToSession 在扣费成功后推进本地费用池会话。
-// 设计约束：以“池总额 - 服务器额 - fee”回算 client_amount，避免累计误差。
-func applyFeePoolChargeToSession(session *feePoolSession, nextSeq uint32, nextServerAmount uint64, updatedTxHex string) {
-	if session == nil {
-		return
-	}
-	session.Sequence = nextSeq
-	session.ServerAmount = nextServerAmount
-	session.CurrentTxHex = strings.TrimSpace(updatedTxHex)
-	if session.PoolAmountSat >= session.ServerAmount+session.SpendTxFeeSat {
-		session.ClientAmount = session.PoolAmountSat - session.ServerAmount - session.SpendTxFeeSat
-		return
-	}
-	session.ClientAmount = 0
 }
 
 // validateDemandPublishPaidResp 统一校验网关 publish_demand 业务响应。

@@ -124,6 +124,21 @@ func (r *Runtime) transferPoolOpenMutex() *sync.Mutex {
 	return &r.transferPoolOpenMu
 }
 
+func (r *Runtime) walletAllocMutex() *sync.Mutex {
+	if r == nil {
+		return &sync.Mutex{}
+	}
+	return &r.walletAllocMu
+}
+
+// FeePoolGatewayPeerID Group 8: fee pool session 已删除，返回错误
+func (r *Runtime) FeePoolGatewayPeerID() (string, error) {
+	if r == nil {
+		return "", fmt.Errorf("runtime not initialized")
+	}
+	return "", fmt.Errorf("fee pool session not available after Group 8 cleanup")
+}
+
 func (r *Runtime) transferPoolSessionMutex(sessionID string) *sync.Mutex {
 	if r == nil {
 		return &sync.Mutex{}

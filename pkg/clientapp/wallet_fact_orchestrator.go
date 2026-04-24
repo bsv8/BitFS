@@ -2,6 +2,7 @@ package clientapp
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -375,7 +376,11 @@ func ApplyConfirmedUTXOChanges(ctx context.Context, store *clientDB, changes []c
 	})
 }
 
-func backfillFactSpentFromWalletUTXO(ctx context.Context, db sqlConn, walletID string, address string, updatedAt int64) error {
+func backfillFactSpentFromWalletUTXO(ctx context.Context, db interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, walletID string, address string, updatedAt int64) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}

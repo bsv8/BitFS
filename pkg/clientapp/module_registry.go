@@ -11,6 +11,7 @@ import (
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BitFS/pkg/clientapp/modulelock"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	domainbiz "github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
 	"github.com/libp2p/go-libp2p/core/protocol"
 )
@@ -707,6 +708,26 @@ func ensureModuleRegistry(rt *Runtime) *moduleRegistry {
 		rt.modules = newModuleRegistry()
 	}
 	return rt.modules
+}
+
+func ensurePaymentRegistry(rt *Runtime) moduleapi.PaymentRegistry {
+	if rt == nil {
+		return nil
+	}
+	if rt.paymentRegistry == nil {
+		rt.paymentRegistry = moduleapi.NewPaymentRegistry()
+	}
+	return rt.paymentRegistry
+}
+
+func ensurePaymentFacade(rt *Runtime) moduleapi.PaymentFacade {
+	if rt == nil {
+		return nil
+	}
+	if rt.paymentFacade == nil {
+		rt.paymentFacade = moduleapi.NewPaymentFacade(ensurePaymentRegistry(rt))
+	}
+	return rt.paymentFacade
 }
 
 // Modules 只返回可转发的模块能力，不暴露内部注册表实现。

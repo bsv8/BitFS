@@ -31,6 +31,13 @@ type peerCallChainTxQuoteBuilt struct {
 	ChargeReason     string
 }
 
+// expectedServiceReceipt payflow receipts schema 已删除，保留结构体定义仅供编译通过
+type expectedServiceReceipt struct {
+	ServiceType        string
+	OfferHash          string
+	ResultPayloadBytes []byte
+}
+
 type builtPeerCallChainTx struct {
 	RawTx           []byte
 	TxID            string
@@ -335,4 +342,47 @@ func verifyPeerCallServiceReceipt(rt *Runtime, gatewayPeerID peer.ID, expected e
 		return fmt.Errorf("service receipt payload hash mismatch")
 	}
 	return nil
+}
+
+// Group 8: 以下函数依赖已删除的 settlement layer，stub 实现
+func describePeerCallQuoteQuantity(quote payflow.ServiceQuote) (string, string) {
+	return "1", "call"
+}
+
+func decorateQuotedPeerCallPaymentOption(option *ncall.PaymentOption, chargeSat uint64, chargeReason string, quoteStatus string, quantity string, unit string) *ncall.PaymentOption {
+	if option == nil {
+		return nil
+	}
+	return &ncall.PaymentOption{
+		Scheme:          option.Scheme,
+		PaymentDomain:   option.PaymentDomain,
+		AmountSatoshi:   chargeSat,
+		Description:     fmt.Sprintf("charge:%d reason:%s status:%s qty:%s", chargeSat, chargeReason, quoteStatus, quantity),
+		PricingMode:     option.PricingMode,
+		ServiceQuantity: option.ServiceQuantity,
+	}
+}
+
+func buildPeerCallServiceParamsPayload(route string, body []byte) ([]byte, error) {
+	return body, nil
+}
+
+func buildPeerCallQuoteTarget(req ncall.CallReq) string {
+	return strings.TrimSpace(req.Route)
+}
+
+func gatewayPublicKeyFromPeer(rt *Runtime, peerID peer.ID) (*ec.PublicKey, error) {
+	return nil, fmt.Errorf("gateway public key lookup not available")
+}
+
+func peerCallQuotedServiceType(route string) string {
+	return strings.TrimSpace(route)
+}
+
+func peerCallReceiptServiceType(route string) string {
+	return strings.TrimSpace(route)
+}
+
+func expectedPeerCallResultPayload(route string, body []byte) ([]byte, error) {
+	return body, nil
 }

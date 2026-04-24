@@ -8,7 +8,6 @@ import (
 
 	"entgo.io/ent"
 	"entgo.io/ent/dialect/sql"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementpaymentattempts"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementrecords"
 )
 
@@ -42,31 +41,8 @@ type FactSettlementRecords struct {
 	// Note holds the value of the "note" field.
 	Note string `json:"note,omitempty"`
 	// PayloadJSON holds the value of the "payload_json" field.
-	PayloadJSON string `json:"payload_json,omitempty"`
-	// Edges holds the relations/edges for other nodes in the graph.
-	// The values are being populated by the FactSettlementRecordsQuery when eager-loading is set.
-	Edges        FactSettlementRecordsEdges `json:"edges"`
+	PayloadJSON  string `json:"payload_json,omitempty"`
 	selectValues sql.SelectValues
-}
-
-// FactSettlementRecordsEdges holds the relations/edges for other nodes in the graph.
-type FactSettlementRecordsEdges struct {
-	// SettlementPaymentAttempt holds the value of the settlement_payment_attempt edge.
-	SettlementPaymentAttempt *FactSettlementPaymentAttempts `json:"settlement_payment_attempt,omitempty"`
-	// loadedTypes holds the information for reporting if a
-	// type was loaded (or requested) in eager-loading or not.
-	loadedTypes [1]bool
-}
-
-// SettlementPaymentAttemptOrErr returns the SettlementPaymentAttempt value or an error if the edge
-// was not loaded in eager-loading, or loaded but was not found.
-func (e FactSettlementRecordsEdges) SettlementPaymentAttemptOrErr() (*FactSettlementPaymentAttempts, error) {
-	if e.SettlementPaymentAttempt != nil {
-		return e.SettlementPaymentAttempt, nil
-	} else if e.loadedTypes[0] {
-		return nil, &NotFoundError{label: factsettlementpaymentattempts.Label}
-	}
-	return nil, &NotLoadedError{edge: "settlement_payment_attempt"}
 }
 
 // scanValues returns the types for scanning values from sql.Rows.
@@ -188,11 +164,6 @@ func (_m *FactSettlementRecords) assignValues(columns []string, values []any) er
 // This includes values selected through modifiers, order, etc.
 func (_m *FactSettlementRecords) Value(name string) (ent.Value, error) {
 	return _m.selectValues.Get(name)
-}
-
-// QuerySettlementPaymentAttempt queries the "settlement_payment_attempt" edge of the FactSettlementRecords entity.
-func (_m *FactSettlementRecords) QuerySettlementPaymentAttempt() *FactSettlementPaymentAttemptsQuery {
-	return NewFactSettlementRecordsClient(_m.config).QuerySettlementPaymentAttempt(_m)
 }
 
 // Update returns a builder for updating this FactSettlementRecords.

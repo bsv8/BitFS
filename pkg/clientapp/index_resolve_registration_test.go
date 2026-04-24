@@ -14,7 +14,7 @@ func TestInstallBuiltinModulesRejectsDuplicateRegistration(t *testing.T) {
 	store := newClientDB(db, nil)
 	rt := &Runtime{ctx: t.Context(), modules: newModuleRegistry()}
 
-	firstClose, err := installBuiltinModules(t.Context(), rt, store)
+	firstClose, err := installBuiltinModules(t.Context(), rt, store, db)
 	if err != nil {
 		t.Fatalf("first register failed: %v", err)
 	}
@@ -22,12 +22,12 @@ func TestInstallBuiltinModulesRejectsDuplicateRegistration(t *testing.T) {
 		t.Fatalf("expected cleanup handle")
 	}
 
-	if _, err := installBuiltinModules(t.Context(), rt, store); err == nil {
+	if _, err := installBuiltinModules(t.Context(), rt, store, db); err == nil {
 		t.Fatalf("expected duplicate register error")
 	}
 
 	firstClose()
-	secondClose, err := installBuiltinModules(t.Context(), rt, store)
+	secondClose, err := installBuiltinModules(t.Context(), rt, store, db)
 	if err != nil {
 		t.Fatalf("reinstall after cleanup failed: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestIndexResolveModuleLockRegistered(t *testing.T) {
 	store := newClientDB(db, nil)
 	rt := &Runtime{ctx: t.Context(), modules: newModuleRegistry()}
 
-	cleanup, err := installBuiltinModules(t.Context(), rt, store)
+	cleanup, err := installBuiltinModules(t.Context(), rt, store, db)
 	if err != nil {
 		t.Fatalf("install builtin modules failed: %v", err)
 	}

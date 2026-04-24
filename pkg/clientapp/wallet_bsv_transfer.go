@@ -459,7 +459,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				SettlementStatus:  finalStatus,
 				SettlementMethod:  string(SettlementMethodChain),
 				TargetType:        "chain_direct_pay",
-				TargetID:          fmt.Sprintf("%d", channelID),
+				TargetID:          channelID,
 				ErrorMessage:      "",
 				SettlementPayload: payload,
 				UpdatedAtUnix:     now,

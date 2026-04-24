@@ -2,6 +2,7 @@ package clientapp
 
 import (
 	"context"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"sort"
@@ -12,7 +13,9 @@ import (
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 )
 
-func loadWalletLocalBroadcastTxsTx(ctx context.Context, tx sqlConn, walletID string, address string) ([]walletLocalBroadcastRow, error) {
+func loadWalletLocalBroadcastTxsTx(ctx context.Context, tx interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, walletID string, address string) ([]walletLocalBroadcastRow, error) {
 	if tx == nil {
 		return nil, fmt.Errorf("tx is nil")
 	}
@@ -282,7 +285,9 @@ func walletUTXOBusinessEqual(current utxoStateRow, desired utxoStateRow) bool {
 }
 
 // applyWalletUTXODiffTx 统一比较业务字段，只把真正变化的行写回数据库。
-func applyWalletUTXODiffTx(ctx context.Context, tx sqlConn, current map[string]utxoStateRow, desired map[string]utxoStateRow, walletID string, address string, updatedAt int64) error {
+func applyWalletUTXODiffTx(ctx context.Context, tx interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, current map[string]utxoStateRow, desired map[string]utxoStateRow, walletID string, address string, updatedAt int64) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -443,7 +448,9 @@ func orderWalletLocalBroadcastRows(rows []walletLocalBroadcastRow) ([]walletLoca
 	return out, nil
 }
 
-func markObservedWalletLocalBroadcastTxsTx(ctx context.Context, tx sqlConn, observedTxIDs map[string]struct{}, updatedAt int64) error {
+func markObservedWalletLocalBroadcastTxsTx(ctx context.Context, tx interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, observedTxIDs map[string]struct{}, updatedAt int64) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}

@@ -10,14 +10,20 @@ import (
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	"github.com/bsv8/BitFS/pkg/clientapp/modulelock"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb"
+	chain_tx_v1 "github.com/bsv8/BitFS/pkg/clientapp/modules/chain_tx_v1"
 	domainmodule "github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
 	filestorage "github.com/bsv8/BitFS/pkg/clientapp/modules/filestorage"
 	inboxmessage "github.com/bsv8/BitFS/pkg/clientapp/modules/inboxmessage"
 	indexresolve "github.com/bsv8/BitFS/pkg/clientapp/modules/indexresolve"
+	pool_2of2_v1 "github.com/bsv8/BitFS/pkg/clientapp/modules/pool_2of2_v1"
+	pool_2of3_v1 "github.com/bsv8/BitFS/pkg/clientapp/modules/pool_2of3_v1"
 )
 
 func builtinModuleCatalog() []moduleapi.ModuleDescriptor {
 	return []moduleapi.ModuleDescriptor{
+		chain_tx_v1.Descriptor(),
+		pool_2of2_v1.Descriptor(),
+		pool_2of3_v1.Descriptor(),
 		domainmodule.Descriptor(),
 		indexresolve.Descriptor(),
 		filestorage.Descriptor(),
@@ -178,7 +184,7 @@ func toModuleLockProvider(provider func() []moduleapi.LockedFunction) modulelock
 	}
 }
 
-func installBuiltinModules(ctx context.Context, rt *Runtime, store moduleBootstrapStore) (func(), error) {
+func installBuiltinModules(ctx context.Context, rt *Runtime, store moduleBootstrapStore, rawDB any) (func(), error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("ctx is required")
 	}
@@ -192,11 +198,35 @@ func installBuiltinModules(ctx context.Context, rt *Runtime, store moduleBootstr
 	host := newModuleHost(rt, store)
 	catalog := builtinModuleCatalog()
 	cleanups := make([]func(), 0, len(catalog))
+	registeredStores := make([]string, 0)
 
 	for _, entry := range catalog {
 		if entry.Install == nil {
 			closeInstalledModules(cleanups)
+			for _, name := range registeredStores {
+				rt.UnregisterModuleStore(name)
+			}
 			return nil, fmt.Errorf("module %s installer is required", entry.Name)
+		}
+
+		// 如果 module 有 StoreFactory，先创建 store 并注册到 Runtime
+		if entry.StoreFactory != nil {
+			moduleStore := entry.StoreFactory(host.Store())
+			if moduleStore == nil {
+				closeInstalledModules(cleanups)
+				for _, name := range registeredStores {
+					rt.UnregisterModuleStore(name)
+				}
+				return nil, fmt.Errorf("module %s store factory returned nil", entry.Name)
+			}
+			if err := rt.RegisterModuleStore(entry.Name, moduleStore); err != nil {
+				closeInstalledModules(cleanups)
+				for _, name := range registeredStores {
+					rt.UnregisterModuleStore(name)
+				}
+				return nil, fmt.Errorf("module %s store factory failed: %w", entry.Name, err)
+			}
+			registeredStores = append(registeredStores, entry.Name)
 		}
 
 		if entry.ModuleLockProvider != nil {
@@ -207,6 +237,9 @@ func installBuiltinModules(ctx context.Context, rt *Runtime, store moduleBootstr
 			cleanup, err := rt.modules.RegisterModuleLockProvider(lockName, toModuleLockProvider(entry.ModuleLockProvider))
 			if err != nil {
 				closeInstalledModules(cleanups)
+				for _, name := range registeredStores {
+					rt.UnregisterModuleStore(name)
+				}
 				return nil, err
 			}
 			cleanups = append(cleanups, cleanup)
@@ -215,6 +248,9 @@ func installBuiltinModules(ctx context.Context, rt *Runtime, store moduleBootstr
 		cleanup, err := entry.Install(ctx, host)
 		if err != nil {
 			closeInstalledModules(cleanups)
+			for _, name := range registeredStores {
+				rt.UnregisterModuleStore(name)
+			}
 			return nil, err
 		}
 		if cleanup != nil {
@@ -224,6 +260,9 @@ func installBuiltinModules(ctx context.Context, rt *Runtime, store moduleBootstr
 
 	return func() {
 		closeInstalledModules(cleanups)
+		for _, name := range registeredStores {
+			rt.UnregisterModuleStore(name)
+		}
 	}, nil
 }
 

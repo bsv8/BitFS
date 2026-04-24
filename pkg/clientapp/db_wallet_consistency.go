@@ -4,58 +4,29 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
-	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factbsvutxos"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementchannelchaindirectpay"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementpaymentattempts"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementrecords"
 )
 
+// settlementAttemptLookupResult 结果结构（已废弃链上直接查询路径）
 type settlementAttemptLookupResult struct {
 	ID    int64
 	Found bool
 }
 
+// resolveSettlementPaymentAttemptIDByChannelTxID 已废弃
+// 第九阶段整改：fact_settlement_channel_chain_direct_pay 和 fact_settlement_payment_attempts 已删除
+// 链上直接支付查询路径不再可用，返回错误
 func resolveSettlementPaymentAttemptIDByChannelTxID(ctx context.Context, store *clientDB, sourceType, txid string, requireConfirmed bool) (int64, bool, error) {
 	if store == nil {
 		return 0, false, fmt.Errorf("client db is nil")
 	}
-	sourceType = strings.ToLower(strings.TrimSpace(sourceType))
 	txid = strings.ToLower(strings.TrimSpace(txid))
-	if sourceType == "" || txid == "" {
-		return 0, false, fmt.Errorf("source_type and txid are required")
+	if txid == "" {
+		return 0, false, fmt.Errorf("txid is required")
 	}
-	out, err := readEntValue(ctx, store, func(root EntReadRoot) (settlementAttemptLookupResult, error) {
-		channel, err := root.FactSettlementChannelChainDirectPay.Query().
-			Where(factsettlementchannelchaindirectpay.TxidEQ(txid)).
-			Only(ctx)
-		if err != nil {
-			if gen.IsNotFound(err) {
-				return settlementAttemptLookupResult{}, nil
-			}
-			return settlementAttemptLookupResult{}, err
-		}
-		q := channel.QuerySettlementPaymentAttempt().
-			Where(factsettlementpaymentattempts.SourceTypeEQ(sourceType))
-		if requireConfirmed {
-			q = q.Where(factsettlementpaymentattempts.StateEQ("confirmed"))
-		}
-		attempt, err := q.Only(ctx)
-		if err != nil {
-			if gen.IsNotFound(err) {
-				return settlementAttemptLookupResult{}, nil
-			}
-			return settlementAttemptLookupResult{}, err
-		}
-		return settlementAttemptLookupResult{ID: int64(attempt.ID), Found: true}, nil
-	})
-	if err != nil {
-		return 0, false, err
-	}
-	return out.ID, out.Found, nil
+	// 第九阶段：链上直接支付查询路径已删除
+	return 0, false, fmt.Errorf("chain_direct_pay lookup is no longer available: schema fact_settlement_channel_chain_direct_pay has been removed")
 }
 
 // TokenTxDualLineConsistency 是 token 交易一致性检查结果。
@@ -107,22 +78,10 @@ func CheckTokenTxDualLineConsistency(ctx context.Context, store *clientDB, txid 
 	}
 	out.HasCarrierBSVFact = count > 0
 
-	tokenPaymentAttemptID, found, err := resolveSettlementPaymentAttemptIDByChannelTxID(ctx, store, "chain_direct_pay", txid, false)
-	if err != nil {
-		return TokenTxDualLineConsistency{}, err
-	}
-	if found {
-		out.HasChainTokenCycle = true
-		count, err = readEntValue(ctx, store, func(root EntReadRoot) (int, error) {
-			return root.FactSettlementRecords.Query().
-				Where(factsettlementrecords.SettlementPaymentAttemptIDEQ(tokenPaymentAttemptID), factsettlementrecords.AssetTypeEQ("TOKEN")).
-				Count(ctx)
-		})
-		if err != nil {
-			return TokenTxDualLineConsistency{}, err
-		}
-		out.HasTokenQuantityFact = count > 0
-	}
+	// 第九阶段整改：链上直接支付路径已删除，无法再通过 channel txid 反查 settlement_payment_attempt
+	// HasChainTokenCycle 和 HasTokenQuantityFact 暂时无法确定，标记缺失项
+	out.HasChainTokenCycle = false
+	out.HasTokenQuantityFact = false
 
 	if !out.HasChainTokenCycle {
 		out.MissingItems = append(out.MissingItems, "chain_token_cycle")
@@ -146,41 +105,31 @@ func CheckConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, txi
 		return ConfirmedBSVSpendConsistency{}, fmt.Errorf("client db is nil")
 	}
 	out := ConfirmedBSVSpendConsistency{TxID: txid}
-	paymentAttemptID, found, err := resolveSettlementPaymentAttemptIDByChannelTxID(ctx, store, "chain_direct_pay", txid, true)
+
+	// 第九阶段整改：链上直接支付路径已删除，无法通过 channel txid 反查 payment attempt
+	// 只能检查 UTXO 是否存在，但无法验证完整的 settlement cycle
+	count, err := readEntValue(ctx, store, func(root EntReadRoot) (int, error) {
+		return root.FactBsvUtxos.Query().
+			Where(factbsvutxos.SpentByTxidEQ(txid), factbsvutxos.UtxoStateEQ("spent")).
+			Count(ctx)
+	})
 	if err != nil {
 		return ConfirmedBSVSpendConsistency{}, err
 	}
-	if found {
-		out.HasConfirmedCycle = true
-		count, err := readEntValue(ctx, store, func(root EntReadRoot) (int, error) {
-			return root.FactSettlementRecords.Query().
-				Where(factsettlementrecords.SettlementPaymentAttemptIDEQ(paymentAttemptID), factsettlementrecords.AssetTypeEQ("BSV")).
-				Count(ctx)
-		})
-		if err != nil {
-			return ConfirmedBSVSpendConsistency{}, err
-		}
-		out.HasBSVSettlementFact = count > 0
-		count, err = readEntValue(ctx, store, func(root EntReadRoot) (int, error) {
-			return root.FactBsvUtxos.Query().
-				Where(factbsvutxos.SpentByTxidEQ(txid), factbsvutxos.UtxoStateEQ("spent")).
-				Count(ctx)
-		})
-		if err != nil {
-			return ConfirmedBSVSpendConsistency{}, err
-		}
-		out.HasSpentUTXO = count > 0
-	}
+	out.HasSpentUTXO = count > 0
+
+	// 链上直接支付路径已删除，无法验证 confirmed_cycle 和 bsv_settlement_fact
+	out.HasConfirmedCycle = false
+	out.HasBSVSettlementFact = false
 
 	if !out.HasConfirmedCycle {
 		out.MissingItems = append(out.MissingItems, "confirmed_cycle")
 	}
-	if out.HasConfirmedCycle && !out.HasBSVSettlementFact {
+	if !out.HasBSVSettlementFact {
 		out.MissingItems = append(out.MissingItems, "bsv_settlement_fact")
 	}
-	if out.HasConfirmedCycle && out.HasBSVSettlementFact && !out.HasSpentUTXO {
-		out.MissingItems = append(out.MissingItems, "spent_bsv_utxo")
-		out.Repairable = true
+	if out.HasSpentUTXO {
+		out.MissingItems = append(out.MissingItems, "utxo_spent_but_cycle_unknown")
 	}
 	return out, nil
 }
@@ -190,6 +139,8 @@ func CheckConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, txi
 // - 只从既有 settlement_payment_attempt / settlement_record 回放；
 // - 不直接改 fact_bsv_utxos，避免旁路修复把账修歪；
 // - 重放本身是幂等的，已 spent 的 UTXO 会直接跳过。
+//
+// 第九阶段整改：此函数已废弃，链上直接支付路径已删除
 func RepairConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, txid string) error {
 	txid = strings.ToLower(strings.TrimSpace(txid))
 	if txid == "" {
@@ -198,62 +149,6 @@ func RepairConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, tx
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.WriteTx(ctx, func(wtx moduleapi.WriteTx) error {
-		paymentAttemptID, found, err := resolveSettlementPaymentAttemptIDByChannelTxID(ctx, store, "chain_direct_pay", txid, true)
-		if err != nil {
-			return err
-		}
-		if !found {
-			return fmt.Errorf("confirmed settlement payment attempt not found for txid=%s", txid)
-		}
-		now := time.Now().Unix()
-		rows, err := wtx.QueryContext(ctx, `SELECT source_utxo_id, used_satoshi
-			FROM fact_settlement_records
-			WHERE settlement_payment_attempt_id=? AND asset_type='BSV' AND state='confirmed' AND source_utxo_id<>''`,
-			paymentAttemptID)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-
-		facts := make([]chainPaymentUTXOLinkEntry, 0, 8)
-		for rows.Next() {
-			var utxoID string
-			var usedSatoshi int64
-			if err := rows.Scan(&utxoID, &usedSatoshi); err != nil {
-				return err
-			}
-			facts = append(facts, chainPaymentUTXOLinkEntry{
-				UTXOID:        strings.ToLower(strings.TrimSpace(utxoID)),
-				IOSide:        "input",
-				UTXORole:      "wallet_input",
-				AmountSatoshi: usedSatoshi,
-			})
-		}
-		if err := rows.Err(); err != nil {
-			return err
-		}
-		if len(facts) == 0 {
-			return fmt.Errorf("no bsv settlement records found for txid=%s", txid)
-		}
-		for _, fact := range facts {
-			var currentState string
-			var currentSpentByTxid string
-			if err := wtx.QueryRowContext(ctx, `SELECT utxo_state, COALESCE(spent_by_txid,'') FROM fact_bsv_utxos WHERE utxo_id=?`, fact.UTXOID).Scan(&currentState, &currentSpentByTxid); err != nil {
-				return fmt.Errorf("lookup bsv utxo %s failed: %w", fact.UTXOID, err)
-			}
-			currentState = strings.ToLower(strings.TrimSpace(currentState))
-			currentSpentByTxid = strings.ToLower(strings.TrimSpace(currentSpentByTxid))
-			if currentSpentByTxid != "" && currentSpentByTxid != txid {
-				return fmt.Errorf("bsv utxo %s already spent by %s", fact.UTXOID, currentSpentByTxid)
-			}
-			if currentState == "spent" && currentSpentByTxid == txid {
-				continue
-			}
-			if err := markBSVUTXOSpentConn(ctx, wtx, fact.UTXOID, txid, now); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	// 第九阶段：链上直接支付查询路径已删除，无法进行重放修复
+	return fmt.Errorf("RepairConfirmedBSVSpendConsistency is no longer available: chain_direct_pay schema has been removed")
 }

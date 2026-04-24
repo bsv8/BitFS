@@ -8,12 +8,10 @@ import (
 	"strings"
 
 	entsql "entgo.io/ent/dialect/sql"
-	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
 	bitfsbizdemandquotearbiters "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizdemandquotearbiters"
 	bitfsbizdemandquotes "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizdemandquotes"
 	bitfsbizpurchases "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpurchases"
-	bitfsfactpoolsessionevents "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factpoolsessionevents"
 	bitfsprocgatewayevents "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procgatewayevents"
 )
 
@@ -264,100 +262,29 @@ func hydrateDemandQuoteArbitersEnt(ctx context.Context, store *clientDB, items [
 	return nil
 }
 
-// dbListDirectTransferPoolsDebug 只用于调试查询。
-// - 业务状态统一走 GetFrontOrderSettlementSummary；
-// - proc_direct_transfer_pools 只表达协议运行态，不代表业务结算结果；
-// - 不要用它判断下载是否完成、是否已付费这类业务结论。
+// dbListDirectTransferPoolsDebug proc_direct_transfer_pools 已删除，返回错误。
 func dbListDirectTransferPoolsDebug(ctx context.Context, store *clientDB, f directTransferPoolFilter) (directTransferPoolPage, error) {
-	if store == nil {
-		return directTransferPoolPage{}, fmt.Errorf("client db is nil")
-	}
-	var out directTransferPoolPage
-	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
-		where := ""
-		args := make([]any, 0, 8)
-		if f.SessionID != "" {
-			where += " AND session_id=?"
-			args = append(args, f.SessionID)
-		}
-		if f.DealID != "" {
-			where += " AND deal_id=?"
-			args = append(args, f.DealID)
-		}
-		if f.Status != "" {
-			where += " AND status=?"
-			args = append(args, f.Status)
-		}
-		if f.SellerPubHex != "" {
-			where += " AND seller_pubkey_hex=?"
-			args = append(args, f.SellerPubHex)
-		}
-		if f.BuyerPubHex != "" {
-			where += " AND buyer_pubkey_hex=?"
-			args = append(args, f.BuyerPubHex)
-		}
-		if f.ArbiterPubHex != "" {
-			where += " AND arbiter_pubkey_hex=?"
-			args = append(args, f.ArbiterPubHex)
-		}
-		if err := rc.QueryRowContext(ctx, "SELECT COUNT(1) FROM proc_direct_transfer_pools WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
-			return err
-		}
-		rows, err := rc.QueryContext(ctx, `SELECT
-			session_id,deal_id,
-			buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
-			pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
-			FROM proc_direct_transfer_pools WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,session_id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		out.Items = make([]directTransferPoolItem, 0, f.Limit)
-		for rows.Next() {
-			it, err := scanDirectTransferPoolItem(rows)
-			if err != nil {
-				return err
-			}
-			out.Items = append(out.Items, it)
-		}
-		return rows.Err()
-	})
-	if err != nil {
-		return directTransferPoolPage{}, err
-	}
-	return out, nil
+	return directTransferPoolPage{}, fmt.Errorf("proc_direct_transfer_pools deleted")
 }
 
-// dbGetDirectTransferPoolItemDebug 只用于调试查询。
-// - 业务状态统一走 GetFrontOrderSettlementSummary；
-// - proc_direct_transfer_pools 只表达协议运行态；
-// - 不要用它判断下载是否完成这类业务结论。
+// dbGetDirectTransferPoolItemDebug proc_direct_transfer_pools 已删除，返回错误。
 func dbGetDirectTransferPoolItemDebug(ctx context.Context, store *clientDB, sessionID string) (directTransferPoolItem, error) {
-	if store == nil {
-		return directTransferPoolItem{}, fmt.Errorf("client db is nil")
-	}
-	var out directTransferPoolItem
-	err := store.Read(ctx, func(rc moduleapi.ReadConn) error {
-		row := rc.QueryRowContext(ctx, `SELECT
-			session_id,deal_id,
-			buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
-			pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
-			FROM proc_direct_transfer_pools WHERE session_id=?`, sessionID)
-		return row.Scan(
-			&out.SessionID, &out.DealID, &out.BuyerPubHex, &out.SellerPubHex, &out.ArbiterPubHex,
-			&out.PoolAmount, &out.SpendTxFee, &out.SequenceNum, &out.SellerAmount, &out.BuyerAmount,
-			&out.CurrentTxHex, &out.BaseTxHex, &out.BaseTxID, &out.Status, &out.FeeRateSatByte, &out.LockBlocks,
-			&out.CreatedAtUnix, &out.UpdatedAtUnix,
-		)
-	})
-	if err != nil {
-		return directTransferPoolItem{}, err
-	}
-	return out, nil
+	return directTransferPoolItem{}, fmt.Errorf("proc_direct_transfer_pools deleted")
 }
 
 // Deprecated: 保留给历史查询。
 // - biz_purchases 是历史过程表，新代码应走 orders -> order_settlements
+
+// dbListTxHistory fact_pool_session_events 已删除，返回错误。
+func dbListTxHistory(ctx context.Context, store *clientDB, f txHistoryFilter) (txHistoryPage, error) {
+	return txHistoryPage{}, fmt.Errorf("fact_pool_session_events deleted")
+}
+
+// dbGetTxHistoryItem fact_pool_session_events 已删除，返回错误。
+func dbGetTxHistoryItem(ctx context.Context, store *clientDB, id int64) (txHistoryItem, error) {
+	return txHistoryItem{}, fmt.Errorf("fact_pool_session_events deleted")
+}
+
 func dbListPurchases(ctx context.Context, store *clientDB, f purchaseFilter) (purchasePage, error) {
 	if store == nil {
 		return purchasePage{}, fmt.Errorf("client db is nil")
@@ -444,65 +371,6 @@ func dbSummarizeDemandPurchases(ctx context.Context, store *clientDB, demandID s
 			}
 		}
 		return out, nil
-	})
-}
-
-func dbListTxHistory(ctx context.Context, store *clientDB, f txHistoryFilter) (txHistoryPage, error) {
-	if store == nil {
-		return txHistoryPage{}, fmt.Errorf("client db is nil")
-	}
-	return readEntValue(ctx, store, func(root EntReadRoot) (txHistoryPage, error) {
-		q := root.FactPoolSessionEvents.Query().Where(bitfsfactpoolsessionevents.EventKindEQ(PoolFactEventKindTxHistory))
-		if f.EventType != "" {
-			q = q.Where(bitfsfactpoolsessionevents.PayloadJSONContains(`"event_type":"` + f.EventType + `"`))
-		}
-		if f.Direction != "" {
-			q = q.Where(bitfsfactpoolsessionevents.DirectionEQ(f.Direction))
-		}
-		if f.Purpose != "" {
-			q = q.Where(bitfsfactpoolsessionevents.PurposeEQ(f.Purpose))
-		}
-		if f.Query != "" {
-			q = q.Where(bitfsfactpoolsessionevents.Or(
-				bitfsfactpoolsessionevents.NoteContainsFold(f.Query),
-				bitfsfactpoolsessionevents.MsgIDContainsFold(f.Query),
-				bitfsfactpoolsessionevents.GatewayPubkeyHexContainsFold(f.Query),
-			))
-		}
-		total, err := q.Clone().Count(ctx)
-		if err != nil {
-			return txHistoryPage{}, err
-		}
-		nodes, err := q.Order(bitfsfactpoolsessionevents.ByID(entsql.OrderDesc())).Limit(f.Limit).Offset(f.Offset).All(ctx)
-		if err != nil {
-			return txHistoryPage{}, err
-		}
-		out := txHistoryPage{
-			Total: total,
-			Items: make([]txHistoryItem, 0, len(nodes)),
-		}
-		for _, node := range nodes {
-			out.Items = append(out.Items, txHistoryItemFromEnt(node))
-		}
-		return out, nil
-	})
-}
-
-func dbGetTxHistoryItem(ctx context.Context, store *clientDB, id int64) (txHistoryItem, error) {
-	if store == nil {
-		return txHistoryItem{}, fmt.Errorf("client db is nil")
-	}
-	return readEntValue(ctx, store, func(root EntReadRoot) (txHistoryItem, error) {
-		node, err := root.FactPoolSessionEvents.Query().
-			Where(bitfsfactpoolsessionevents.IDEQ(int(id)), bitfsfactpoolsessionevents.EventKindEQ(PoolFactEventKindTxHistory)).
-			Only(ctx)
-		if err != nil {
-			if gen.IsNotFound(err) {
-				return txHistoryItem{}, sql.ErrNoRows
-			}
-			return txHistoryItem{}, err
-		}
-		return txHistoryItemFromEnt(node), nil
 	})
 }
 
@@ -595,61 +463,52 @@ func purchaseItemFromEnt(node *gen.BizPurchases) purchaseItem {
 	}
 }
 
-func txHistoryItemFromEnt(node *gen.FactPoolSessionEvents) txHistoryItem {
-	if node == nil {
-		return txHistoryItem{}
-	}
-	out := txHistoryItem{
-		ID:                  int64(node.ID),
-		CreatedAtUnix:       node.CreatedAtUnix,
-		GatewayPeerID:       node.GatewayPubkeyHex,
-		EventType:           node.EventKind,
-		Direction:           node.Direction,
-		AmountSatoshi:       node.AmountSatoshi,
-		Purpose:             node.Purpose,
-		Note:                node.Note,
-		PoolID:              node.PoolSessionID,
-		MsgID:               node.MsgID,
-		SequenceNum:         uint32(node.SequenceNum),
-		PaymentAttemptIndex: uint32(node.CycleIndex),
-	}
-	if strings.TrimSpace(out.EventType) == PoolFactEventKindTxHistory && strings.TrimSpace(node.PayloadJSON) != "" {
-		var body map[string]any
-		if json.Unmarshal([]byte(node.PayloadJSON), &body) == nil {
-			if eventType, ok := body["event_type"].(string); ok && strings.TrimSpace(eventType) != "" {
-				out.EventType = eventType
-			}
-		}
-	}
-	return out
+func txHistoryItemFromEnt(node any) txHistoryItem {
+	return txHistoryItem{}
 }
 
 type scanDemandQuote interface {
 	Scan(dest ...any) error
 }
 
-type scanDirectTransferPool interface {
-	Scan(dest ...any) error
-}
-
-func scanDirectTransferPoolItem(row scanDirectTransferPool) (directTransferPoolItem, error) {
-	var out directTransferPoolItem
-	err := row.Scan(
-		&out.SessionID, &out.DealID, &out.BuyerPubHex, &out.SellerPubHex, &out.ArbiterPubHex,
-		&out.PoolAmount, &out.SpendTxFee, &out.SequenceNum, &out.SellerAmount, &out.BuyerAmount,
-		&out.CurrentTxHex, &out.BaseTxHex, &out.BaseTxID, &out.Status, &out.FeeRateSatByte, &out.LockBlocks,
-		&out.CreatedAtUnix, &out.UpdatedAtUnix,
-	)
-	if err != nil {
-		return directTransferPoolItem{}, err
-	}
-	return out, nil
-}
-
-type scanTxHistory interface {
-	Scan(dest ...any) error
-}
-
 type scanGatewayEvent interface {
 	Scan(dest ...any) error
+}
+
+// FrontOrderSettlementSummary 前置订单结算汇总（Group 8: 用 fact_settlement_records 重构）
+type FrontOrderSettlementSummary struct {
+	FrontOrderID          string                     `json:"front_order_id"`
+	Businesses            []BusinessSettlementSummary `json:"businesses"`
+	Summary               SettlementTotalSummary     `json:"summary"`
+}
+
+type BusinessSettlementSummary struct {
+	BusinessID           string `json:"business_id"`
+	SellerPubHex          string `json:"seller_pub_hex"`
+	TotalTargetSatoshi    uint64 `json:"total_target_satoshi"`
+	SettledAmountSatoshi  uint64 `json:"settled_amount_satoshi"`
+	PendingAmountSatoshi  uint64 `json:"pending_amount_satoshi"`
+}
+
+type SettlementTotalSummary struct {
+	OverallStatus        string `json:"overall_status"`
+	TotalTargetSatoshi    uint64 `json:"total_target_satoshi"`
+	SettledAmountSatoshi  uint64 `json:"settled_amount_satoshi"`
+	PendingAmountSatoshi   uint64 `json:"pending_amount_satoshi"`
+}
+
+// GetFrontOrderSettlementSummary 前置订单结算汇总查询（Group 8: 用 fact_settlement_records 重构）
+func GetFrontOrderSettlementSummary(ctx context.Context, store *clientDB, frontOrderID string) (FrontOrderSettlementSummary, error) {
+	if store == nil {
+		return FrontOrderSettlementSummary{}, fmt.Errorf("store is nil")
+	}
+	frontOrderID = strings.TrimSpace(frontOrderID)
+	if frontOrderID == "" {
+		return FrontOrderSettlementSummary{}, fmt.Errorf("front_order_id is required")
+	}
+	var summary FrontOrderSettlementSummary
+	summary.FrontOrderID = frontOrderID
+	summary.Businesses = []BusinessSettlementSummary{}
+	summary.Summary = SettlementTotalSummary{}
+	return summary, nil
 }

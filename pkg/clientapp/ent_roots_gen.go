@@ -39,11 +39,7 @@ type entReadRoot struct {
 	BizPurchases                             queryBox[gen.BizPurchasesQuery]
 	BizDemandQuotes                          queryBox[gen.BizDemandQuotesQuery]
 	BizDemandQuoteArbiters                   queryBox[gen.BizDemandQuoteArbitersQuery]
-	BizPool                                  queryBox[gen.BizPoolQuery]
-	BizPoolAllocations                       queryBox[gen.BizPoolAllocationsQuery]
 	Orders                                   queryBox[gen.OrdersQuery]
-	OrderSettlements                         queryBox[gen.OrderSettlementsQuery]
-	OrderSettlementEvents                    queryBox[gen.OrderSettlementEventsQuery]
 	ProcCommandJournal                       queryBox[gen.ProcCommandJournalQuery]
 	ProcGatewayEvents                        queryBox[gen.ProcGatewayEventsQuery]
 	ProcDomainEvents                         queryBox[gen.ProcDomainEventsQuery]
@@ -57,7 +53,6 @@ type entReadRoot struct {
 	ProcChainUtxoWorkerLogs                  queryBox[gen.ProcChainUtxoWorkerLogsQuery]
 	ProcChainTipState                        queryBox[gen.ProcChainTipStateQuery]
 	ProcDirectDeals                          queryBox[gen.ProcDirectDealsQuery]
-	ProcDirectTransferPools                  queryBox[gen.ProcDirectTransferPoolsQuery]
 	ProcGetFileByHashChunks                  queryBox[gen.ProcGetFileByHashChunksQuery]
 	ProcGetFileByHashJobs                    queryBox[gen.ProcGetFileByHashJobsQuery]
 	ProcGetFileByHashQuotes                  queryBox[gen.ProcGetFileByHashQuotesQuery]
@@ -68,16 +63,10 @@ type entReadRoot struct {
 	WalletUtxoSyncState                      queryBox[gen.WalletUtxoSyncStateQuery]
 	WalletUtxoSyncCursor                     queryBox[gen.WalletUtxoSyncCursorQuery]
 	WalletUtxoTokenVerification              queryBox[gen.WalletUtxoTokenVerificationQuery]
-	FactPoolSessionEvents                    queryBox[gen.FactPoolSessionEventsQuery]
 	FactBsvUtxos                             queryBox[gen.FactBsvUtxosQuery]
 	FactTokenLots                            queryBox[gen.FactTokenLotsQuery]
 	FactTokenCarrierLinks                    queryBox[gen.FactTokenCarrierLinksQuery]
 	FactSettlementRecords                    queryBox[gen.FactSettlementRecordsQuery]
-	FactSettlementPaymentAttempts            queryBox[gen.FactSettlementPaymentAttemptsQuery]
-	FactSettlementChannelChainAssetCreate    queryBox[gen.FactSettlementChannelChainAssetCreateQuery]
-	FactSettlementChannelChainDirectPay      queryBox[gen.FactSettlementChannelChainDirectPayQuery]
-	FactSettlementChannelChainQuotePay       queryBox[gen.FactSettlementChannelChainQuotePayQuery]
-	FactSettlementChannelPoolSessionQuotePay queryBox[gen.FactSettlementChannelPoolSessionQuotePayQuery]
 }
 
 // EntReadRoot 是读壳的对外类型。
@@ -96,11 +85,7 @@ type entWriteRoot struct {
 	BizPurchases                             *gen.BizPurchasesClient
 	BizDemandQuotes                          *gen.BizDemandQuotesClient
 	BizDemandQuoteArbiters                   *gen.BizDemandQuoteArbitersClient
-	BizPool                                  *gen.BizPoolClient
-	BizPoolAllocations                       *gen.BizPoolAllocationsClient
 	Orders                                   *gen.OrdersClient
-	OrderSettlements                         *gen.OrderSettlementsClient
-	OrderSettlementEvents                    *gen.OrderSettlementEventsClient
 	ProcCommandJournal                       *gen.ProcCommandJournalClient
 	ProcGatewayEvents                        *gen.ProcGatewayEventsClient
 	ProcDomainEvents                         *gen.ProcDomainEventsClient
@@ -114,7 +99,6 @@ type entWriteRoot struct {
 	ProcChainUtxoWorkerLogs                  *gen.ProcChainUtxoWorkerLogsClient
 	ProcChainTipState                        *gen.ProcChainTipStateClient
 	ProcDirectDeals                          *gen.ProcDirectDealsClient
-	ProcDirectTransferPools                  *gen.ProcDirectTransferPoolsClient
 	ProcGetFileByHashChunks                  *gen.ProcGetFileByHashChunksClient
 	ProcGetFileByHashJobs                    *gen.ProcGetFileByHashJobsClient
 	ProcGetFileByHashQuotes                  *gen.ProcGetFileByHashQuotesClient
@@ -125,16 +109,10 @@ type entWriteRoot struct {
 	WalletUtxoSyncState                      *gen.WalletUtxoSyncStateClient
 	WalletUtxoSyncCursor                     *gen.WalletUtxoSyncCursorClient
 	WalletUtxoTokenVerification              *gen.WalletUtxoTokenVerificationClient
-	FactPoolSessionEvents                    *gen.FactPoolSessionEventsClient
 	FactBsvUtxos                             *gen.FactBsvUtxosClient
 	FactTokenLots                            *gen.FactTokenLotsClient
 	FactTokenCarrierLinks                    *gen.FactTokenCarrierLinksClient
 	FactSettlementRecords                    *gen.FactSettlementRecordsClient
-	FactSettlementPaymentAttempts            *gen.FactSettlementPaymentAttemptsClient
-	FactSettlementChannelChainAssetCreate    *gen.FactSettlementChannelChainAssetCreateClient
-	FactSettlementChannelChainDirectPay      *gen.FactSettlementChannelChainDirectPayClient
-	FactSettlementChannelChainQuotePay       *gen.FactSettlementChannelChainQuotePayClient
-	FactSettlementChannelPoolSessionQuotePay *gen.FactSettlementChannelPoolSessionQuotePayClient
 }
 
 // EntWriteRoot 是写壳的对外类型。
@@ -153,11 +131,7 @@ func newEntReadRoot(client *gen.Client) EntReadRoot {
 		BizPurchases:                             newQueryBox(client.BizPurchases.Query),
 		BizDemandQuotes:                          newQueryBox(client.BizDemandQuotes.Query),
 		BizDemandQuoteArbiters:                   newQueryBox(client.BizDemandQuoteArbiters.Query),
-		BizPool:                                  newQueryBox(client.BizPool.Query),
-		BizPoolAllocations:                       newQueryBox(client.BizPoolAllocations.Query),
 		Orders:                                   newQueryBox(client.Orders.Query),
-		OrderSettlements:                         newQueryBox(client.OrderSettlements.Query),
-		OrderSettlementEvents:                    newQueryBox(client.OrderSettlementEvents.Query),
 		ProcCommandJournal:                       newQueryBox(client.ProcCommandJournal.Query),
 		ProcGatewayEvents:                        newQueryBox(client.ProcGatewayEvents.Query),
 		ProcDomainEvents:                         newQueryBox(client.ProcDomainEvents.Query),
@@ -171,7 +145,6 @@ func newEntReadRoot(client *gen.Client) EntReadRoot {
 		ProcChainUtxoWorkerLogs:                  newQueryBox(client.ProcChainUtxoWorkerLogs.Query),
 		ProcChainTipState:                        newQueryBox(client.ProcChainTipState.Query),
 		ProcDirectDeals:                          newQueryBox(client.ProcDirectDeals.Query),
-		ProcDirectTransferPools:                  newQueryBox(client.ProcDirectTransferPools.Query),
 		ProcGetFileByHashChunks:                  newQueryBox(client.ProcGetFileByHashChunks.Query),
 		ProcGetFileByHashJobs:                    newQueryBox(client.ProcGetFileByHashJobs.Query),
 		ProcGetFileByHashQuotes:                  newQueryBox(client.ProcGetFileByHashQuotes.Query),
@@ -182,16 +155,10 @@ func newEntReadRoot(client *gen.Client) EntReadRoot {
 		WalletUtxoSyncState:                      newQueryBox(client.WalletUtxoSyncState.Query),
 		WalletUtxoSyncCursor:                     newQueryBox(client.WalletUtxoSyncCursor.Query),
 		WalletUtxoTokenVerification:              newQueryBox(client.WalletUtxoTokenVerification.Query),
-		FactPoolSessionEvents:                    newQueryBox(client.FactPoolSessionEvents.Query),
 		FactBsvUtxos:                             newQueryBox(client.FactBsvUtxos.Query),
 		FactTokenLots:                            newQueryBox(client.FactTokenLots.Query),
 		FactTokenCarrierLinks:                    newQueryBox(client.FactTokenCarrierLinks.Query),
 		FactSettlementRecords:                    newQueryBox(client.FactSettlementRecords.Query),
-		FactSettlementPaymentAttempts:            newQueryBox(client.FactSettlementPaymentAttempts.Query),
-		FactSettlementChannelChainAssetCreate:    newQueryBox(client.FactSettlementChannelChainAssetCreate.Query),
-		FactSettlementChannelChainDirectPay:      newQueryBox(client.FactSettlementChannelChainDirectPay.Query),
-		FactSettlementChannelChainQuotePay:       newQueryBox(client.FactSettlementChannelChainQuotePay.Query),
-		FactSettlementChannelPoolSessionQuotePay: newQueryBox(client.FactSettlementChannelPoolSessionQuotePay.Query),
 	}
 }
 
@@ -222,11 +189,7 @@ func newEntWriteRoot(tx *sql.Tx) EntWriteRoot {
 		BizPurchases:                             client.BizPurchases,
 		BizDemandQuotes:                          client.BizDemandQuotes,
 		BizDemandQuoteArbiters:                   client.BizDemandQuoteArbiters,
-		BizPool:                                  client.BizPool,
-		BizPoolAllocations:                       client.BizPoolAllocations,
 		Orders:                                   client.Orders,
-		OrderSettlements:                         client.OrderSettlements,
-		OrderSettlementEvents:                    client.OrderSettlementEvents,
 		ProcCommandJournal:                       client.ProcCommandJournal,
 		ProcGatewayEvents:                        client.ProcGatewayEvents,
 		ProcDomainEvents:                         client.ProcDomainEvents,
@@ -240,7 +203,6 @@ func newEntWriteRoot(tx *sql.Tx) EntWriteRoot {
 		ProcChainUtxoWorkerLogs:                  client.ProcChainUtxoWorkerLogs,
 		ProcChainTipState:                        client.ProcChainTipState,
 		ProcDirectDeals:                          client.ProcDirectDeals,
-		ProcDirectTransferPools:                  client.ProcDirectTransferPools,
 		ProcGetFileByHashChunks:                  client.ProcGetFileByHashChunks,
 		ProcGetFileByHashJobs:                    client.ProcGetFileByHashJobs,
 		ProcGetFileByHashQuotes:                  client.ProcGetFileByHashQuotes,
@@ -251,16 +213,10 @@ func newEntWriteRoot(tx *sql.Tx) EntWriteRoot {
 		WalletUtxoSyncState:                      client.WalletUtxoSyncState,
 		WalletUtxoSyncCursor:                     client.WalletUtxoSyncCursor,
 		WalletUtxoTokenVerification:              client.WalletUtxoTokenVerification,
-		FactPoolSessionEvents:                    client.FactPoolSessionEvents,
 		FactBsvUtxos:                             client.FactBsvUtxos,
 		FactTokenLots:                            client.FactTokenLots,
 		FactTokenCarrierLinks:                    client.FactTokenCarrierLinks,
 		FactSettlementRecords:                    client.FactSettlementRecords,
-		FactSettlementPaymentAttempts:            client.FactSettlementPaymentAttempts,
-		FactSettlementChannelChainAssetCreate:    client.FactSettlementChannelChainAssetCreate,
-		FactSettlementChannelChainDirectPay:      client.FactSettlementChannelChainDirectPay,
-		FactSettlementChannelChainQuotePay:       client.FactSettlementChannelChainQuotePay,
-		FactSettlementChannelPoolSessionQuotePay: client.FactSettlementChannelPoolSessionQuotePay,
 	}
 }
 

@@ -14,15 +14,12 @@ import (
 	"entgo.io/ent"
 	"entgo.io/ent/dialect"
 	"entgo.io/ent/dialect/sql"
-	"entgo.io/ent/dialect/sql/sqlgraph"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizbusinesstriggers"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizdemandquotearbiters"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizdemandquotes"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizdemands"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizfrontorders"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizlivequotes"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpool"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpoolallocations"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpricingautopilotaudit"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpricingautopilotconfig"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpricingautopilotstate"
@@ -33,25 +30,15 @@ import (
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factbsv21"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factbsv21events"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factbsvutxos"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factpoolsessionevents"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementchannelchainassetcreate"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementchannelchaindirectpay"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementchannelchainquotepay"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementchannelpoolsessionquotepay"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementcycles"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementpaymentattempts"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementrecords"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/facttokencarrierlinks"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/facttokenlots"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/orders"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/ordersettlementevents"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/ordersettlements"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procchaintipstate"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procchaintipworkerlogs"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procchainutxoworkerlogs"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/proccommandjournal"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procdirectdeals"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procdirecttransferpools"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procdomainevents"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/proceffectlogs"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procgatewayevents"
@@ -91,10 +78,6 @@ type Client struct {
 	BizFrontOrders *BizFrontOrdersClient
 	// BizLiveQuotes is the client for interacting with the BizLiveQuotes builders.
 	BizLiveQuotes *BizLiveQuotesClient
-	// BizPool is the client for interacting with the BizPool builders.
-	BizPool *BizPoolClient
-	// BizPoolAllocations is the client for interacting with the BizPoolAllocations builders.
-	BizPoolAllocations *BizPoolAllocationsClient
 	// BizPricingAutopilotAudit is the client for interacting with the BizPricingAutopilotAudit builders.
 	BizPricingAutopilotAudit *BizPricingAutopilotAuditClient
 	// BizPricingAutopilotConfig is the client for interacting with the BizPricingAutopilotConfig builders.
@@ -115,30 +98,12 @@ type Client struct {
 	FactBsv21Events *FactBsv21EventsClient
 	// FactBsvUtxos is the client for interacting with the FactBsvUtxos builders.
 	FactBsvUtxos *FactBsvUtxosClient
-	// FactPoolSessionEvents is the client for interacting with the FactPoolSessionEvents builders.
-	FactPoolSessionEvents *FactPoolSessionEventsClient
-	// FactSettlementChannelChainAssetCreate is the client for interacting with the FactSettlementChannelChainAssetCreate builders.
-	FactSettlementChannelChainAssetCreate *FactSettlementChannelChainAssetCreateClient
-	// FactSettlementChannelChainDirectPay is the client for interacting with the FactSettlementChannelChainDirectPay builders.
-	FactSettlementChannelChainDirectPay *FactSettlementChannelChainDirectPayClient
-	// FactSettlementChannelChainQuotePay is the client for interacting with the FactSettlementChannelChainQuotePay builders.
-	FactSettlementChannelChainQuotePay *FactSettlementChannelChainQuotePayClient
-	// FactSettlementChannelPoolSessionQuotePay is the client for interacting with the FactSettlementChannelPoolSessionQuotePay builders.
-	FactSettlementChannelPoolSessionQuotePay *FactSettlementChannelPoolSessionQuotePayClient
-	// FactSettlementCycles is the client for interacting with the FactSettlementCycles builders.
-	FactSettlementCycles *FactSettlementCyclesClient
-	// FactSettlementPaymentAttempts is the client for interacting with the FactSettlementPaymentAttempts builders.
-	FactSettlementPaymentAttempts *FactSettlementPaymentAttemptsClient
 	// FactSettlementRecords is the client for interacting with the FactSettlementRecords builders.
 	FactSettlementRecords *FactSettlementRecordsClient
 	// FactTokenCarrierLinks is the client for interacting with the FactTokenCarrierLinks builders.
 	FactTokenCarrierLinks *FactTokenCarrierLinksClient
 	// FactTokenLots is the client for interacting with the FactTokenLots builders.
 	FactTokenLots *FactTokenLotsClient
-	// OrderSettlementEvents is the client for interacting with the OrderSettlementEvents builders.
-	OrderSettlementEvents *OrderSettlementEventsClient
-	// OrderSettlements is the client for interacting with the OrderSettlements builders.
-	OrderSettlements *OrderSettlementsClient
 	// Orders is the client for interacting with the Orders builders.
 	Orders *OrdersClient
 	// ProcChainTipState is the client for interacting with the ProcChainTipState builders.
@@ -151,8 +116,6 @@ type Client struct {
 	ProcCommandJournal *ProcCommandJournalClient
 	// ProcDirectDeals is the client for interacting with the ProcDirectDeals builders.
 	ProcDirectDeals *ProcDirectDealsClient
-	// ProcDirectTransferPools is the client for interacting with the ProcDirectTransferPools builders.
-	ProcDirectTransferPools *ProcDirectTransferPoolsClient
 	// ProcDomainEvents is the client for interacting with the ProcDomainEvents builders.
 	ProcDomainEvents *ProcDomainEventsClient
 	// ProcEffectLogs is the client for interacting with the ProcEffectLogs builders.
@@ -210,8 +173,6 @@ func (c *Client) init() {
 	c.BizDemands = NewBizDemandsClient(c.config)
 	c.BizFrontOrders = NewBizFrontOrdersClient(c.config)
 	c.BizLiveQuotes = NewBizLiveQuotesClient(c.config)
-	c.BizPool = NewBizPoolClient(c.config)
-	c.BizPoolAllocations = NewBizPoolAllocationsClient(c.config)
 	c.BizPricingAutopilotAudit = NewBizPricingAutopilotAuditClient(c.config)
 	c.BizPricingAutopilotConfig = NewBizPricingAutopilotConfigClient(c.config)
 	c.BizPricingAutopilotState = NewBizPricingAutopilotStateClient(c.config)
@@ -222,25 +183,15 @@ func (c *Client) init() {
 	c.FactBsv21 = NewFactBsv21Client(c.config)
 	c.FactBsv21Events = NewFactBsv21EventsClient(c.config)
 	c.FactBsvUtxos = NewFactBsvUtxosClient(c.config)
-	c.FactPoolSessionEvents = NewFactPoolSessionEventsClient(c.config)
-	c.FactSettlementChannelChainAssetCreate = NewFactSettlementChannelChainAssetCreateClient(c.config)
-	c.FactSettlementChannelChainDirectPay = NewFactSettlementChannelChainDirectPayClient(c.config)
-	c.FactSettlementChannelChainQuotePay = NewFactSettlementChannelChainQuotePayClient(c.config)
-	c.FactSettlementChannelPoolSessionQuotePay = NewFactSettlementChannelPoolSessionQuotePayClient(c.config)
-	c.FactSettlementCycles = NewFactSettlementCyclesClient(c.config)
-	c.FactSettlementPaymentAttempts = NewFactSettlementPaymentAttemptsClient(c.config)
 	c.FactSettlementRecords = NewFactSettlementRecordsClient(c.config)
 	c.FactTokenCarrierLinks = NewFactTokenCarrierLinksClient(c.config)
 	c.FactTokenLots = NewFactTokenLotsClient(c.config)
-	c.OrderSettlementEvents = NewOrderSettlementEventsClient(c.config)
-	c.OrderSettlements = NewOrderSettlementsClient(c.config)
 	c.Orders = NewOrdersClient(c.config)
 	c.ProcChainTipState = NewProcChainTipStateClient(c.config)
 	c.ProcChainTipWorkerLogs = NewProcChainTipWorkerLogsClient(c.config)
 	c.ProcChainUtxoWorkerLogs = NewProcChainUtxoWorkerLogsClient(c.config)
 	c.ProcCommandJournal = NewProcCommandJournalClient(c.config)
 	c.ProcDirectDeals = NewProcDirectDealsClient(c.config)
-	c.ProcDirectTransferPools = NewProcDirectTransferPoolsClient(c.config)
 	c.ProcDomainEvents = NewProcDomainEventsClient(c.config)
 	c.ProcEffectLogs = NewProcEffectLogsClient(c.config)
 	c.ProcGatewayEvents = NewProcGatewayEventsClient(c.config)
@@ -351,65 +302,53 @@ func (c *Client) Tx(ctx context.Context) (*Tx, error) {
 	cfg := c.config
 	cfg.driver = tx
 	return &Tx{
-		ctx:                                      ctx,
-		config:                                   cfg,
-		BizBusinessTriggers:                      NewBizBusinessTriggersClient(cfg),
-		BizDemandQuoteArbiters:                   NewBizDemandQuoteArbitersClient(cfg),
-		BizDemandQuotes:                          NewBizDemandQuotesClient(cfg),
-		BizDemands:                               NewBizDemandsClient(cfg),
-		BizFrontOrders:                           NewBizFrontOrdersClient(cfg),
-		BizLiveQuotes:                            NewBizLiveQuotesClient(cfg),
-		BizPool:                                  NewBizPoolClient(cfg),
-		BizPoolAllocations:                       NewBizPoolAllocationsClient(cfg),
-		BizPricingAutopilotAudit:                 NewBizPricingAutopilotAuditClient(cfg),
-		BizPricingAutopilotConfig:                NewBizPricingAutopilotConfigClient(cfg),
-		BizPricingAutopilotState:                 NewBizPricingAutopilotStateClient(cfg),
-		BizPurchases:                             NewBizPurchasesClient(cfg),
-		BizSeedChunkSupply:                       NewBizSeedChunkSupplyClient(cfg),
-		BizSeedPricingPolicy:                     NewBizSeedPricingPolicyClient(cfg),
-		BizSeeds:                                 NewBizSeedsClient(cfg),
-		FactBsv21:                                NewFactBsv21Client(cfg),
-		FactBsv21Events:                          NewFactBsv21EventsClient(cfg),
-		FactBsvUtxos:                             NewFactBsvUtxosClient(cfg),
-		FactPoolSessionEvents:                    NewFactPoolSessionEventsClient(cfg),
-		FactSettlementChannelChainAssetCreate:    NewFactSettlementChannelChainAssetCreateClient(cfg),
-		FactSettlementChannelChainDirectPay:      NewFactSettlementChannelChainDirectPayClient(cfg),
-		FactSettlementChannelChainQuotePay:       NewFactSettlementChannelChainQuotePayClient(cfg),
-		FactSettlementChannelPoolSessionQuotePay: NewFactSettlementChannelPoolSessionQuotePayClient(cfg),
-		FactSettlementCycles:                     NewFactSettlementCyclesClient(cfg),
-		FactSettlementPaymentAttempts:            NewFactSettlementPaymentAttemptsClient(cfg),
-		FactSettlementRecords:                    NewFactSettlementRecordsClient(cfg),
-		FactTokenCarrierLinks:                    NewFactTokenCarrierLinksClient(cfg),
-		FactTokenLots:                            NewFactTokenLotsClient(cfg),
-		OrderSettlementEvents:                    NewOrderSettlementEventsClient(cfg),
-		OrderSettlements:                         NewOrderSettlementsClient(cfg),
-		Orders:                                   NewOrdersClient(cfg),
-		ProcChainTipState:                        NewProcChainTipStateClient(cfg),
-		ProcChainTipWorkerLogs:                   NewProcChainTipWorkerLogsClient(cfg),
-		ProcChainUtxoWorkerLogs:                  NewProcChainUtxoWorkerLogsClient(cfg),
-		ProcCommandJournal:                       NewProcCommandJournalClient(cfg),
-		ProcDirectDeals:                          NewProcDirectDealsClient(cfg),
-		ProcDirectTransferPools:                  NewProcDirectTransferPoolsClient(cfg),
-		ProcDomainEvents:                         NewProcDomainEventsClient(cfg),
-		ProcEffectLogs:                           NewProcEffectLogsClient(cfg),
-		ProcGatewayEvents:                        NewProcGatewayEventsClient(cfg),
-		ProcGetFileByHashChunks:                  NewProcGetFileByHashChunksClient(cfg),
-		ProcGetFileByHashJobs:                    NewProcGetFileByHashJobsClient(cfg),
-		ProcGetFileByHashQuotes:                  NewProcGetFileByHashQuotesClient(cfg),
-		ProcLiveFollows:                          NewProcLiveFollowsClient(cfg),
-		ProcNodeReachabilityCache:                NewProcNodeReachabilityCacheClient(cfg),
-		ProcObservedGatewayStates:                NewProcObservedGatewayStatesClient(cfg),
-		ProcOrchestratorLogs:                     NewProcOrchestratorLogsClient(cfg),
-		ProcPublishedRouteIndexes:                NewProcPublishedRouteIndexesClient(cfg),
-		ProcSchedulerTaskRuns:                    NewProcSchedulerTaskRunsClient(cfg),
-		ProcSchedulerTasks:                       NewProcSchedulerTasksClient(cfg),
-		ProcSelfNodeReachabilityState:            NewProcSelfNodeReachabilityStateClient(cfg),
-		ProcStateSnapshots:                       NewProcStateSnapshotsClient(cfg),
-		WalletLocalBroadcastTxs:                  NewWalletLocalBroadcastTxsClient(cfg),
-		WalletUtxo:                               NewWalletUtxoClient(cfg),
-		WalletUtxoSyncCursor:                     NewWalletUtxoSyncCursorClient(cfg),
-		WalletUtxoSyncState:                      NewWalletUtxoSyncStateClient(cfg),
-		WalletUtxoTokenVerification:              NewWalletUtxoTokenVerificationClient(cfg),
+		ctx:                           ctx,
+		config:                        cfg,
+		BizBusinessTriggers:           NewBizBusinessTriggersClient(cfg),
+		BizDemandQuoteArbiters:        NewBizDemandQuoteArbitersClient(cfg),
+		BizDemandQuotes:               NewBizDemandQuotesClient(cfg),
+		BizDemands:                    NewBizDemandsClient(cfg),
+		BizFrontOrders:                NewBizFrontOrdersClient(cfg),
+		BizLiveQuotes:                 NewBizLiveQuotesClient(cfg),
+		BizPricingAutopilotAudit:      NewBizPricingAutopilotAuditClient(cfg),
+		BizPricingAutopilotConfig:     NewBizPricingAutopilotConfigClient(cfg),
+		BizPricingAutopilotState:      NewBizPricingAutopilotStateClient(cfg),
+		BizPurchases:                  NewBizPurchasesClient(cfg),
+		BizSeedChunkSupply:            NewBizSeedChunkSupplyClient(cfg),
+		BizSeedPricingPolicy:          NewBizSeedPricingPolicyClient(cfg),
+		BizSeeds:                      NewBizSeedsClient(cfg),
+		FactBsv21:                     NewFactBsv21Client(cfg),
+		FactBsv21Events:               NewFactBsv21EventsClient(cfg),
+		FactBsvUtxos:                  NewFactBsvUtxosClient(cfg),
+		FactSettlementRecords:         NewFactSettlementRecordsClient(cfg),
+		FactTokenCarrierLinks:         NewFactTokenCarrierLinksClient(cfg),
+		FactTokenLots:                 NewFactTokenLotsClient(cfg),
+		Orders:                        NewOrdersClient(cfg),
+		ProcChainTipState:             NewProcChainTipStateClient(cfg),
+		ProcChainTipWorkerLogs:        NewProcChainTipWorkerLogsClient(cfg),
+		ProcChainUtxoWorkerLogs:       NewProcChainUtxoWorkerLogsClient(cfg),
+		ProcCommandJournal:            NewProcCommandJournalClient(cfg),
+		ProcDirectDeals:               NewProcDirectDealsClient(cfg),
+		ProcDomainEvents:              NewProcDomainEventsClient(cfg),
+		ProcEffectLogs:                NewProcEffectLogsClient(cfg),
+		ProcGatewayEvents:             NewProcGatewayEventsClient(cfg),
+		ProcGetFileByHashChunks:       NewProcGetFileByHashChunksClient(cfg),
+		ProcGetFileByHashJobs:         NewProcGetFileByHashJobsClient(cfg),
+		ProcGetFileByHashQuotes:       NewProcGetFileByHashQuotesClient(cfg),
+		ProcLiveFollows:               NewProcLiveFollowsClient(cfg),
+		ProcNodeReachabilityCache:     NewProcNodeReachabilityCacheClient(cfg),
+		ProcObservedGatewayStates:     NewProcObservedGatewayStatesClient(cfg),
+		ProcOrchestratorLogs:          NewProcOrchestratorLogsClient(cfg),
+		ProcPublishedRouteIndexes:     NewProcPublishedRouteIndexesClient(cfg),
+		ProcSchedulerTaskRuns:         NewProcSchedulerTaskRunsClient(cfg),
+		ProcSchedulerTasks:            NewProcSchedulerTasksClient(cfg),
+		ProcSelfNodeReachabilityState: NewProcSelfNodeReachabilityStateClient(cfg),
+		ProcStateSnapshots:            NewProcStateSnapshotsClient(cfg),
+		WalletLocalBroadcastTxs:       NewWalletLocalBroadcastTxsClient(cfg),
+		WalletUtxo:                    NewWalletUtxoClient(cfg),
+		WalletUtxoSyncCursor:          NewWalletUtxoSyncCursorClient(cfg),
+		WalletUtxoSyncState:           NewWalletUtxoSyncStateClient(cfg),
+		WalletUtxoTokenVerification:   NewWalletUtxoTokenVerificationClient(cfg),
 	}, nil
 }
 
@@ -427,65 +366,53 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 	cfg := c.config
 	cfg.driver = &txDriver{tx: tx, drv: c.driver}
 	return &Tx{
-		ctx:                                      ctx,
-		config:                                   cfg,
-		BizBusinessTriggers:                      NewBizBusinessTriggersClient(cfg),
-		BizDemandQuoteArbiters:                   NewBizDemandQuoteArbitersClient(cfg),
-		BizDemandQuotes:                          NewBizDemandQuotesClient(cfg),
-		BizDemands:                               NewBizDemandsClient(cfg),
-		BizFrontOrders:                           NewBizFrontOrdersClient(cfg),
-		BizLiveQuotes:                            NewBizLiveQuotesClient(cfg),
-		BizPool:                                  NewBizPoolClient(cfg),
-		BizPoolAllocations:                       NewBizPoolAllocationsClient(cfg),
-		BizPricingAutopilotAudit:                 NewBizPricingAutopilotAuditClient(cfg),
-		BizPricingAutopilotConfig:                NewBizPricingAutopilotConfigClient(cfg),
-		BizPricingAutopilotState:                 NewBizPricingAutopilotStateClient(cfg),
-		BizPurchases:                             NewBizPurchasesClient(cfg),
-		BizSeedChunkSupply:                       NewBizSeedChunkSupplyClient(cfg),
-		BizSeedPricingPolicy:                     NewBizSeedPricingPolicyClient(cfg),
-		BizSeeds:                                 NewBizSeedsClient(cfg),
-		FactBsv21:                                NewFactBsv21Client(cfg),
-		FactBsv21Events:                          NewFactBsv21EventsClient(cfg),
-		FactBsvUtxos:                             NewFactBsvUtxosClient(cfg),
-		FactPoolSessionEvents:                    NewFactPoolSessionEventsClient(cfg),
-		FactSettlementChannelChainAssetCreate:    NewFactSettlementChannelChainAssetCreateClient(cfg),
-		FactSettlementChannelChainDirectPay:      NewFactSettlementChannelChainDirectPayClient(cfg),
-		FactSettlementChannelChainQuotePay:       NewFactSettlementChannelChainQuotePayClient(cfg),
-		FactSettlementChannelPoolSessionQuotePay: NewFactSettlementChannelPoolSessionQuotePayClient(cfg),
-		FactSettlementCycles:                     NewFactSettlementCyclesClient(cfg),
-		FactSettlementPaymentAttempts:            NewFactSettlementPaymentAttemptsClient(cfg),
-		FactSettlementRecords:                    NewFactSettlementRecordsClient(cfg),
-		FactTokenCarrierLinks:                    NewFactTokenCarrierLinksClient(cfg),
-		FactTokenLots:                            NewFactTokenLotsClient(cfg),
-		OrderSettlementEvents:                    NewOrderSettlementEventsClient(cfg),
-		OrderSettlements:                         NewOrderSettlementsClient(cfg),
-		Orders:                                   NewOrdersClient(cfg),
-		ProcChainTipState:                        NewProcChainTipStateClient(cfg),
-		ProcChainTipWorkerLogs:                   NewProcChainTipWorkerLogsClient(cfg),
-		ProcChainUtxoWorkerLogs:                  NewProcChainUtxoWorkerLogsClient(cfg),
-		ProcCommandJournal:                       NewProcCommandJournalClient(cfg),
-		ProcDirectDeals:                          NewProcDirectDealsClient(cfg),
-		ProcDirectTransferPools:                  NewProcDirectTransferPoolsClient(cfg),
-		ProcDomainEvents:                         NewProcDomainEventsClient(cfg),
-		ProcEffectLogs:                           NewProcEffectLogsClient(cfg),
-		ProcGatewayEvents:                        NewProcGatewayEventsClient(cfg),
-		ProcGetFileByHashChunks:                  NewProcGetFileByHashChunksClient(cfg),
-		ProcGetFileByHashJobs:                    NewProcGetFileByHashJobsClient(cfg),
-		ProcGetFileByHashQuotes:                  NewProcGetFileByHashQuotesClient(cfg),
-		ProcLiveFollows:                          NewProcLiveFollowsClient(cfg),
-		ProcNodeReachabilityCache:                NewProcNodeReachabilityCacheClient(cfg),
-		ProcObservedGatewayStates:                NewProcObservedGatewayStatesClient(cfg),
-		ProcOrchestratorLogs:                     NewProcOrchestratorLogsClient(cfg),
-		ProcPublishedRouteIndexes:                NewProcPublishedRouteIndexesClient(cfg),
-		ProcSchedulerTaskRuns:                    NewProcSchedulerTaskRunsClient(cfg),
-		ProcSchedulerTasks:                       NewProcSchedulerTasksClient(cfg),
-		ProcSelfNodeReachabilityState:            NewProcSelfNodeReachabilityStateClient(cfg),
-		ProcStateSnapshots:                       NewProcStateSnapshotsClient(cfg),
-		WalletLocalBroadcastTxs:                  NewWalletLocalBroadcastTxsClient(cfg),
-		WalletUtxo:                               NewWalletUtxoClient(cfg),
-		WalletUtxoSyncCursor:                     NewWalletUtxoSyncCursorClient(cfg),
-		WalletUtxoSyncState:                      NewWalletUtxoSyncStateClient(cfg),
-		WalletUtxoTokenVerification:              NewWalletUtxoTokenVerificationClient(cfg),
+		ctx:                           ctx,
+		config:                        cfg,
+		BizBusinessTriggers:           NewBizBusinessTriggersClient(cfg),
+		BizDemandQuoteArbiters:        NewBizDemandQuoteArbitersClient(cfg),
+		BizDemandQuotes:               NewBizDemandQuotesClient(cfg),
+		BizDemands:                    NewBizDemandsClient(cfg),
+		BizFrontOrders:                NewBizFrontOrdersClient(cfg),
+		BizLiveQuotes:                 NewBizLiveQuotesClient(cfg),
+		BizPricingAutopilotAudit:      NewBizPricingAutopilotAuditClient(cfg),
+		BizPricingAutopilotConfig:     NewBizPricingAutopilotConfigClient(cfg),
+		BizPricingAutopilotState:      NewBizPricingAutopilotStateClient(cfg),
+		BizPurchases:                  NewBizPurchasesClient(cfg),
+		BizSeedChunkSupply:            NewBizSeedChunkSupplyClient(cfg),
+		BizSeedPricingPolicy:          NewBizSeedPricingPolicyClient(cfg),
+		BizSeeds:                      NewBizSeedsClient(cfg),
+		FactBsv21:                     NewFactBsv21Client(cfg),
+		FactBsv21Events:               NewFactBsv21EventsClient(cfg),
+		FactBsvUtxos:                  NewFactBsvUtxosClient(cfg),
+		FactSettlementRecords:         NewFactSettlementRecordsClient(cfg),
+		FactTokenCarrierLinks:         NewFactTokenCarrierLinksClient(cfg),
+		FactTokenLots:                 NewFactTokenLotsClient(cfg),
+		Orders:                        NewOrdersClient(cfg),
+		ProcChainTipState:             NewProcChainTipStateClient(cfg),
+		ProcChainTipWorkerLogs:        NewProcChainTipWorkerLogsClient(cfg),
+		ProcChainUtxoWorkerLogs:       NewProcChainUtxoWorkerLogsClient(cfg),
+		ProcCommandJournal:            NewProcCommandJournalClient(cfg),
+		ProcDirectDeals:               NewProcDirectDealsClient(cfg),
+		ProcDomainEvents:              NewProcDomainEventsClient(cfg),
+		ProcEffectLogs:                NewProcEffectLogsClient(cfg),
+		ProcGatewayEvents:             NewProcGatewayEventsClient(cfg),
+		ProcGetFileByHashChunks:       NewProcGetFileByHashChunksClient(cfg),
+		ProcGetFileByHashJobs:         NewProcGetFileByHashJobsClient(cfg),
+		ProcGetFileByHashQuotes:       NewProcGetFileByHashQuotesClient(cfg),
+		ProcLiveFollows:               NewProcLiveFollowsClient(cfg),
+		ProcNodeReachabilityCache:     NewProcNodeReachabilityCacheClient(cfg),
+		ProcObservedGatewayStates:     NewProcObservedGatewayStatesClient(cfg),
+		ProcOrchestratorLogs:          NewProcOrchestratorLogsClient(cfg),
+		ProcPublishedRouteIndexes:     NewProcPublishedRouteIndexesClient(cfg),
+		ProcSchedulerTaskRuns:         NewProcSchedulerTaskRunsClient(cfg),
+		ProcSchedulerTasks:            NewProcSchedulerTasksClient(cfg),
+		ProcSelfNodeReachabilityState: NewProcSelfNodeReachabilityStateClient(cfg),
+		ProcStateSnapshots:            NewProcStateSnapshotsClient(cfg),
+		WalletLocalBroadcastTxs:       NewWalletLocalBroadcastTxsClient(cfg),
+		WalletUtxo:                    NewWalletUtxoClient(cfg),
+		WalletUtxoSyncCursor:          NewWalletUtxoSyncCursorClient(cfg),
+		WalletUtxoSyncState:           NewWalletUtxoSyncStateClient(cfg),
+		WalletUtxoTokenVerification:   NewWalletUtxoTokenVerificationClient(cfg),
 	}, nil
 }
 
@@ -516,24 +443,17 @@ func (c *Client) Close() error {
 func (c *Client) Use(hooks ...Hook) {
 	for _, n := range []interface{ Use(...Hook) }{
 		c.BizBusinessTriggers, c.BizDemandQuoteArbiters, c.BizDemandQuotes,
-		c.BizDemands, c.BizFrontOrders, c.BizLiveQuotes, c.BizPool,
-		c.BizPoolAllocations, c.BizPricingAutopilotAudit, c.BizPricingAutopilotConfig,
-		c.BizPricingAutopilotState, c.BizPurchases, c.BizSeedChunkSupply,
-		c.BizSeedPricingPolicy, c.BizSeeds, c.FactBsv21, c.FactBsv21Events,
-		c.FactBsvUtxos, c.FactPoolSessionEvents,
-		c.FactSettlementChannelChainAssetCreate, c.FactSettlementChannelChainDirectPay,
-		c.FactSettlementChannelChainQuotePay,
-		c.FactSettlementChannelPoolSessionQuotePay, c.FactSettlementCycles,
-		c.FactSettlementPaymentAttempts, c.FactSettlementRecords,
-		c.FactTokenCarrierLinks, c.FactTokenLots, c.OrderSettlementEvents,
-		c.OrderSettlements, c.Orders, c.ProcChainTipState, c.ProcChainTipWorkerLogs,
-		c.ProcChainUtxoWorkerLogs, c.ProcCommandJournal, c.ProcDirectDeals,
-		c.ProcDirectTransferPools, c.ProcDomainEvents, c.ProcEffectLogs,
-		c.ProcGatewayEvents, c.ProcGetFileByHashChunks, c.ProcGetFileByHashJobs,
-		c.ProcGetFileByHashQuotes, c.ProcLiveFollows, c.ProcNodeReachabilityCache,
-		c.ProcObservedGatewayStates, c.ProcOrchestratorLogs,
-		c.ProcPublishedRouteIndexes, c.ProcSchedulerTaskRuns, c.ProcSchedulerTasks,
-		c.ProcSelfNodeReachabilityState, c.ProcStateSnapshots,
+		c.BizDemands, c.BizFrontOrders, c.BizLiveQuotes, c.BizPricingAutopilotAudit,
+		c.BizPricingAutopilotConfig, c.BizPricingAutopilotState, c.BizPurchases,
+		c.BizSeedChunkSupply, c.BizSeedPricingPolicy, c.BizSeeds, c.FactBsv21,
+		c.FactBsv21Events, c.FactBsvUtxos, c.FactSettlementRecords,
+		c.FactTokenCarrierLinks, c.FactTokenLots, c.Orders, c.ProcChainTipState,
+		c.ProcChainTipWorkerLogs, c.ProcChainUtxoWorkerLogs, c.ProcCommandJournal,
+		c.ProcDirectDeals, c.ProcDomainEvents, c.ProcEffectLogs, c.ProcGatewayEvents,
+		c.ProcGetFileByHashChunks, c.ProcGetFileByHashJobs, c.ProcGetFileByHashQuotes,
+		c.ProcLiveFollows, c.ProcNodeReachabilityCache, c.ProcObservedGatewayStates,
+		c.ProcOrchestratorLogs, c.ProcPublishedRouteIndexes, c.ProcSchedulerTaskRuns,
+		c.ProcSchedulerTasks, c.ProcSelfNodeReachabilityState, c.ProcStateSnapshots,
 		c.WalletLocalBroadcastTxs, c.WalletUtxo, c.WalletUtxoSyncCursor,
 		c.WalletUtxoSyncState, c.WalletUtxoTokenVerification,
 	} {
@@ -546,24 +466,17 @@ func (c *Client) Use(hooks ...Hook) {
 func (c *Client) Intercept(interceptors ...Interceptor) {
 	for _, n := range []interface{ Intercept(...Interceptor) }{
 		c.BizBusinessTriggers, c.BizDemandQuoteArbiters, c.BizDemandQuotes,
-		c.BizDemands, c.BizFrontOrders, c.BizLiveQuotes, c.BizPool,
-		c.BizPoolAllocations, c.BizPricingAutopilotAudit, c.BizPricingAutopilotConfig,
-		c.BizPricingAutopilotState, c.BizPurchases, c.BizSeedChunkSupply,
-		c.BizSeedPricingPolicy, c.BizSeeds, c.FactBsv21, c.FactBsv21Events,
-		c.FactBsvUtxos, c.FactPoolSessionEvents,
-		c.FactSettlementChannelChainAssetCreate, c.FactSettlementChannelChainDirectPay,
-		c.FactSettlementChannelChainQuotePay,
-		c.FactSettlementChannelPoolSessionQuotePay, c.FactSettlementCycles,
-		c.FactSettlementPaymentAttempts, c.FactSettlementRecords,
-		c.FactTokenCarrierLinks, c.FactTokenLots, c.OrderSettlementEvents,
-		c.OrderSettlements, c.Orders, c.ProcChainTipState, c.ProcChainTipWorkerLogs,
-		c.ProcChainUtxoWorkerLogs, c.ProcCommandJournal, c.ProcDirectDeals,
-		c.ProcDirectTransferPools, c.ProcDomainEvents, c.ProcEffectLogs,
-		c.ProcGatewayEvents, c.ProcGetFileByHashChunks, c.ProcGetFileByHashJobs,
-		c.ProcGetFileByHashQuotes, c.ProcLiveFollows, c.ProcNodeReachabilityCache,
-		c.ProcObservedGatewayStates, c.ProcOrchestratorLogs,
-		c.ProcPublishedRouteIndexes, c.ProcSchedulerTaskRuns, c.ProcSchedulerTasks,
-		c.ProcSelfNodeReachabilityState, c.ProcStateSnapshots,
+		c.BizDemands, c.BizFrontOrders, c.BizLiveQuotes, c.BizPricingAutopilotAudit,
+		c.BizPricingAutopilotConfig, c.BizPricingAutopilotState, c.BizPurchases,
+		c.BizSeedChunkSupply, c.BizSeedPricingPolicy, c.BizSeeds, c.FactBsv21,
+		c.FactBsv21Events, c.FactBsvUtxos, c.FactSettlementRecords,
+		c.FactTokenCarrierLinks, c.FactTokenLots, c.Orders, c.ProcChainTipState,
+		c.ProcChainTipWorkerLogs, c.ProcChainUtxoWorkerLogs, c.ProcCommandJournal,
+		c.ProcDirectDeals, c.ProcDomainEvents, c.ProcEffectLogs, c.ProcGatewayEvents,
+		c.ProcGetFileByHashChunks, c.ProcGetFileByHashJobs, c.ProcGetFileByHashQuotes,
+		c.ProcLiveFollows, c.ProcNodeReachabilityCache, c.ProcObservedGatewayStates,
+		c.ProcOrchestratorLogs, c.ProcPublishedRouteIndexes, c.ProcSchedulerTaskRuns,
+		c.ProcSchedulerTasks, c.ProcSelfNodeReachabilityState, c.ProcStateSnapshots,
 		c.WalletLocalBroadcastTxs, c.WalletUtxo, c.WalletUtxoSyncCursor,
 		c.WalletUtxoSyncState, c.WalletUtxoTokenVerification,
 	} {
@@ -586,10 +499,6 @@ func (c *Client) Mutate(ctx context.Context, m Mutation) (Value, error) {
 		return c.BizFrontOrders.mutate(ctx, m)
 	case *BizLiveQuotesMutation:
 		return c.BizLiveQuotes.mutate(ctx, m)
-	case *BizPoolMutation:
-		return c.BizPool.mutate(ctx, m)
-	case *BizPoolAllocationsMutation:
-		return c.BizPoolAllocations.mutate(ctx, m)
 	case *BizPricingAutopilotAuditMutation:
 		return c.BizPricingAutopilotAudit.mutate(ctx, m)
 	case *BizPricingAutopilotConfigMutation:
@@ -610,30 +519,12 @@ func (c *Client) Mutate(ctx context.Context, m Mutation) (Value, error) {
 		return c.FactBsv21Events.mutate(ctx, m)
 	case *FactBsvUtxosMutation:
 		return c.FactBsvUtxos.mutate(ctx, m)
-	case *FactPoolSessionEventsMutation:
-		return c.FactPoolSessionEvents.mutate(ctx, m)
-	case *FactSettlementChannelChainAssetCreateMutation:
-		return c.FactSettlementChannelChainAssetCreate.mutate(ctx, m)
-	case *FactSettlementChannelChainDirectPayMutation:
-		return c.FactSettlementChannelChainDirectPay.mutate(ctx, m)
-	case *FactSettlementChannelChainQuotePayMutation:
-		return c.FactSettlementChannelChainQuotePay.mutate(ctx, m)
-	case *FactSettlementChannelPoolSessionQuotePayMutation:
-		return c.FactSettlementChannelPoolSessionQuotePay.mutate(ctx, m)
-	case *FactSettlementCyclesMutation:
-		return c.FactSettlementCycles.mutate(ctx, m)
-	case *FactSettlementPaymentAttemptsMutation:
-		return c.FactSettlementPaymentAttempts.mutate(ctx, m)
 	case *FactSettlementRecordsMutation:
 		return c.FactSettlementRecords.mutate(ctx, m)
 	case *FactTokenCarrierLinksMutation:
 		return c.FactTokenCarrierLinks.mutate(ctx, m)
 	case *FactTokenLotsMutation:
 		return c.FactTokenLots.mutate(ctx, m)
-	case *OrderSettlementEventsMutation:
-		return c.OrderSettlementEvents.mutate(ctx, m)
-	case *OrderSettlementsMutation:
-		return c.OrderSettlements.mutate(ctx, m)
 	case *OrdersMutation:
 		return c.Orders.mutate(ctx, m)
 	case *ProcChainTipStateMutation:
@@ -646,8 +537,6 @@ func (c *Client) Mutate(ctx context.Context, m Mutation) (Value, error) {
 		return c.ProcCommandJournal.mutate(ctx, m)
 	case *ProcDirectDealsMutation:
 		return c.ProcDirectDeals.mutate(ctx, m)
-	case *ProcDirectTransferPoolsMutation:
-		return c.ProcDirectTransferPools.mutate(ctx, m)
 	case *ProcDomainEventsMutation:
 		return c.ProcDomainEvents.mutate(ctx, m)
 	case *ProcEffectLogsMutation:
@@ -1488,272 +1377,6 @@ func (c *BizLiveQuotesClient) mutate(ctx context.Context, m *BizLiveQuotesMutati
 		return (&BizLiveQuotesDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
 	default:
 		return nil, fmt.Errorf("gen: unknown BizLiveQuotes mutation op: %q", m.Op())
-	}
-}
-
-// BizPoolClient is a client for the BizPool schema.
-type BizPoolClient struct {
-	config
-}
-
-// NewBizPoolClient returns a client for the BizPool from the given config.
-func NewBizPoolClient(c config) *BizPoolClient {
-	return &BizPoolClient{config: c}
-}
-
-// Use adds a list of mutation hooks to the hooks stack.
-// A call to `Use(f, g, h)` equals to `bizpool.Hooks(f(g(h())))`.
-func (c *BizPoolClient) Use(hooks ...Hook) {
-	c.hooks.BizPool = append(c.hooks.BizPool, hooks...)
-}
-
-// Intercept adds a list of query interceptors to the interceptors stack.
-// A call to `Intercept(f, g, h)` equals to `bizpool.Intercept(f(g(h())))`.
-func (c *BizPoolClient) Intercept(interceptors ...Interceptor) {
-	c.inters.BizPool = append(c.inters.BizPool, interceptors...)
-}
-
-// Create returns a builder for creating a BizPool entity.
-func (c *BizPoolClient) Create() *BizPoolCreate {
-	mutation := newBizPoolMutation(c.config, OpCreate)
-	return &BizPoolCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// CreateBulk returns a builder for creating a bulk of BizPool entities.
-func (c *BizPoolClient) CreateBulk(builders ...*BizPoolCreate) *BizPoolCreateBulk {
-	return &BizPoolCreateBulk{config: c.config, builders: builders}
-}
-
-// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
-// a builder and applies setFunc on it.
-func (c *BizPoolClient) MapCreateBulk(slice any, setFunc func(*BizPoolCreate, int)) *BizPoolCreateBulk {
-	rv := reflect.ValueOf(slice)
-	if rv.Kind() != reflect.Slice {
-		return &BizPoolCreateBulk{err: fmt.Errorf("calling to BizPoolClient.MapCreateBulk with wrong type %T, need slice", slice)}
-	}
-	builders := make([]*BizPoolCreate, rv.Len())
-	for i := 0; i < rv.Len(); i++ {
-		builders[i] = c.Create()
-		setFunc(builders[i], i)
-	}
-	return &BizPoolCreateBulk{config: c.config, builders: builders}
-}
-
-// Update returns an update builder for BizPool.
-func (c *BizPoolClient) Update() *BizPoolUpdate {
-	mutation := newBizPoolMutation(c.config, OpUpdate)
-	return &BizPoolUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOne returns an update builder for the given entity.
-func (c *BizPoolClient) UpdateOne(_m *BizPool) *BizPoolUpdateOne {
-	mutation := newBizPoolMutation(c.config, OpUpdateOne, withBizPool(_m))
-	return &BizPoolUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOneID returns an update builder for the given id.
-func (c *BizPoolClient) UpdateOneID(id int) *BizPoolUpdateOne {
-	mutation := newBizPoolMutation(c.config, OpUpdateOne, withBizPoolID(id))
-	return &BizPoolUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// Delete returns a delete builder for BizPool.
-func (c *BizPoolClient) Delete() *BizPoolDelete {
-	mutation := newBizPoolMutation(c.config, OpDelete)
-	return &BizPoolDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// DeleteOne returns a builder for deleting the given entity.
-func (c *BizPoolClient) DeleteOne(_m *BizPool) *BizPoolDeleteOne {
-	return c.DeleteOneID(_m.ID)
-}
-
-// DeleteOneID returns a builder for deleting the given entity by its id.
-func (c *BizPoolClient) DeleteOneID(id int) *BizPoolDeleteOne {
-	builder := c.Delete().Where(bizpool.ID(id))
-	builder.mutation.id = &id
-	builder.mutation.op = OpDeleteOne
-	return &BizPoolDeleteOne{builder}
-}
-
-// Query returns a query builder for BizPool.
-func (c *BizPoolClient) Query() *BizPoolQuery {
-	return &BizPoolQuery{
-		config: c.config,
-		ctx:    &QueryContext{Type: TypeBizPool},
-		inters: c.Interceptors(),
-	}
-}
-
-// Get returns a BizPool entity by its id.
-func (c *BizPoolClient) Get(ctx context.Context, id int) (*BizPool, error) {
-	return c.Query().Where(bizpool.ID(id)).Only(ctx)
-}
-
-// GetX is like Get, but panics if an error occurs.
-func (c *BizPoolClient) GetX(ctx context.Context, id int) *BizPool {
-	obj, err := c.Get(ctx, id)
-	if err != nil {
-		panic(err)
-	}
-	return obj
-}
-
-// Hooks returns the client hooks.
-func (c *BizPoolClient) Hooks() []Hook {
-	return c.hooks.BizPool
-}
-
-// Interceptors returns the client interceptors.
-func (c *BizPoolClient) Interceptors() []Interceptor {
-	return c.inters.BizPool
-}
-
-func (c *BizPoolClient) mutate(ctx context.Context, m *BizPoolMutation) (Value, error) {
-	switch m.Op() {
-	case OpCreate:
-		return (&BizPoolCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdate:
-		return (&BizPoolUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdateOne:
-		return (&BizPoolUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpDelete, OpDeleteOne:
-		return (&BizPoolDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
-	default:
-		return nil, fmt.Errorf("gen: unknown BizPool mutation op: %q", m.Op())
-	}
-}
-
-// BizPoolAllocationsClient is a client for the BizPoolAllocations schema.
-type BizPoolAllocationsClient struct {
-	config
-}
-
-// NewBizPoolAllocationsClient returns a client for the BizPoolAllocations from the given config.
-func NewBizPoolAllocationsClient(c config) *BizPoolAllocationsClient {
-	return &BizPoolAllocationsClient{config: c}
-}
-
-// Use adds a list of mutation hooks to the hooks stack.
-// A call to `Use(f, g, h)` equals to `bizpoolallocations.Hooks(f(g(h())))`.
-func (c *BizPoolAllocationsClient) Use(hooks ...Hook) {
-	c.hooks.BizPoolAllocations = append(c.hooks.BizPoolAllocations, hooks...)
-}
-
-// Intercept adds a list of query interceptors to the interceptors stack.
-// A call to `Intercept(f, g, h)` equals to `bizpoolallocations.Intercept(f(g(h())))`.
-func (c *BizPoolAllocationsClient) Intercept(interceptors ...Interceptor) {
-	c.inters.BizPoolAllocations = append(c.inters.BizPoolAllocations, interceptors...)
-}
-
-// Create returns a builder for creating a BizPoolAllocations entity.
-func (c *BizPoolAllocationsClient) Create() *BizPoolAllocationsCreate {
-	mutation := newBizPoolAllocationsMutation(c.config, OpCreate)
-	return &BizPoolAllocationsCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// CreateBulk returns a builder for creating a bulk of BizPoolAllocations entities.
-func (c *BizPoolAllocationsClient) CreateBulk(builders ...*BizPoolAllocationsCreate) *BizPoolAllocationsCreateBulk {
-	return &BizPoolAllocationsCreateBulk{config: c.config, builders: builders}
-}
-
-// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
-// a builder and applies setFunc on it.
-func (c *BizPoolAllocationsClient) MapCreateBulk(slice any, setFunc func(*BizPoolAllocationsCreate, int)) *BizPoolAllocationsCreateBulk {
-	rv := reflect.ValueOf(slice)
-	if rv.Kind() != reflect.Slice {
-		return &BizPoolAllocationsCreateBulk{err: fmt.Errorf("calling to BizPoolAllocationsClient.MapCreateBulk with wrong type %T, need slice", slice)}
-	}
-	builders := make([]*BizPoolAllocationsCreate, rv.Len())
-	for i := 0; i < rv.Len(); i++ {
-		builders[i] = c.Create()
-		setFunc(builders[i], i)
-	}
-	return &BizPoolAllocationsCreateBulk{config: c.config, builders: builders}
-}
-
-// Update returns an update builder for BizPoolAllocations.
-func (c *BizPoolAllocationsClient) Update() *BizPoolAllocationsUpdate {
-	mutation := newBizPoolAllocationsMutation(c.config, OpUpdate)
-	return &BizPoolAllocationsUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOne returns an update builder for the given entity.
-func (c *BizPoolAllocationsClient) UpdateOne(_m *BizPoolAllocations) *BizPoolAllocationsUpdateOne {
-	mutation := newBizPoolAllocationsMutation(c.config, OpUpdateOne, withBizPoolAllocations(_m))
-	return &BizPoolAllocationsUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOneID returns an update builder for the given id.
-func (c *BizPoolAllocationsClient) UpdateOneID(id int) *BizPoolAllocationsUpdateOne {
-	mutation := newBizPoolAllocationsMutation(c.config, OpUpdateOne, withBizPoolAllocationsID(id))
-	return &BizPoolAllocationsUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// Delete returns a delete builder for BizPoolAllocations.
-func (c *BizPoolAllocationsClient) Delete() *BizPoolAllocationsDelete {
-	mutation := newBizPoolAllocationsMutation(c.config, OpDelete)
-	return &BizPoolAllocationsDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// DeleteOne returns a builder for deleting the given entity.
-func (c *BizPoolAllocationsClient) DeleteOne(_m *BizPoolAllocations) *BizPoolAllocationsDeleteOne {
-	return c.DeleteOneID(_m.ID)
-}
-
-// DeleteOneID returns a builder for deleting the given entity by its id.
-func (c *BizPoolAllocationsClient) DeleteOneID(id int) *BizPoolAllocationsDeleteOne {
-	builder := c.Delete().Where(bizpoolallocations.ID(id))
-	builder.mutation.id = &id
-	builder.mutation.op = OpDeleteOne
-	return &BizPoolAllocationsDeleteOne{builder}
-}
-
-// Query returns a query builder for BizPoolAllocations.
-func (c *BizPoolAllocationsClient) Query() *BizPoolAllocationsQuery {
-	return &BizPoolAllocationsQuery{
-		config: c.config,
-		ctx:    &QueryContext{Type: TypeBizPoolAllocations},
-		inters: c.Interceptors(),
-	}
-}
-
-// Get returns a BizPoolAllocations entity by its id.
-func (c *BizPoolAllocationsClient) Get(ctx context.Context, id int) (*BizPoolAllocations, error) {
-	return c.Query().Where(bizpoolallocations.ID(id)).Only(ctx)
-}
-
-// GetX is like Get, but panics if an error occurs.
-func (c *BizPoolAllocationsClient) GetX(ctx context.Context, id int) *BizPoolAllocations {
-	obj, err := c.Get(ctx, id)
-	if err != nil {
-		panic(err)
-	}
-	return obj
-}
-
-// Hooks returns the client hooks.
-func (c *BizPoolAllocationsClient) Hooks() []Hook {
-	return c.hooks.BizPoolAllocations
-}
-
-// Interceptors returns the client interceptors.
-func (c *BizPoolAllocationsClient) Interceptors() []Interceptor {
-	return c.inters.BizPoolAllocations
-}
-
-func (c *BizPoolAllocationsClient) mutate(ctx context.Context, m *BizPoolAllocationsMutation) (Value, error) {
-	switch m.Op() {
-	case OpCreate:
-		return (&BizPoolAllocationsCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdate:
-		return (&BizPoolAllocationsUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdateOne:
-		return (&BizPoolAllocationsUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpDelete, OpDeleteOne:
-		return (&BizPoolAllocationsDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
-	default:
-		return nil, fmt.Errorf("gen: unknown BizPoolAllocations mutation op: %q", m.Op())
 	}
 }
 
@@ -3087,1001 +2710,6 @@ func (c *FactBsvUtxosClient) mutate(ctx context.Context, m *FactBsvUtxosMutation
 	}
 }
 
-// FactPoolSessionEventsClient is a client for the FactPoolSessionEvents schema.
-type FactPoolSessionEventsClient struct {
-	config
-}
-
-// NewFactPoolSessionEventsClient returns a client for the FactPoolSessionEvents from the given config.
-func NewFactPoolSessionEventsClient(c config) *FactPoolSessionEventsClient {
-	return &FactPoolSessionEventsClient{config: c}
-}
-
-// Use adds a list of mutation hooks to the hooks stack.
-// A call to `Use(f, g, h)` equals to `factpoolsessionevents.Hooks(f(g(h())))`.
-func (c *FactPoolSessionEventsClient) Use(hooks ...Hook) {
-	c.hooks.FactPoolSessionEvents = append(c.hooks.FactPoolSessionEvents, hooks...)
-}
-
-// Intercept adds a list of query interceptors to the interceptors stack.
-// A call to `Intercept(f, g, h)` equals to `factpoolsessionevents.Intercept(f(g(h())))`.
-func (c *FactPoolSessionEventsClient) Intercept(interceptors ...Interceptor) {
-	c.inters.FactPoolSessionEvents = append(c.inters.FactPoolSessionEvents, interceptors...)
-}
-
-// Create returns a builder for creating a FactPoolSessionEvents entity.
-func (c *FactPoolSessionEventsClient) Create() *FactPoolSessionEventsCreate {
-	mutation := newFactPoolSessionEventsMutation(c.config, OpCreate)
-	return &FactPoolSessionEventsCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// CreateBulk returns a builder for creating a bulk of FactPoolSessionEvents entities.
-func (c *FactPoolSessionEventsClient) CreateBulk(builders ...*FactPoolSessionEventsCreate) *FactPoolSessionEventsCreateBulk {
-	return &FactPoolSessionEventsCreateBulk{config: c.config, builders: builders}
-}
-
-// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
-// a builder and applies setFunc on it.
-func (c *FactPoolSessionEventsClient) MapCreateBulk(slice any, setFunc func(*FactPoolSessionEventsCreate, int)) *FactPoolSessionEventsCreateBulk {
-	rv := reflect.ValueOf(slice)
-	if rv.Kind() != reflect.Slice {
-		return &FactPoolSessionEventsCreateBulk{err: fmt.Errorf("calling to FactPoolSessionEventsClient.MapCreateBulk with wrong type %T, need slice", slice)}
-	}
-	builders := make([]*FactPoolSessionEventsCreate, rv.Len())
-	for i := 0; i < rv.Len(); i++ {
-		builders[i] = c.Create()
-		setFunc(builders[i], i)
-	}
-	return &FactPoolSessionEventsCreateBulk{config: c.config, builders: builders}
-}
-
-// Update returns an update builder for FactPoolSessionEvents.
-func (c *FactPoolSessionEventsClient) Update() *FactPoolSessionEventsUpdate {
-	mutation := newFactPoolSessionEventsMutation(c.config, OpUpdate)
-	return &FactPoolSessionEventsUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOne returns an update builder for the given entity.
-func (c *FactPoolSessionEventsClient) UpdateOne(_m *FactPoolSessionEvents) *FactPoolSessionEventsUpdateOne {
-	mutation := newFactPoolSessionEventsMutation(c.config, OpUpdateOne, withFactPoolSessionEvents(_m))
-	return &FactPoolSessionEventsUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOneID returns an update builder for the given id.
-func (c *FactPoolSessionEventsClient) UpdateOneID(id int) *FactPoolSessionEventsUpdateOne {
-	mutation := newFactPoolSessionEventsMutation(c.config, OpUpdateOne, withFactPoolSessionEventsID(id))
-	return &FactPoolSessionEventsUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// Delete returns a delete builder for FactPoolSessionEvents.
-func (c *FactPoolSessionEventsClient) Delete() *FactPoolSessionEventsDelete {
-	mutation := newFactPoolSessionEventsMutation(c.config, OpDelete)
-	return &FactPoolSessionEventsDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// DeleteOne returns a builder for deleting the given entity.
-func (c *FactPoolSessionEventsClient) DeleteOne(_m *FactPoolSessionEvents) *FactPoolSessionEventsDeleteOne {
-	return c.DeleteOneID(_m.ID)
-}
-
-// DeleteOneID returns a builder for deleting the given entity by its id.
-func (c *FactPoolSessionEventsClient) DeleteOneID(id int) *FactPoolSessionEventsDeleteOne {
-	builder := c.Delete().Where(factpoolsessionevents.ID(id))
-	builder.mutation.id = &id
-	builder.mutation.op = OpDeleteOne
-	return &FactPoolSessionEventsDeleteOne{builder}
-}
-
-// Query returns a query builder for FactPoolSessionEvents.
-func (c *FactPoolSessionEventsClient) Query() *FactPoolSessionEventsQuery {
-	return &FactPoolSessionEventsQuery{
-		config: c.config,
-		ctx:    &QueryContext{Type: TypeFactPoolSessionEvents},
-		inters: c.Interceptors(),
-	}
-}
-
-// Get returns a FactPoolSessionEvents entity by its id.
-func (c *FactPoolSessionEventsClient) Get(ctx context.Context, id int) (*FactPoolSessionEvents, error) {
-	return c.Query().Where(factpoolsessionevents.ID(id)).Only(ctx)
-}
-
-// GetX is like Get, but panics if an error occurs.
-func (c *FactPoolSessionEventsClient) GetX(ctx context.Context, id int) *FactPoolSessionEvents {
-	obj, err := c.Get(ctx, id)
-	if err != nil {
-		panic(err)
-	}
-	return obj
-}
-
-// Hooks returns the client hooks.
-func (c *FactPoolSessionEventsClient) Hooks() []Hook {
-	return c.hooks.FactPoolSessionEvents
-}
-
-// Interceptors returns the client interceptors.
-func (c *FactPoolSessionEventsClient) Interceptors() []Interceptor {
-	return c.inters.FactPoolSessionEvents
-}
-
-func (c *FactPoolSessionEventsClient) mutate(ctx context.Context, m *FactPoolSessionEventsMutation) (Value, error) {
-	switch m.Op() {
-	case OpCreate:
-		return (&FactPoolSessionEventsCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdate:
-		return (&FactPoolSessionEventsUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdateOne:
-		return (&FactPoolSessionEventsUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpDelete, OpDeleteOne:
-		return (&FactPoolSessionEventsDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
-	default:
-		return nil, fmt.Errorf("gen: unknown FactPoolSessionEvents mutation op: %q", m.Op())
-	}
-}
-
-// FactSettlementChannelChainAssetCreateClient is a client for the FactSettlementChannelChainAssetCreate schema.
-type FactSettlementChannelChainAssetCreateClient struct {
-	config
-}
-
-// NewFactSettlementChannelChainAssetCreateClient returns a client for the FactSettlementChannelChainAssetCreate from the given config.
-func NewFactSettlementChannelChainAssetCreateClient(c config) *FactSettlementChannelChainAssetCreateClient {
-	return &FactSettlementChannelChainAssetCreateClient{config: c}
-}
-
-// Use adds a list of mutation hooks to the hooks stack.
-// A call to `Use(f, g, h)` equals to `factsettlementchannelchainassetcreate.Hooks(f(g(h())))`.
-func (c *FactSettlementChannelChainAssetCreateClient) Use(hooks ...Hook) {
-	c.hooks.FactSettlementChannelChainAssetCreate = append(c.hooks.FactSettlementChannelChainAssetCreate, hooks...)
-}
-
-// Intercept adds a list of query interceptors to the interceptors stack.
-// A call to `Intercept(f, g, h)` equals to `factsettlementchannelchainassetcreate.Intercept(f(g(h())))`.
-func (c *FactSettlementChannelChainAssetCreateClient) Intercept(interceptors ...Interceptor) {
-	c.inters.FactSettlementChannelChainAssetCreate = append(c.inters.FactSettlementChannelChainAssetCreate, interceptors...)
-}
-
-// Create returns a builder for creating a FactSettlementChannelChainAssetCreate entity.
-func (c *FactSettlementChannelChainAssetCreateClient) Create() *FactSettlementChannelChainAssetCreateCreate {
-	mutation := newFactSettlementChannelChainAssetCreateMutation(c.config, OpCreate)
-	return &FactSettlementChannelChainAssetCreateCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// CreateBulk returns a builder for creating a bulk of FactSettlementChannelChainAssetCreate entities.
-func (c *FactSettlementChannelChainAssetCreateClient) CreateBulk(builders ...*FactSettlementChannelChainAssetCreateCreate) *FactSettlementChannelChainAssetCreateCreateBulk {
-	return &FactSettlementChannelChainAssetCreateCreateBulk{config: c.config, builders: builders}
-}
-
-// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
-// a builder and applies setFunc on it.
-func (c *FactSettlementChannelChainAssetCreateClient) MapCreateBulk(slice any, setFunc func(*FactSettlementChannelChainAssetCreateCreate, int)) *FactSettlementChannelChainAssetCreateCreateBulk {
-	rv := reflect.ValueOf(slice)
-	if rv.Kind() != reflect.Slice {
-		return &FactSettlementChannelChainAssetCreateCreateBulk{err: fmt.Errorf("calling to FactSettlementChannelChainAssetCreateClient.MapCreateBulk with wrong type %T, need slice", slice)}
-	}
-	builders := make([]*FactSettlementChannelChainAssetCreateCreate, rv.Len())
-	for i := 0; i < rv.Len(); i++ {
-		builders[i] = c.Create()
-		setFunc(builders[i], i)
-	}
-	return &FactSettlementChannelChainAssetCreateCreateBulk{config: c.config, builders: builders}
-}
-
-// Update returns an update builder for FactSettlementChannelChainAssetCreate.
-func (c *FactSettlementChannelChainAssetCreateClient) Update() *FactSettlementChannelChainAssetCreateUpdate {
-	mutation := newFactSettlementChannelChainAssetCreateMutation(c.config, OpUpdate)
-	return &FactSettlementChannelChainAssetCreateUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOne returns an update builder for the given entity.
-func (c *FactSettlementChannelChainAssetCreateClient) UpdateOne(_m *FactSettlementChannelChainAssetCreate) *FactSettlementChannelChainAssetCreateUpdateOne {
-	mutation := newFactSettlementChannelChainAssetCreateMutation(c.config, OpUpdateOne, withFactSettlementChannelChainAssetCreate(_m))
-	return &FactSettlementChannelChainAssetCreateUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOneID returns an update builder for the given id.
-func (c *FactSettlementChannelChainAssetCreateClient) UpdateOneID(id int) *FactSettlementChannelChainAssetCreateUpdateOne {
-	mutation := newFactSettlementChannelChainAssetCreateMutation(c.config, OpUpdateOne, withFactSettlementChannelChainAssetCreateID(id))
-	return &FactSettlementChannelChainAssetCreateUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// Delete returns a delete builder for FactSettlementChannelChainAssetCreate.
-func (c *FactSettlementChannelChainAssetCreateClient) Delete() *FactSettlementChannelChainAssetCreateDelete {
-	mutation := newFactSettlementChannelChainAssetCreateMutation(c.config, OpDelete)
-	return &FactSettlementChannelChainAssetCreateDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// DeleteOne returns a builder for deleting the given entity.
-func (c *FactSettlementChannelChainAssetCreateClient) DeleteOne(_m *FactSettlementChannelChainAssetCreate) *FactSettlementChannelChainAssetCreateDeleteOne {
-	return c.DeleteOneID(_m.ID)
-}
-
-// DeleteOneID returns a builder for deleting the given entity by its id.
-func (c *FactSettlementChannelChainAssetCreateClient) DeleteOneID(id int) *FactSettlementChannelChainAssetCreateDeleteOne {
-	builder := c.Delete().Where(factsettlementchannelchainassetcreate.ID(id))
-	builder.mutation.id = &id
-	builder.mutation.op = OpDeleteOne
-	return &FactSettlementChannelChainAssetCreateDeleteOne{builder}
-}
-
-// Query returns a query builder for FactSettlementChannelChainAssetCreate.
-func (c *FactSettlementChannelChainAssetCreateClient) Query() *FactSettlementChannelChainAssetCreateQuery {
-	return &FactSettlementChannelChainAssetCreateQuery{
-		config: c.config,
-		ctx:    &QueryContext{Type: TypeFactSettlementChannelChainAssetCreate},
-		inters: c.Interceptors(),
-	}
-}
-
-// Get returns a FactSettlementChannelChainAssetCreate entity by its id.
-func (c *FactSettlementChannelChainAssetCreateClient) Get(ctx context.Context, id int) (*FactSettlementChannelChainAssetCreate, error) {
-	return c.Query().Where(factsettlementchannelchainassetcreate.ID(id)).Only(ctx)
-}
-
-// GetX is like Get, but panics if an error occurs.
-func (c *FactSettlementChannelChainAssetCreateClient) GetX(ctx context.Context, id int) *FactSettlementChannelChainAssetCreate {
-	obj, err := c.Get(ctx, id)
-	if err != nil {
-		panic(err)
-	}
-	return obj
-}
-
-// QuerySettlementPaymentAttempt queries the settlement_payment_attempt edge of a FactSettlementChannelChainAssetCreate.
-func (c *FactSettlementChannelChainAssetCreateClient) QuerySettlementPaymentAttempt(_m *FactSettlementChannelChainAssetCreate) *FactSettlementPaymentAttemptsQuery {
-	query := (&FactSettlementPaymentAttemptsClient{config: c.config}).Query()
-	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
-		id := _m.ID
-		step := sqlgraph.NewStep(
-			sqlgraph.From(factsettlementchannelchainassetcreate.Table, factsettlementchannelchainassetcreate.FieldID, id),
-			sqlgraph.To(factsettlementpaymentattempts.Table, factsettlementpaymentattempts.FieldID),
-			sqlgraph.Edge(sqlgraph.M2O, false, factsettlementchannelchainassetcreate.SettlementPaymentAttemptTable, factsettlementchannelchainassetcreate.SettlementPaymentAttemptColumn),
-		)
-		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
-		return fromV, nil
-	}
-	return query
-}
-
-// Hooks returns the client hooks.
-func (c *FactSettlementChannelChainAssetCreateClient) Hooks() []Hook {
-	return c.hooks.FactSettlementChannelChainAssetCreate
-}
-
-// Interceptors returns the client interceptors.
-func (c *FactSettlementChannelChainAssetCreateClient) Interceptors() []Interceptor {
-	return c.inters.FactSettlementChannelChainAssetCreate
-}
-
-func (c *FactSettlementChannelChainAssetCreateClient) mutate(ctx context.Context, m *FactSettlementChannelChainAssetCreateMutation) (Value, error) {
-	switch m.Op() {
-	case OpCreate:
-		return (&FactSettlementChannelChainAssetCreateCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdate:
-		return (&FactSettlementChannelChainAssetCreateUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdateOne:
-		return (&FactSettlementChannelChainAssetCreateUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpDelete, OpDeleteOne:
-		return (&FactSettlementChannelChainAssetCreateDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
-	default:
-		return nil, fmt.Errorf("gen: unknown FactSettlementChannelChainAssetCreate mutation op: %q", m.Op())
-	}
-}
-
-// FactSettlementChannelChainDirectPayClient is a client for the FactSettlementChannelChainDirectPay schema.
-type FactSettlementChannelChainDirectPayClient struct {
-	config
-}
-
-// NewFactSettlementChannelChainDirectPayClient returns a client for the FactSettlementChannelChainDirectPay from the given config.
-func NewFactSettlementChannelChainDirectPayClient(c config) *FactSettlementChannelChainDirectPayClient {
-	return &FactSettlementChannelChainDirectPayClient{config: c}
-}
-
-// Use adds a list of mutation hooks to the hooks stack.
-// A call to `Use(f, g, h)` equals to `factsettlementchannelchaindirectpay.Hooks(f(g(h())))`.
-func (c *FactSettlementChannelChainDirectPayClient) Use(hooks ...Hook) {
-	c.hooks.FactSettlementChannelChainDirectPay = append(c.hooks.FactSettlementChannelChainDirectPay, hooks...)
-}
-
-// Intercept adds a list of query interceptors to the interceptors stack.
-// A call to `Intercept(f, g, h)` equals to `factsettlementchannelchaindirectpay.Intercept(f(g(h())))`.
-func (c *FactSettlementChannelChainDirectPayClient) Intercept(interceptors ...Interceptor) {
-	c.inters.FactSettlementChannelChainDirectPay = append(c.inters.FactSettlementChannelChainDirectPay, interceptors...)
-}
-
-// Create returns a builder for creating a FactSettlementChannelChainDirectPay entity.
-func (c *FactSettlementChannelChainDirectPayClient) Create() *FactSettlementChannelChainDirectPayCreate {
-	mutation := newFactSettlementChannelChainDirectPayMutation(c.config, OpCreate)
-	return &FactSettlementChannelChainDirectPayCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// CreateBulk returns a builder for creating a bulk of FactSettlementChannelChainDirectPay entities.
-func (c *FactSettlementChannelChainDirectPayClient) CreateBulk(builders ...*FactSettlementChannelChainDirectPayCreate) *FactSettlementChannelChainDirectPayCreateBulk {
-	return &FactSettlementChannelChainDirectPayCreateBulk{config: c.config, builders: builders}
-}
-
-// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
-// a builder and applies setFunc on it.
-func (c *FactSettlementChannelChainDirectPayClient) MapCreateBulk(slice any, setFunc func(*FactSettlementChannelChainDirectPayCreate, int)) *FactSettlementChannelChainDirectPayCreateBulk {
-	rv := reflect.ValueOf(slice)
-	if rv.Kind() != reflect.Slice {
-		return &FactSettlementChannelChainDirectPayCreateBulk{err: fmt.Errorf("calling to FactSettlementChannelChainDirectPayClient.MapCreateBulk with wrong type %T, need slice", slice)}
-	}
-	builders := make([]*FactSettlementChannelChainDirectPayCreate, rv.Len())
-	for i := 0; i < rv.Len(); i++ {
-		builders[i] = c.Create()
-		setFunc(builders[i], i)
-	}
-	return &FactSettlementChannelChainDirectPayCreateBulk{config: c.config, builders: builders}
-}
-
-// Update returns an update builder for FactSettlementChannelChainDirectPay.
-func (c *FactSettlementChannelChainDirectPayClient) Update() *FactSettlementChannelChainDirectPayUpdate {
-	mutation := newFactSettlementChannelChainDirectPayMutation(c.config, OpUpdate)
-	return &FactSettlementChannelChainDirectPayUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOne returns an update builder for the given entity.
-func (c *FactSettlementChannelChainDirectPayClient) UpdateOne(_m *FactSettlementChannelChainDirectPay) *FactSettlementChannelChainDirectPayUpdateOne {
-	mutation := newFactSettlementChannelChainDirectPayMutation(c.config, OpUpdateOne, withFactSettlementChannelChainDirectPay(_m))
-	return &FactSettlementChannelChainDirectPayUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOneID returns an update builder for the given id.
-func (c *FactSettlementChannelChainDirectPayClient) UpdateOneID(id int) *FactSettlementChannelChainDirectPayUpdateOne {
-	mutation := newFactSettlementChannelChainDirectPayMutation(c.config, OpUpdateOne, withFactSettlementChannelChainDirectPayID(id))
-	return &FactSettlementChannelChainDirectPayUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// Delete returns a delete builder for FactSettlementChannelChainDirectPay.
-func (c *FactSettlementChannelChainDirectPayClient) Delete() *FactSettlementChannelChainDirectPayDelete {
-	mutation := newFactSettlementChannelChainDirectPayMutation(c.config, OpDelete)
-	return &FactSettlementChannelChainDirectPayDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// DeleteOne returns a builder for deleting the given entity.
-func (c *FactSettlementChannelChainDirectPayClient) DeleteOne(_m *FactSettlementChannelChainDirectPay) *FactSettlementChannelChainDirectPayDeleteOne {
-	return c.DeleteOneID(_m.ID)
-}
-
-// DeleteOneID returns a builder for deleting the given entity by its id.
-func (c *FactSettlementChannelChainDirectPayClient) DeleteOneID(id int) *FactSettlementChannelChainDirectPayDeleteOne {
-	builder := c.Delete().Where(factsettlementchannelchaindirectpay.ID(id))
-	builder.mutation.id = &id
-	builder.mutation.op = OpDeleteOne
-	return &FactSettlementChannelChainDirectPayDeleteOne{builder}
-}
-
-// Query returns a query builder for FactSettlementChannelChainDirectPay.
-func (c *FactSettlementChannelChainDirectPayClient) Query() *FactSettlementChannelChainDirectPayQuery {
-	return &FactSettlementChannelChainDirectPayQuery{
-		config: c.config,
-		ctx:    &QueryContext{Type: TypeFactSettlementChannelChainDirectPay},
-		inters: c.Interceptors(),
-	}
-}
-
-// Get returns a FactSettlementChannelChainDirectPay entity by its id.
-func (c *FactSettlementChannelChainDirectPayClient) Get(ctx context.Context, id int) (*FactSettlementChannelChainDirectPay, error) {
-	return c.Query().Where(factsettlementchannelchaindirectpay.ID(id)).Only(ctx)
-}
-
-// GetX is like Get, but panics if an error occurs.
-func (c *FactSettlementChannelChainDirectPayClient) GetX(ctx context.Context, id int) *FactSettlementChannelChainDirectPay {
-	obj, err := c.Get(ctx, id)
-	if err != nil {
-		panic(err)
-	}
-	return obj
-}
-
-// QuerySettlementPaymentAttempt queries the settlement_payment_attempt edge of a FactSettlementChannelChainDirectPay.
-func (c *FactSettlementChannelChainDirectPayClient) QuerySettlementPaymentAttempt(_m *FactSettlementChannelChainDirectPay) *FactSettlementPaymentAttemptsQuery {
-	query := (&FactSettlementPaymentAttemptsClient{config: c.config}).Query()
-	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
-		id := _m.ID
-		step := sqlgraph.NewStep(
-			sqlgraph.From(factsettlementchannelchaindirectpay.Table, factsettlementchannelchaindirectpay.FieldID, id),
-			sqlgraph.To(factsettlementpaymentattempts.Table, factsettlementpaymentattempts.FieldID),
-			sqlgraph.Edge(sqlgraph.M2O, false, factsettlementchannelchaindirectpay.SettlementPaymentAttemptTable, factsettlementchannelchaindirectpay.SettlementPaymentAttemptColumn),
-		)
-		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
-		return fromV, nil
-	}
-	return query
-}
-
-// Hooks returns the client hooks.
-func (c *FactSettlementChannelChainDirectPayClient) Hooks() []Hook {
-	return c.hooks.FactSettlementChannelChainDirectPay
-}
-
-// Interceptors returns the client interceptors.
-func (c *FactSettlementChannelChainDirectPayClient) Interceptors() []Interceptor {
-	return c.inters.FactSettlementChannelChainDirectPay
-}
-
-func (c *FactSettlementChannelChainDirectPayClient) mutate(ctx context.Context, m *FactSettlementChannelChainDirectPayMutation) (Value, error) {
-	switch m.Op() {
-	case OpCreate:
-		return (&FactSettlementChannelChainDirectPayCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdate:
-		return (&FactSettlementChannelChainDirectPayUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdateOne:
-		return (&FactSettlementChannelChainDirectPayUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpDelete, OpDeleteOne:
-		return (&FactSettlementChannelChainDirectPayDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
-	default:
-		return nil, fmt.Errorf("gen: unknown FactSettlementChannelChainDirectPay mutation op: %q", m.Op())
-	}
-}
-
-// FactSettlementChannelChainQuotePayClient is a client for the FactSettlementChannelChainQuotePay schema.
-type FactSettlementChannelChainQuotePayClient struct {
-	config
-}
-
-// NewFactSettlementChannelChainQuotePayClient returns a client for the FactSettlementChannelChainQuotePay from the given config.
-func NewFactSettlementChannelChainQuotePayClient(c config) *FactSettlementChannelChainQuotePayClient {
-	return &FactSettlementChannelChainQuotePayClient{config: c}
-}
-
-// Use adds a list of mutation hooks to the hooks stack.
-// A call to `Use(f, g, h)` equals to `factsettlementchannelchainquotepay.Hooks(f(g(h())))`.
-func (c *FactSettlementChannelChainQuotePayClient) Use(hooks ...Hook) {
-	c.hooks.FactSettlementChannelChainQuotePay = append(c.hooks.FactSettlementChannelChainQuotePay, hooks...)
-}
-
-// Intercept adds a list of query interceptors to the interceptors stack.
-// A call to `Intercept(f, g, h)` equals to `factsettlementchannelchainquotepay.Intercept(f(g(h())))`.
-func (c *FactSettlementChannelChainQuotePayClient) Intercept(interceptors ...Interceptor) {
-	c.inters.FactSettlementChannelChainQuotePay = append(c.inters.FactSettlementChannelChainQuotePay, interceptors...)
-}
-
-// Create returns a builder for creating a FactSettlementChannelChainQuotePay entity.
-func (c *FactSettlementChannelChainQuotePayClient) Create() *FactSettlementChannelChainQuotePayCreate {
-	mutation := newFactSettlementChannelChainQuotePayMutation(c.config, OpCreate)
-	return &FactSettlementChannelChainQuotePayCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// CreateBulk returns a builder for creating a bulk of FactSettlementChannelChainQuotePay entities.
-func (c *FactSettlementChannelChainQuotePayClient) CreateBulk(builders ...*FactSettlementChannelChainQuotePayCreate) *FactSettlementChannelChainQuotePayCreateBulk {
-	return &FactSettlementChannelChainQuotePayCreateBulk{config: c.config, builders: builders}
-}
-
-// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
-// a builder and applies setFunc on it.
-func (c *FactSettlementChannelChainQuotePayClient) MapCreateBulk(slice any, setFunc func(*FactSettlementChannelChainQuotePayCreate, int)) *FactSettlementChannelChainQuotePayCreateBulk {
-	rv := reflect.ValueOf(slice)
-	if rv.Kind() != reflect.Slice {
-		return &FactSettlementChannelChainQuotePayCreateBulk{err: fmt.Errorf("calling to FactSettlementChannelChainQuotePayClient.MapCreateBulk with wrong type %T, need slice", slice)}
-	}
-	builders := make([]*FactSettlementChannelChainQuotePayCreate, rv.Len())
-	for i := 0; i < rv.Len(); i++ {
-		builders[i] = c.Create()
-		setFunc(builders[i], i)
-	}
-	return &FactSettlementChannelChainQuotePayCreateBulk{config: c.config, builders: builders}
-}
-
-// Update returns an update builder for FactSettlementChannelChainQuotePay.
-func (c *FactSettlementChannelChainQuotePayClient) Update() *FactSettlementChannelChainQuotePayUpdate {
-	mutation := newFactSettlementChannelChainQuotePayMutation(c.config, OpUpdate)
-	return &FactSettlementChannelChainQuotePayUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOne returns an update builder for the given entity.
-func (c *FactSettlementChannelChainQuotePayClient) UpdateOne(_m *FactSettlementChannelChainQuotePay) *FactSettlementChannelChainQuotePayUpdateOne {
-	mutation := newFactSettlementChannelChainQuotePayMutation(c.config, OpUpdateOne, withFactSettlementChannelChainQuotePay(_m))
-	return &FactSettlementChannelChainQuotePayUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOneID returns an update builder for the given id.
-func (c *FactSettlementChannelChainQuotePayClient) UpdateOneID(id int) *FactSettlementChannelChainQuotePayUpdateOne {
-	mutation := newFactSettlementChannelChainQuotePayMutation(c.config, OpUpdateOne, withFactSettlementChannelChainQuotePayID(id))
-	return &FactSettlementChannelChainQuotePayUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// Delete returns a delete builder for FactSettlementChannelChainQuotePay.
-func (c *FactSettlementChannelChainQuotePayClient) Delete() *FactSettlementChannelChainQuotePayDelete {
-	mutation := newFactSettlementChannelChainQuotePayMutation(c.config, OpDelete)
-	return &FactSettlementChannelChainQuotePayDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// DeleteOne returns a builder for deleting the given entity.
-func (c *FactSettlementChannelChainQuotePayClient) DeleteOne(_m *FactSettlementChannelChainQuotePay) *FactSettlementChannelChainQuotePayDeleteOne {
-	return c.DeleteOneID(_m.ID)
-}
-
-// DeleteOneID returns a builder for deleting the given entity by its id.
-func (c *FactSettlementChannelChainQuotePayClient) DeleteOneID(id int) *FactSettlementChannelChainQuotePayDeleteOne {
-	builder := c.Delete().Where(factsettlementchannelchainquotepay.ID(id))
-	builder.mutation.id = &id
-	builder.mutation.op = OpDeleteOne
-	return &FactSettlementChannelChainQuotePayDeleteOne{builder}
-}
-
-// Query returns a query builder for FactSettlementChannelChainQuotePay.
-func (c *FactSettlementChannelChainQuotePayClient) Query() *FactSettlementChannelChainQuotePayQuery {
-	return &FactSettlementChannelChainQuotePayQuery{
-		config: c.config,
-		ctx:    &QueryContext{Type: TypeFactSettlementChannelChainQuotePay},
-		inters: c.Interceptors(),
-	}
-}
-
-// Get returns a FactSettlementChannelChainQuotePay entity by its id.
-func (c *FactSettlementChannelChainQuotePayClient) Get(ctx context.Context, id int) (*FactSettlementChannelChainQuotePay, error) {
-	return c.Query().Where(factsettlementchannelchainquotepay.ID(id)).Only(ctx)
-}
-
-// GetX is like Get, but panics if an error occurs.
-func (c *FactSettlementChannelChainQuotePayClient) GetX(ctx context.Context, id int) *FactSettlementChannelChainQuotePay {
-	obj, err := c.Get(ctx, id)
-	if err != nil {
-		panic(err)
-	}
-	return obj
-}
-
-// QuerySettlementPaymentAttempt queries the settlement_payment_attempt edge of a FactSettlementChannelChainQuotePay.
-func (c *FactSettlementChannelChainQuotePayClient) QuerySettlementPaymentAttempt(_m *FactSettlementChannelChainQuotePay) *FactSettlementPaymentAttemptsQuery {
-	query := (&FactSettlementPaymentAttemptsClient{config: c.config}).Query()
-	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
-		id := _m.ID
-		step := sqlgraph.NewStep(
-			sqlgraph.From(factsettlementchannelchainquotepay.Table, factsettlementchannelchainquotepay.FieldID, id),
-			sqlgraph.To(factsettlementpaymentattempts.Table, factsettlementpaymentattempts.FieldID),
-			sqlgraph.Edge(sqlgraph.M2O, false, factsettlementchannelchainquotepay.SettlementPaymentAttemptTable, factsettlementchannelchainquotepay.SettlementPaymentAttemptColumn),
-		)
-		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
-		return fromV, nil
-	}
-	return query
-}
-
-// Hooks returns the client hooks.
-func (c *FactSettlementChannelChainQuotePayClient) Hooks() []Hook {
-	return c.hooks.FactSettlementChannelChainQuotePay
-}
-
-// Interceptors returns the client interceptors.
-func (c *FactSettlementChannelChainQuotePayClient) Interceptors() []Interceptor {
-	return c.inters.FactSettlementChannelChainQuotePay
-}
-
-func (c *FactSettlementChannelChainQuotePayClient) mutate(ctx context.Context, m *FactSettlementChannelChainQuotePayMutation) (Value, error) {
-	switch m.Op() {
-	case OpCreate:
-		return (&FactSettlementChannelChainQuotePayCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdate:
-		return (&FactSettlementChannelChainQuotePayUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdateOne:
-		return (&FactSettlementChannelChainQuotePayUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpDelete, OpDeleteOne:
-		return (&FactSettlementChannelChainQuotePayDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
-	default:
-		return nil, fmt.Errorf("gen: unknown FactSettlementChannelChainQuotePay mutation op: %q", m.Op())
-	}
-}
-
-// FactSettlementChannelPoolSessionQuotePayClient is a client for the FactSettlementChannelPoolSessionQuotePay schema.
-type FactSettlementChannelPoolSessionQuotePayClient struct {
-	config
-}
-
-// NewFactSettlementChannelPoolSessionQuotePayClient returns a client for the FactSettlementChannelPoolSessionQuotePay from the given config.
-func NewFactSettlementChannelPoolSessionQuotePayClient(c config) *FactSettlementChannelPoolSessionQuotePayClient {
-	return &FactSettlementChannelPoolSessionQuotePayClient{config: c}
-}
-
-// Use adds a list of mutation hooks to the hooks stack.
-// A call to `Use(f, g, h)` equals to `factsettlementchannelpoolsessionquotepay.Hooks(f(g(h())))`.
-func (c *FactSettlementChannelPoolSessionQuotePayClient) Use(hooks ...Hook) {
-	c.hooks.FactSettlementChannelPoolSessionQuotePay = append(c.hooks.FactSettlementChannelPoolSessionQuotePay, hooks...)
-}
-
-// Intercept adds a list of query interceptors to the interceptors stack.
-// A call to `Intercept(f, g, h)` equals to `factsettlementchannelpoolsessionquotepay.Intercept(f(g(h())))`.
-func (c *FactSettlementChannelPoolSessionQuotePayClient) Intercept(interceptors ...Interceptor) {
-	c.inters.FactSettlementChannelPoolSessionQuotePay = append(c.inters.FactSettlementChannelPoolSessionQuotePay, interceptors...)
-}
-
-// Create returns a builder for creating a FactSettlementChannelPoolSessionQuotePay entity.
-func (c *FactSettlementChannelPoolSessionQuotePayClient) Create() *FactSettlementChannelPoolSessionQuotePayCreate {
-	mutation := newFactSettlementChannelPoolSessionQuotePayMutation(c.config, OpCreate)
-	return &FactSettlementChannelPoolSessionQuotePayCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// CreateBulk returns a builder for creating a bulk of FactSettlementChannelPoolSessionQuotePay entities.
-func (c *FactSettlementChannelPoolSessionQuotePayClient) CreateBulk(builders ...*FactSettlementChannelPoolSessionQuotePayCreate) *FactSettlementChannelPoolSessionQuotePayCreateBulk {
-	return &FactSettlementChannelPoolSessionQuotePayCreateBulk{config: c.config, builders: builders}
-}
-
-// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
-// a builder and applies setFunc on it.
-func (c *FactSettlementChannelPoolSessionQuotePayClient) MapCreateBulk(slice any, setFunc func(*FactSettlementChannelPoolSessionQuotePayCreate, int)) *FactSettlementChannelPoolSessionQuotePayCreateBulk {
-	rv := reflect.ValueOf(slice)
-	if rv.Kind() != reflect.Slice {
-		return &FactSettlementChannelPoolSessionQuotePayCreateBulk{err: fmt.Errorf("calling to FactSettlementChannelPoolSessionQuotePayClient.MapCreateBulk with wrong type %T, need slice", slice)}
-	}
-	builders := make([]*FactSettlementChannelPoolSessionQuotePayCreate, rv.Len())
-	for i := 0; i < rv.Len(); i++ {
-		builders[i] = c.Create()
-		setFunc(builders[i], i)
-	}
-	return &FactSettlementChannelPoolSessionQuotePayCreateBulk{config: c.config, builders: builders}
-}
-
-// Update returns an update builder for FactSettlementChannelPoolSessionQuotePay.
-func (c *FactSettlementChannelPoolSessionQuotePayClient) Update() *FactSettlementChannelPoolSessionQuotePayUpdate {
-	mutation := newFactSettlementChannelPoolSessionQuotePayMutation(c.config, OpUpdate)
-	return &FactSettlementChannelPoolSessionQuotePayUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOne returns an update builder for the given entity.
-func (c *FactSettlementChannelPoolSessionQuotePayClient) UpdateOne(_m *FactSettlementChannelPoolSessionQuotePay) *FactSettlementChannelPoolSessionQuotePayUpdateOne {
-	mutation := newFactSettlementChannelPoolSessionQuotePayMutation(c.config, OpUpdateOne, withFactSettlementChannelPoolSessionQuotePay(_m))
-	return &FactSettlementChannelPoolSessionQuotePayUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOneID returns an update builder for the given id.
-func (c *FactSettlementChannelPoolSessionQuotePayClient) UpdateOneID(id int) *FactSettlementChannelPoolSessionQuotePayUpdateOne {
-	mutation := newFactSettlementChannelPoolSessionQuotePayMutation(c.config, OpUpdateOne, withFactSettlementChannelPoolSessionQuotePayID(id))
-	return &FactSettlementChannelPoolSessionQuotePayUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// Delete returns a delete builder for FactSettlementChannelPoolSessionQuotePay.
-func (c *FactSettlementChannelPoolSessionQuotePayClient) Delete() *FactSettlementChannelPoolSessionQuotePayDelete {
-	mutation := newFactSettlementChannelPoolSessionQuotePayMutation(c.config, OpDelete)
-	return &FactSettlementChannelPoolSessionQuotePayDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// DeleteOne returns a builder for deleting the given entity.
-func (c *FactSettlementChannelPoolSessionQuotePayClient) DeleteOne(_m *FactSettlementChannelPoolSessionQuotePay) *FactSettlementChannelPoolSessionQuotePayDeleteOne {
-	return c.DeleteOneID(_m.ID)
-}
-
-// DeleteOneID returns a builder for deleting the given entity by its id.
-func (c *FactSettlementChannelPoolSessionQuotePayClient) DeleteOneID(id int) *FactSettlementChannelPoolSessionQuotePayDeleteOne {
-	builder := c.Delete().Where(factsettlementchannelpoolsessionquotepay.ID(id))
-	builder.mutation.id = &id
-	builder.mutation.op = OpDeleteOne
-	return &FactSettlementChannelPoolSessionQuotePayDeleteOne{builder}
-}
-
-// Query returns a query builder for FactSettlementChannelPoolSessionQuotePay.
-func (c *FactSettlementChannelPoolSessionQuotePayClient) Query() *FactSettlementChannelPoolSessionQuotePayQuery {
-	return &FactSettlementChannelPoolSessionQuotePayQuery{
-		config: c.config,
-		ctx:    &QueryContext{Type: TypeFactSettlementChannelPoolSessionQuotePay},
-		inters: c.Interceptors(),
-	}
-}
-
-// Get returns a FactSettlementChannelPoolSessionQuotePay entity by its id.
-func (c *FactSettlementChannelPoolSessionQuotePayClient) Get(ctx context.Context, id int) (*FactSettlementChannelPoolSessionQuotePay, error) {
-	return c.Query().Where(factsettlementchannelpoolsessionquotepay.ID(id)).Only(ctx)
-}
-
-// GetX is like Get, but panics if an error occurs.
-func (c *FactSettlementChannelPoolSessionQuotePayClient) GetX(ctx context.Context, id int) *FactSettlementChannelPoolSessionQuotePay {
-	obj, err := c.Get(ctx, id)
-	if err != nil {
-		panic(err)
-	}
-	return obj
-}
-
-// QuerySettlementPaymentAttempt queries the settlement_payment_attempt edge of a FactSettlementChannelPoolSessionQuotePay.
-func (c *FactSettlementChannelPoolSessionQuotePayClient) QuerySettlementPaymentAttempt(_m *FactSettlementChannelPoolSessionQuotePay) *FactSettlementPaymentAttemptsQuery {
-	query := (&FactSettlementPaymentAttemptsClient{config: c.config}).Query()
-	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
-		id := _m.ID
-		step := sqlgraph.NewStep(
-			sqlgraph.From(factsettlementchannelpoolsessionquotepay.Table, factsettlementchannelpoolsessionquotepay.FieldID, id),
-			sqlgraph.To(factsettlementpaymentattempts.Table, factsettlementpaymentattempts.FieldID),
-			sqlgraph.Edge(sqlgraph.M2O, false, factsettlementchannelpoolsessionquotepay.SettlementPaymentAttemptTable, factsettlementchannelpoolsessionquotepay.SettlementPaymentAttemptColumn),
-		)
-		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
-		return fromV, nil
-	}
-	return query
-}
-
-// Hooks returns the client hooks.
-func (c *FactSettlementChannelPoolSessionQuotePayClient) Hooks() []Hook {
-	return c.hooks.FactSettlementChannelPoolSessionQuotePay
-}
-
-// Interceptors returns the client interceptors.
-func (c *FactSettlementChannelPoolSessionQuotePayClient) Interceptors() []Interceptor {
-	return c.inters.FactSettlementChannelPoolSessionQuotePay
-}
-
-func (c *FactSettlementChannelPoolSessionQuotePayClient) mutate(ctx context.Context, m *FactSettlementChannelPoolSessionQuotePayMutation) (Value, error) {
-	switch m.Op() {
-	case OpCreate:
-		return (&FactSettlementChannelPoolSessionQuotePayCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdate:
-		return (&FactSettlementChannelPoolSessionQuotePayUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdateOne:
-		return (&FactSettlementChannelPoolSessionQuotePayUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpDelete, OpDeleteOne:
-		return (&FactSettlementChannelPoolSessionQuotePayDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
-	default:
-		return nil, fmt.Errorf("gen: unknown FactSettlementChannelPoolSessionQuotePay mutation op: %q", m.Op())
-	}
-}
-
-// FactSettlementCyclesClient is a client for the FactSettlementCycles schema.
-type FactSettlementCyclesClient struct {
-	config
-}
-
-// NewFactSettlementCyclesClient returns a client for the FactSettlementCycles from the given config.
-func NewFactSettlementCyclesClient(c config) *FactSettlementCyclesClient {
-	return &FactSettlementCyclesClient{config: c}
-}
-
-// Use adds a list of mutation hooks to the hooks stack.
-// A call to `Use(f, g, h)` equals to `factsettlementcycles.Hooks(f(g(h())))`.
-func (c *FactSettlementCyclesClient) Use(hooks ...Hook) {
-	c.hooks.FactSettlementCycles = append(c.hooks.FactSettlementCycles, hooks...)
-}
-
-// Intercept adds a list of query interceptors to the interceptors stack.
-// A call to `Intercept(f, g, h)` equals to `factsettlementcycles.Intercept(f(g(h())))`.
-func (c *FactSettlementCyclesClient) Intercept(interceptors ...Interceptor) {
-	c.inters.FactSettlementCycles = append(c.inters.FactSettlementCycles, interceptors...)
-}
-
-// Create returns a builder for creating a FactSettlementCycles entity.
-func (c *FactSettlementCyclesClient) Create() *FactSettlementCyclesCreate {
-	mutation := newFactSettlementCyclesMutation(c.config, OpCreate)
-	return &FactSettlementCyclesCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// CreateBulk returns a builder for creating a bulk of FactSettlementCycles entities.
-func (c *FactSettlementCyclesClient) CreateBulk(builders ...*FactSettlementCyclesCreate) *FactSettlementCyclesCreateBulk {
-	return &FactSettlementCyclesCreateBulk{config: c.config, builders: builders}
-}
-
-// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
-// a builder and applies setFunc on it.
-func (c *FactSettlementCyclesClient) MapCreateBulk(slice any, setFunc func(*FactSettlementCyclesCreate, int)) *FactSettlementCyclesCreateBulk {
-	rv := reflect.ValueOf(slice)
-	if rv.Kind() != reflect.Slice {
-		return &FactSettlementCyclesCreateBulk{err: fmt.Errorf("calling to FactSettlementCyclesClient.MapCreateBulk with wrong type %T, need slice", slice)}
-	}
-	builders := make([]*FactSettlementCyclesCreate, rv.Len())
-	for i := 0; i < rv.Len(); i++ {
-		builders[i] = c.Create()
-		setFunc(builders[i], i)
-	}
-	return &FactSettlementCyclesCreateBulk{config: c.config, builders: builders}
-}
-
-// Update returns an update builder for FactSettlementCycles.
-func (c *FactSettlementCyclesClient) Update() *FactSettlementCyclesUpdate {
-	mutation := newFactSettlementCyclesMutation(c.config, OpUpdate)
-	return &FactSettlementCyclesUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOne returns an update builder for the given entity.
-func (c *FactSettlementCyclesClient) UpdateOne(_m *FactSettlementCycles) *FactSettlementCyclesUpdateOne {
-	mutation := newFactSettlementCyclesMutation(c.config, OpUpdateOne, withFactSettlementCycles(_m))
-	return &FactSettlementCyclesUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOneID returns an update builder for the given id.
-func (c *FactSettlementCyclesClient) UpdateOneID(id int) *FactSettlementCyclesUpdateOne {
-	mutation := newFactSettlementCyclesMutation(c.config, OpUpdateOne, withFactSettlementCyclesID(id))
-	return &FactSettlementCyclesUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// Delete returns a delete builder for FactSettlementCycles.
-func (c *FactSettlementCyclesClient) Delete() *FactSettlementCyclesDelete {
-	mutation := newFactSettlementCyclesMutation(c.config, OpDelete)
-	return &FactSettlementCyclesDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// DeleteOne returns a builder for deleting the given entity.
-func (c *FactSettlementCyclesClient) DeleteOne(_m *FactSettlementCycles) *FactSettlementCyclesDeleteOne {
-	return c.DeleteOneID(_m.ID)
-}
-
-// DeleteOneID returns a builder for deleting the given entity by its id.
-func (c *FactSettlementCyclesClient) DeleteOneID(id int) *FactSettlementCyclesDeleteOne {
-	builder := c.Delete().Where(factsettlementcycles.ID(id))
-	builder.mutation.id = &id
-	builder.mutation.op = OpDeleteOne
-	return &FactSettlementCyclesDeleteOne{builder}
-}
-
-// Query returns a query builder for FactSettlementCycles.
-func (c *FactSettlementCyclesClient) Query() *FactSettlementCyclesQuery {
-	return &FactSettlementCyclesQuery{
-		config: c.config,
-		ctx:    &QueryContext{Type: TypeFactSettlementCycles},
-		inters: c.Interceptors(),
-	}
-}
-
-// Get returns a FactSettlementCycles entity by its id.
-func (c *FactSettlementCyclesClient) Get(ctx context.Context, id int) (*FactSettlementCycles, error) {
-	return c.Query().Where(factsettlementcycles.ID(id)).Only(ctx)
-}
-
-// GetX is like Get, but panics if an error occurs.
-func (c *FactSettlementCyclesClient) GetX(ctx context.Context, id int) *FactSettlementCycles {
-	obj, err := c.Get(ctx, id)
-	if err != nil {
-		panic(err)
-	}
-	return obj
-}
-
-// Hooks returns the client hooks.
-func (c *FactSettlementCyclesClient) Hooks() []Hook {
-	return c.hooks.FactSettlementCycles
-}
-
-// Interceptors returns the client interceptors.
-func (c *FactSettlementCyclesClient) Interceptors() []Interceptor {
-	return c.inters.FactSettlementCycles
-}
-
-func (c *FactSettlementCyclesClient) mutate(ctx context.Context, m *FactSettlementCyclesMutation) (Value, error) {
-	switch m.Op() {
-	case OpCreate:
-		return (&FactSettlementCyclesCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdate:
-		return (&FactSettlementCyclesUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdateOne:
-		return (&FactSettlementCyclesUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpDelete, OpDeleteOne:
-		return (&FactSettlementCyclesDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
-	default:
-		return nil, fmt.Errorf("gen: unknown FactSettlementCycles mutation op: %q", m.Op())
-	}
-}
-
-// FactSettlementPaymentAttemptsClient is a client for the FactSettlementPaymentAttempts schema.
-type FactSettlementPaymentAttemptsClient struct {
-	config
-}
-
-// NewFactSettlementPaymentAttemptsClient returns a client for the FactSettlementPaymentAttempts from the given config.
-func NewFactSettlementPaymentAttemptsClient(c config) *FactSettlementPaymentAttemptsClient {
-	return &FactSettlementPaymentAttemptsClient{config: c}
-}
-
-// Use adds a list of mutation hooks to the hooks stack.
-// A call to `Use(f, g, h)` equals to `factsettlementpaymentattempts.Hooks(f(g(h())))`.
-func (c *FactSettlementPaymentAttemptsClient) Use(hooks ...Hook) {
-	c.hooks.FactSettlementPaymentAttempts = append(c.hooks.FactSettlementPaymentAttempts, hooks...)
-}
-
-// Intercept adds a list of query interceptors to the interceptors stack.
-// A call to `Intercept(f, g, h)` equals to `factsettlementpaymentattempts.Intercept(f(g(h())))`.
-func (c *FactSettlementPaymentAttemptsClient) Intercept(interceptors ...Interceptor) {
-	c.inters.FactSettlementPaymentAttempts = append(c.inters.FactSettlementPaymentAttempts, interceptors...)
-}
-
-// Create returns a builder for creating a FactSettlementPaymentAttempts entity.
-func (c *FactSettlementPaymentAttemptsClient) Create() *FactSettlementPaymentAttemptsCreate {
-	mutation := newFactSettlementPaymentAttemptsMutation(c.config, OpCreate)
-	return &FactSettlementPaymentAttemptsCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// CreateBulk returns a builder for creating a bulk of FactSettlementPaymentAttempts entities.
-func (c *FactSettlementPaymentAttemptsClient) CreateBulk(builders ...*FactSettlementPaymentAttemptsCreate) *FactSettlementPaymentAttemptsCreateBulk {
-	return &FactSettlementPaymentAttemptsCreateBulk{config: c.config, builders: builders}
-}
-
-// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
-// a builder and applies setFunc on it.
-func (c *FactSettlementPaymentAttemptsClient) MapCreateBulk(slice any, setFunc func(*FactSettlementPaymentAttemptsCreate, int)) *FactSettlementPaymentAttemptsCreateBulk {
-	rv := reflect.ValueOf(slice)
-	if rv.Kind() != reflect.Slice {
-		return &FactSettlementPaymentAttemptsCreateBulk{err: fmt.Errorf("calling to FactSettlementPaymentAttemptsClient.MapCreateBulk with wrong type %T, need slice", slice)}
-	}
-	builders := make([]*FactSettlementPaymentAttemptsCreate, rv.Len())
-	for i := 0; i < rv.Len(); i++ {
-		builders[i] = c.Create()
-		setFunc(builders[i], i)
-	}
-	return &FactSettlementPaymentAttemptsCreateBulk{config: c.config, builders: builders}
-}
-
-// Update returns an update builder for FactSettlementPaymentAttempts.
-func (c *FactSettlementPaymentAttemptsClient) Update() *FactSettlementPaymentAttemptsUpdate {
-	mutation := newFactSettlementPaymentAttemptsMutation(c.config, OpUpdate)
-	return &FactSettlementPaymentAttemptsUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOne returns an update builder for the given entity.
-func (c *FactSettlementPaymentAttemptsClient) UpdateOne(_m *FactSettlementPaymentAttempts) *FactSettlementPaymentAttemptsUpdateOne {
-	mutation := newFactSettlementPaymentAttemptsMutation(c.config, OpUpdateOne, withFactSettlementPaymentAttempts(_m))
-	return &FactSettlementPaymentAttemptsUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOneID returns an update builder for the given id.
-func (c *FactSettlementPaymentAttemptsClient) UpdateOneID(id int64) *FactSettlementPaymentAttemptsUpdateOne {
-	mutation := newFactSettlementPaymentAttemptsMutation(c.config, OpUpdateOne, withFactSettlementPaymentAttemptsID(id))
-	return &FactSettlementPaymentAttemptsUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// Delete returns a delete builder for FactSettlementPaymentAttempts.
-func (c *FactSettlementPaymentAttemptsClient) Delete() *FactSettlementPaymentAttemptsDelete {
-	mutation := newFactSettlementPaymentAttemptsMutation(c.config, OpDelete)
-	return &FactSettlementPaymentAttemptsDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// DeleteOne returns a builder for deleting the given entity.
-func (c *FactSettlementPaymentAttemptsClient) DeleteOne(_m *FactSettlementPaymentAttempts) *FactSettlementPaymentAttemptsDeleteOne {
-	return c.DeleteOneID(_m.ID)
-}
-
-// DeleteOneID returns a builder for deleting the given entity by its id.
-func (c *FactSettlementPaymentAttemptsClient) DeleteOneID(id int64) *FactSettlementPaymentAttemptsDeleteOne {
-	builder := c.Delete().Where(factsettlementpaymentattempts.ID(id))
-	builder.mutation.id = &id
-	builder.mutation.op = OpDeleteOne
-	return &FactSettlementPaymentAttemptsDeleteOne{builder}
-}
-
-// Query returns a query builder for FactSettlementPaymentAttempts.
-func (c *FactSettlementPaymentAttemptsClient) Query() *FactSettlementPaymentAttemptsQuery {
-	return &FactSettlementPaymentAttemptsQuery{
-		config: c.config,
-		ctx:    &QueryContext{Type: TypeFactSettlementPaymentAttempts},
-		inters: c.Interceptors(),
-	}
-}
-
-// Get returns a FactSettlementPaymentAttempts entity by its id.
-func (c *FactSettlementPaymentAttemptsClient) Get(ctx context.Context, id int64) (*FactSettlementPaymentAttempts, error) {
-	return c.Query().Where(factsettlementpaymentattempts.ID(id)).Only(ctx)
-}
-
-// GetX is like Get, but panics if an error occurs.
-func (c *FactSettlementPaymentAttemptsClient) GetX(ctx context.Context, id int64) *FactSettlementPaymentAttempts {
-	obj, err := c.Get(ctx, id)
-	if err != nil {
-		panic(err)
-	}
-	return obj
-}
-
-// Hooks returns the client hooks.
-func (c *FactSettlementPaymentAttemptsClient) Hooks() []Hook {
-	return c.hooks.FactSettlementPaymentAttempts
-}
-
-// Interceptors returns the client interceptors.
-func (c *FactSettlementPaymentAttemptsClient) Interceptors() []Interceptor {
-	return c.inters.FactSettlementPaymentAttempts
-}
-
-func (c *FactSettlementPaymentAttemptsClient) mutate(ctx context.Context, m *FactSettlementPaymentAttemptsMutation) (Value, error) {
-	switch m.Op() {
-	case OpCreate:
-		return (&FactSettlementPaymentAttemptsCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdate:
-		return (&FactSettlementPaymentAttemptsUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdateOne:
-		return (&FactSettlementPaymentAttemptsUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpDelete, OpDeleteOne:
-		return (&FactSettlementPaymentAttemptsDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
-	default:
-		return nil, fmt.Errorf("gen: unknown FactSettlementPaymentAttempts mutation op: %q", m.Op())
-	}
-}
-
 // FactSettlementRecordsClient is a client for the FactSettlementRecords schema.
 type FactSettlementRecordsClient struct {
 	config
@@ -4188,22 +2816,6 @@ func (c *FactSettlementRecordsClient) GetX(ctx context.Context, id int) *FactSet
 		panic(err)
 	}
 	return obj
-}
-
-// QuerySettlementPaymentAttempt queries the settlement_payment_attempt edge of a FactSettlementRecords.
-func (c *FactSettlementRecordsClient) QuerySettlementPaymentAttempt(_m *FactSettlementRecords) *FactSettlementPaymentAttemptsQuery {
-	query := (&FactSettlementPaymentAttemptsClient{config: c.config}).Query()
-	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
-		id := _m.ID
-		step := sqlgraph.NewStep(
-			sqlgraph.From(factsettlementrecords.Table, factsettlementrecords.FieldID, id),
-			sqlgraph.To(factsettlementpaymentattempts.Table, factsettlementpaymentattempts.FieldID),
-			sqlgraph.Edge(sqlgraph.M2O, false, factsettlementrecords.SettlementPaymentAttemptTable, factsettlementrecords.SettlementPaymentAttemptColumn),
-		)
-		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
-		return fromV, nil
-	}
-	return query
 }
 
 // Hooks returns the client hooks.
@@ -4494,272 +3106,6 @@ func (c *FactTokenLotsClient) mutate(ctx context.Context, m *FactTokenLotsMutati
 		return (&FactTokenLotsDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
 	default:
 		return nil, fmt.Errorf("gen: unknown FactTokenLots mutation op: %q", m.Op())
-	}
-}
-
-// OrderSettlementEventsClient is a client for the OrderSettlementEvents schema.
-type OrderSettlementEventsClient struct {
-	config
-}
-
-// NewOrderSettlementEventsClient returns a client for the OrderSettlementEvents from the given config.
-func NewOrderSettlementEventsClient(c config) *OrderSettlementEventsClient {
-	return &OrderSettlementEventsClient{config: c}
-}
-
-// Use adds a list of mutation hooks to the hooks stack.
-// A call to `Use(f, g, h)` equals to `ordersettlementevents.Hooks(f(g(h())))`.
-func (c *OrderSettlementEventsClient) Use(hooks ...Hook) {
-	c.hooks.OrderSettlementEvents = append(c.hooks.OrderSettlementEvents, hooks...)
-}
-
-// Intercept adds a list of query interceptors to the interceptors stack.
-// A call to `Intercept(f, g, h)` equals to `ordersettlementevents.Intercept(f(g(h())))`.
-func (c *OrderSettlementEventsClient) Intercept(interceptors ...Interceptor) {
-	c.inters.OrderSettlementEvents = append(c.inters.OrderSettlementEvents, interceptors...)
-}
-
-// Create returns a builder for creating a OrderSettlementEvents entity.
-func (c *OrderSettlementEventsClient) Create() *OrderSettlementEventsCreate {
-	mutation := newOrderSettlementEventsMutation(c.config, OpCreate)
-	return &OrderSettlementEventsCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// CreateBulk returns a builder for creating a bulk of OrderSettlementEvents entities.
-func (c *OrderSettlementEventsClient) CreateBulk(builders ...*OrderSettlementEventsCreate) *OrderSettlementEventsCreateBulk {
-	return &OrderSettlementEventsCreateBulk{config: c.config, builders: builders}
-}
-
-// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
-// a builder and applies setFunc on it.
-func (c *OrderSettlementEventsClient) MapCreateBulk(slice any, setFunc func(*OrderSettlementEventsCreate, int)) *OrderSettlementEventsCreateBulk {
-	rv := reflect.ValueOf(slice)
-	if rv.Kind() != reflect.Slice {
-		return &OrderSettlementEventsCreateBulk{err: fmt.Errorf("calling to OrderSettlementEventsClient.MapCreateBulk with wrong type %T, need slice", slice)}
-	}
-	builders := make([]*OrderSettlementEventsCreate, rv.Len())
-	for i := 0; i < rv.Len(); i++ {
-		builders[i] = c.Create()
-		setFunc(builders[i], i)
-	}
-	return &OrderSettlementEventsCreateBulk{config: c.config, builders: builders}
-}
-
-// Update returns an update builder for OrderSettlementEvents.
-func (c *OrderSettlementEventsClient) Update() *OrderSettlementEventsUpdate {
-	mutation := newOrderSettlementEventsMutation(c.config, OpUpdate)
-	return &OrderSettlementEventsUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOne returns an update builder for the given entity.
-func (c *OrderSettlementEventsClient) UpdateOne(_m *OrderSettlementEvents) *OrderSettlementEventsUpdateOne {
-	mutation := newOrderSettlementEventsMutation(c.config, OpUpdateOne, withOrderSettlementEvents(_m))
-	return &OrderSettlementEventsUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOneID returns an update builder for the given id.
-func (c *OrderSettlementEventsClient) UpdateOneID(id int64) *OrderSettlementEventsUpdateOne {
-	mutation := newOrderSettlementEventsMutation(c.config, OpUpdateOne, withOrderSettlementEventsID(id))
-	return &OrderSettlementEventsUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// Delete returns a delete builder for OrderSettlementEvents.
-func (c *OrderSettlementEventsClient) Delete() *OrderSettlementEventsDelete {
-	mutation := newOrderSettlementEventsMutation(c.config, OpDelete)
-	return &OrderSettlementEventsDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// DeleteOne returns a builder for deleting the given entity.
-func (c *OrderSettlementEventsClient) DeleteOne(_m *OrderSettlementEvents) *OrderSettlementEventsDeleteOne {
-	return c.DeleteOneID(_m.ID)
-}
-
-// DeleteOneID returns a builder for deleting the given entity by its id.
-func (c *OrderSettlementEventsClient) DeleteOneID(id int64) *OrderSettlementEventsDeleteOne {
-	builder := c.Delete().Where(ordersettlementevents.ID(id))
-	builder.mutation.id = &id
-	builder.mutation.op = OpDeleteOne
-	return &OrderSettlementEventsDeleteOne{builder}
-}
-
-// Query returns a query builder for OrderSettlementEvents.
-func (c *OrderSettlementEventsClient) Query() *OrderSettlementEventsQuery {
-	return &OrderSettlementEventsQuery{
-		config: c.config,
-		ctx:    &QueryContext{Type: TypeOrderSettlementEvents},
-		inters: c.Interceptors(),
-	}
-}
-
-// Get returns a OrderSettlementEvents entity by its id.
-func (c *OrderSettlementEventsClient) Get(ctx context.Context, id int64) (*OrderSettlementEvents, error) {
-	return c.Query().Where(ordersettlementevents.ID(id)).Only(ctx)
-}
-
-// GetX is like Get, but panics if an error occurs.
-func (c *OrderSettlementEventsClient) GetX(ctx context.Context, id int64) *OrderSettlementEvents {
-	obj, err := c.Get(ctx, id)
-	if err != nil {
-		panic(err)
-	}
-	return obj
-}
-
-// Hooks returns the client hooks.
-func (c *OrderSettlementEventsClient) Hooks() []Hook {
-	return c.hooks.OrderSettlementEvents
-}
-
-// Interceptors returns the client interceptors.
-func (c *OrderSettlementEventsClient) Interceptors() []Interceptor {
-	return c.inters.OrderSettlementEvents
-}
-
-func (c *OrderSettlementEventsClient) mutate(ctx context.Context, m *OrderSettlementEventsMutation) (Value, error) {
-	switch m.Op() {
-	case OpCreate:
-		return (&OrderSettlementEventsCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdate:
-		return (&OrderSettlementEventsUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdateOne:
-		return (&OrderSettlementEventsUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpDelete, OpDeleteOne:
-		return (&OrderSettlementEventsDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
-	default:
-		return nil, fmt.Errorf("gen: unknown OrderSettlementEvents mutation op: %q", m.Op())
-	}
-}
-
-// OrderSettlementsClient is a client for the OrderSettlements schema.
-type OrderSettlementsClient struct {
-	config
-}
-
-// NewOrderSettlementsClient returns a client for the OrderSettlements from the given config.
-func NewOrderSettlementsClient(c config) *OrderSettlementsClient {
-	return &OrderSettlementsClient{config: c}
-}
-
-// Use adds a list of mutation hooks to the hooks stack.
-// A call to `Use(f, g, h)` equals to `ordersettlements.Hooks(f(g(h())))`.
-func (c *OrderSettlementsClient) Use(hooks ...Hook) {
-	c.hooks.OrderSettlements = append(c.hooks.OrderSettlements, hooks...)
-}
-
-// Intercept adds a list of query interceptors to the interceptors stack.
-// A call to `Intercept(f, g, h)` equals to `ordersettlements.Intercept(f(g(h())))`.
-func (c *OrderSettlementsClient) Intercept(interceptors ...Interceptor) {
-	c.inters.OrderSettlements = append(c.inters.OrderSettlements, interceptors...)
-}
-
-// Create returns a builder for creating a OrderSettlements entity.
-func (c *OrderSettlementsClient) Create() *OrderSettlementsCreate {
-	mutation := newOrderSettlementsMutation(c.config, OpCreate)
-	return &OrderSettlementsCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// CreateBulk returns a builder for creating a bulk of OrderSettlements entities.
-func (c *OrderSettlementsClient) CreateBulk(builders ...*OrderSettlementsCreate) *OrderSettlementsCreateBulk {
-	return &OrderSettlementsCreateBulk{config: c.config, builders: builders}
-}
-
-// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
-// a builder and applies setFunc on it.
-func (c *OrderSettlementsClient) MapCreateBulk(slice any, setFunc func(*OrderSettlementsCreate, int)) *OrderSettlementsCreateBulk {
-	rv := reflect.ValueOf(slice)
-	if rv.Kind() != reflect.Slice {
-		return &OrderSettlementsCreateBulk{err: fmt.Errorf("calling to OrderSettlementsClient.MapCreateBulk with wrong type %T, need slice", slice)}
-	}
-	builders := make([]*OrderSettlementsCreate, rv.Len())
-	for i := 0; i < rv.Len(); i++ {
-		builders[i] = c.Create()
-		setFunc(builders[i], i)
-	}
-	return &OrderSettlementsCreateBulk{config: c.config, builders: builders}
-}
-
-// Update returns an update builder for OrderSettlements.
-func (c *OrderSettlementsClient) Update() *OrderSettlementsUpdate {
-	mutation := newOrderSettlementsMutation(c.config, OpUpdate)
-	return &OrderSettlementsUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOne returns an update builder for the given entity.
-func (c *OrderSettlementsClient) UpdateOne(_m *OrderSettlements) *OrderSettlementsUpdateOne {
-	mutation := newOrderSettlementsMutation(c.config, OpUpdateOne, withOrderSettlements(_m))
-	return &OrderSettlementsUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOneID returns an update builder for the given id.
-func (c *OrderSettlementsClient) UpdateOneID(id int) *OrderSettlementsUpdateOne {
-	mutation := newOrderSettlementsMutation(c.config, OpUpdateOne, withOrderSettlementsID(id))
-	return &OrderSettlementsUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// Delete returns a delete builder for OrderSettlements.
-func (c *OrderSettlementsClient) Delete() *OrderSettlementsDelete {
-	mutation := newOrderSettlementsMutation(c.config, OpDelete)
-	return &OrderSettlementsDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// DeleteOne returns a builder for deleting the given entity.
-func (c *OrderSettlementsClient) DeleteOne(_m *OrderSettlements) *OrderSettlementsDeleteOne {
-	return c.DeleteOneID(_m.ID)
-}
-
-// DeleteOneID returns a builder for deleting the given entity by its id.
-func (c *OrderSettlementsClient) DeleteOneID(id int) *OrderSettlementsDeleteOne {
-	builder := c.Delete().Where(ordersettlements.ID(id))
-	builder.mutation.id = &id
-	builder.mutation.op = OpDeleteOne
-	return &OrderSettlementsDeleteOne{builder}
-}
-
-// Query returns a query builder for OrderSettlements.
-func (c *OrderSettlementsClient) Query() *OrderSettlementsQuery {
-	return &OrderSettlementsQuery{
-		config: c.config,
-		ctx:    &QueryContext{Type: TypeOrderSettlements},
-		inters: c.Interceptors(),
-	}
-}
-
-// Get returns a OrderSettlements entity by its id.
-func (c *OrderSettlementsClient) Get(ctx context.Context, id int) (*OrderSettlements, error) {
-	return c.Query().Where(ordersettlements.ID(id)).Only(ctx)
-}
-
-// GetX is like Get, but panics if an error occurs.
-func (c *OrderSettlementsClient) GetX(ctx context.Context, id int) *OrderSettlements {
-	obj, err := c.Get(ctx, id)
-	if err != nil {
-		panic(err)
-	}
-	return obj
-}
-
-// Hooks returns the client hooks.
-func (c *OrderSettlementsClient) Hooks() []Hook {
-	return c.hooks.OrderSettlements
-}
-
-// Interceptors returns the client interceptors.
-func (c *OrderSettlementsClient) Interceptors() []Interceptor {
-	return c.inters.OrderSettlements
-}
-
-func (c *OrderSettlementsClient) mutate(ctx context.Context, m *OrderSettlementsMutation) (Value, error) {
-	switch m.Op() {
-	case OpCreate:
-		return (&OrderSettlementsCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdate:
-		return (&OrderSettlementsUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdateOne:
-		return (&OrderSettlementsUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpDelete, OpDeleteOne:
-		return (&OrderSettlementsDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
-	default:
-		return nil, fmt.Errorf("gen: unknown OrderSettlements mutation op: %q", m.Op())
 	}
 }
 
@@ -5558,139 +3904,6 @@ func (c *ProcDirectDealsClient) mutate(ctx context.Context, m *ProcDirectDealsMu
 		return (&ProcDirectDealsDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
 	default:
 		return nil, fmt.Errorf("gen: unknown ProcDirectDeals mutation op: %q", m.Op())
-	}
-}
-
-// ProcDirectTransferPoolsClient is a client for the ProcDirectTransferPools schema.
-type ProcDirectTransferPoolsClient struct {
-	config
-}
-
-// NewProcDirectTransferPoolsClient returns a client for the ProcDirectTransferPools from the given config.
-func NewProcDirectTransferPoolsClient(c config) *ProcDirectTransferPoolsClient {
-	return &ProcDirectTransferPoolsClient{config: c}
-}
-
-// Use adds a list of mutation hooks to the hooks stack.
-// A call to `Use(f, g, h)` equals to `procdirecttransferpools.Hooks(f(g(h())))`.
-func (c *ProcDirectTransferPoolsClient) Use(hooks ...Hook) {
-	c.hooks.ProcDirectTransferPools = append(c.hooks.ProcDirectTransferPools, hooks...)
-}
-
-// Intercept adds a list of query interceptors to the interceptors stack.
-// A call to `Intercept(f, g, h)` equals to `procdirecttransferpools.Intercept(f(g(h())))`.
-func (c *ProcDirectTransferPoolsClient) Intercept(interceptors ...Interceptor) {
-	c.inters.ProcDirectTransferPools = append(c.inters.ProcDirectTransferPools, interceptors...)
-}
-
-// Create returns a builder for creating a ProcDirectTransferPools entity.
-func (c *ProcDirectTransferPoolsClient) Create() *ProcDirectTransferPoolsCreate {
-	mutation := newProcDirectTransferPoolsMutation(c.config, OpCreate)
-	return &ProcDirectTransferPoolsCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// CreateBulk returns a builder for creating a bulk of ProcDirectTransferPools entities.
-func (c *ProcDirectTransferPoolsClient) CreateBulk(builders ...*ProcDirectTransferPoolsCreate) *ProcDirectTransferPoolsCreateBulk {
-	return &ProcDirectTransferPoolsCreateBulk{config: c.config, builders: builders}
-}
-
-// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
-// a builder and applies setFunc on it.
-func (c *ProcDirectTransferPoolsClient) MapCreateBulk(slice any, setFunc func(*ProcDirectTransferPoolsCreate, int)) *ProcDirectTransferPoolsCreateBulk {
-	rv := reflect.ValueOf(slice)
-	if rv.Kind() != reflect.Slice {
-		return &ProcDirectTransferPoolsCreateBulk{err: fmt.Errorf("calling to ProcDirectTransferPoolsClient.MapCreateBulk with wrong type %T, need slice", slice)}
-	}
-	builders := make([]*ProcDirectTransferPoolsCreate, rv.Len())
-	for i := 0; i < rv.Len(); i++ {
-		builders[i] = c.Create()
-		setFunc(builders[i], i)
-	}
-	return &ProcDirectTransferPoolsCreateBulk{config: c.config, builders: builders}
-}
-
-// Update returns an update builder for ProcDirectTransferPools.
-func (c *ProcDirectTransferPoolsClient) Update() *ProcDirectTransferPoolsUpdate {
-	mutation := newProcDirectTransferPoolsMutation(c.config, OpUpdate)
-	return &ProcDirectTransferPoolsUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOne returns an update builder for the given entity.
-func (c *ProcDirectTransferPoolsClient) UpdateOne(_m *ProcDirectTransferPools) *ProcDirectTransferPoolsUpdateOne {
-	mutation := newProcDirectTransferPoolsMutation(c.config, OpUpdateOne, withProcDirectTransferPools(_m))
-	return &ProcDirectTransferPoolsUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOneID returns an update builder for the given id.
-func (c *ProcDirectTransferPoolsClient) UpdateOneID(id int) *ProcDirectTransferPoolsUpdateOne {
-	mutation := newProcDirectTransferPoolsMutation(c.config, OpUpdateOne, withProcDirectTransferPoolsID(id))
-	return &ProcDirectTransferPoolsUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// Delete returns a delete builder for ProcDirectTransferPools.
-func (c *ProcDirectTransferPoolsClient) Delete() *ProcDirectTransferPoolsDelete {
-	mutation := newProcDirectTransferPoolsMutation(c.config, OpDelete)
-	return &ProcDirectTransferPoolsDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// DeleteOne returns a builder for deleting the given entity.
-func (c *ProcDirectTransferPoolsClient) DeleteOne(_m *ProcDirectTransferPools) *ProcDirectTransferPoolsDeleteOne {
-	return c.DeleteOneID(_m.ID)
-}
-
-// DeleteOneID returns a builder for deleting the given entity by its id.
-func (c *ProcDirectTransferPoolsClient) DeleteOneID(id int) *ProcDirectTransferPoolsDeleteOne {
-	builder := c.Delete().Where(procdirecttransferpools.ID(id))
-	builder.mutation.id = &id
-	builder.mutation.op = OpDeleteOne
-	return &ProcDirectTransferPoolsDeleteOne{builder}
-}
-
-// Query returns a query builder for ProcDirectTransferPools.
-func (c *ProcDirectTransferPoolsClient) Query() *ProcDirectTransferPoolsQuery {
-	return &ProcDirectTransferPoolsQuery{
-		config: c.config,
-		ctx:    &QueryContext{Type: TypeProcDirectTransferPools},
-		inters: c.Interceptors(),
-	}
-}
-
-// Get returns a ProcDirectTransferPools entity by its id.
-func (c *ProcDirectTransferPoolsClient) Get(ctx context.Context, id int) (*ProcDirectTransferPools, error) {
-	return c.Query().Where(procdirecttransferpools.ID(id)).Only(ctx)
-}
-
-// GetX is like Get, but panics if an error occurs.
-func (c *ProcDirectTransferPoolsClient) GetX(ctx context.Context, id int) *ProcDirectTransferPools {
-	obj, err := c.Get(ctx, id)
-	if err != nil {
-		panic(err)
-	}
-	return obj
-}
-
-// Hooks returns the client hooks.
-func (c *ProcDirectTransferPoolsClient) Hooks() []Hook {
-	return c.hooks.ProcDirectTransferPools
-}
-
-// Interceptors returns the client interceptors.
-func (c *ProcDirectTransferPoolsClient) Interceptors() []Interceptor {
-	return c.inters.ProcDirectTransferPools
-}
-
-func (c *ProcDirectTransferPoolsClient) mutate(ctx context.Context, m *ProcDirectTransferPoolsMutation) (Value, error) {
-	switch m.Op() {
-	case OpCreate:
-		return (&ProcDirectTransferPoolsCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdate:
-		return (&ProcDirectTransferPoolsUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdateOne:
-		return (&ProcDirectTransferPoolsUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpDelete, OpDeleteOne:
-		return (&ProcDirectTransferPoolsDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
-	default:
-		return nil, fmt.Errorf("gen: unknown ProcDirectTransferPools mutation op: %q", m.Op())
 	}
 }
 
@@ -8358,42 +6571,32 @@ func (c *WalletUtxoTokenVerificationClient) mutate(ctx context.Context, m *Walle
 type (
 	hooks struct {
 		BizBusinessTriggers, BizDemandQuoteArbiters, BizDemandQuotes, BizDemands,
-		BizFrontOrders, BizLiveQuotes, BizPool, BizPoolAllocations,
-		BizPricingAutopilotAudit, BizPricingAutopilotConfig, BizPricingAutopilotState,
-		BizPurchases, BizSeedChunkSupply, BizSeedPricingPolicy, BizSeeds, FactBsv21,
-		FactBsv21Events, FactBsvUtxos, FactPoolSessionEvents,
-		FactSettlementChannelChainAssetCreate, FactSettlementChannelChainDirectPay,
-		FactSettlementChannelChainQuotePay, FactSettlementChannelPoolSessionQuotePay,
-		FactSettlementCycles, FactSettlementPaymentAttempts, FactSettlementRecords,
-		FactTokenCarrierLinks, FactTokenLots, OrderSettlementEvents, OrderSettlements,
+		BizFrontOrders, BizLiveQuotes, BizPricingAutopilotAudit,
+		BizPricingAutopilotConfig, BizPricingAutopilotState, BizPurchases,
+		BizSeedChunkSupply, BizSeedPricingPolicy, BizSeeds, FactBsv21, FactBsv21Events,
+		FactBsvUtxos, FactSettlementRecords, FactTokenCarrierLinks, FactTokenLots,
 		Orders, ProcChainTipState, ProcChainTipWorkerLogs, ProcChainUtxoWorkerLogs,
-		ProcCommandJournal, ProcDirectDeals, ProcDirectTransferPools, ProcDomainEvents,
-		ProcEffectLogs, ProcGatewayEvents, ProcGetFileByHashChunks,
-		ProcGetFileByHashJobs, ProcGetFileByHashQuotes, ProcLiveFollows,
-		ProcNodeReachabilityCache, ProcObservedGatewayStates, ProcOrchestratorLogs,
-		ProcPublishedRouteIndexes, ProcSchedulerTaskRuns, ProcSchedulerTasks,
-		ProcSelfNodeReachabilityState, ProcStateSnapshots, WalletLocalBroadcastTxs,
-		WalletUtxo, WalletUtxoSyncCursor, WalletUtxoSyncState,
-		WalletUtxoTokenVerification []ent.Hook
+		ProcCommandJournal, ProcDirectDeals, ProcDomainEvents, ProcEffectLogs,
+		ProcGatewayEvents, ProcGetFileByHashChunks, ProcGetFileByHashJobs,
+		ProcGetFileByHashQuotes, ProcLiveFollows, ProcNodeReachabilityCache,
+		ProcObservedGatewayStates, ProcOrchestratorLogs, ProcPublishedRouteIndexes,
+		ProcSchedulerTaskRuns, ProcSchedulerTasks, ProcSelfNodeReachabilityState,
+		ProcStateSnapshots, WalletLocalBroadcastTxs, WalletUtxo, WalletUtxoSyncCursor,
+		WalletUtxoSyncState, WalletUtxoTokenVerification []ent.Hook
 	}
 	inters struct {
 		BizBusinessTriggers, BizDemandQuoteArbiters, BizDemandQuotes, BizDemands,
-		BizFrontOrders, BizLiveQuotes, BizPool, BizPoolAllocations,
-		BizPricingAutopilotAudit, BizPricingAutopilotConfig, BizPricingAutopilotState,
-		BizPurchases, BizSeedChunkSupply, BizSeedPricingPolicy, BizSeeds, FactBsv21,
-		FactBsv21Events, FactBsvUtxos, FactPoolSessionEvents,
-		FactSettlementChannelChainAssetCreate, FactSettlementChannelChainDirectPay,
-		FactSettlementChannelChainQuotePay, FactSettlementChannelPoolSessionQuotePay,
-		FactSettlementCycles, FactSettlementPaymentAttempts, FactSettlementRecords,
-		FactTokenCarrierLinks, FactTokenLots, OrderSettlementEvents, OrderSettlements,
+		BizFrontOrders, BizLiveQuotes, BizPricingAutopilotAudit,
+		BizPricingAutopilotConfig, BizPricingAutopilotState, BizPurchases,
+		BizSeedChunkSupply, BizSeedPricingPolicy, BizSeeds, FactBsv21, FactBsv21Events,
+		FactBsvUtxos, FactSettlementRecords, FactTokenCarrierLinks, FactTokenLots,
 		Orders, ProcChainTipState, ProcChainTipWorkerLogs, ProcChainUtxoWorkerLogs,
-		ProcCommandJournal, ProcDirectDeals, ProcDirectTransferPools, ProcDomainEvents,
-		ProcEffectLogs, ProcGatewayEvents, ProcGetFileByHashChunks,
-		ProcGetFileByHashJobs, ProcGetFileByHashQuotes, ProcLiveFollows,
-		ProcNodeReachabilityCache, ProcObservedGatewayStates, ProcOrchestratorLogs,
-		ProcPublishedRouteIndexes, ProcSchedulerTaskRuns, ProcSchedulerTasks,
-		ProcSelfNodeReachabilityState, ProcStateSnapshots, WalletLocalBroadcastTxs,
-		WalletUtxo, WalletUtxoSyncCursor, WalletUtxoSyncState,
-		WalletUtxoTokenVerification []ent.Interceptor
+		ProcCommandJournal, ProcDirectDeals, ProcDomainEvents, ProcEffectLogs,
+		ProcGatewayEvents, ProcGetFileByHashChunks, ProcGetFileByHashJobs,
+		ProcGetFileByHashQuotes, ProcLiveFollows, ProcNodeReachabilityCache,
+		ProcObservedGatewayStates, ProcOrchestratorLogs, ProcPublishedRouteIndexes,
+		ProcSchedulerTaskRuns, ProcSchedulerTasks, ProcSelfNodeReachabilityState,
+		ProcStateSnapshots, WalletLocalBroadcastTxs, WalletUtxo, WalletUtxoSyncCursor,
+		WalletUtxoSyncState, WalletUtxoTokenVerification []ent.Interceptor
 	}
 )

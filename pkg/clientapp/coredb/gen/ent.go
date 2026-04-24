@@ -18,8 +18,6 @@ import (
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizdemands"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizfrontorders"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizlivequotes"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpool"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpoolallocations"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpricingautopilotaudit"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpricingautopilotconfig"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpricingautopilotstate"
@@ -30,25 +28,15 @@ import (
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factbsv21"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factbsv21events"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factbsvutxos"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factpoolsessionevents"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementchannelchainassetcreate"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementchannelchaindirectpay"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementchannelchainquotepay"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementchannelpoolsessionquotepay"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementcycles"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementpaymentattempts"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementrecords"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/facttokencarrierlinks"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/facttokenlots"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/orders"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/ordersettlementevents"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/ordersettlements"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procchaintipstate"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procchaintipworkerlogs"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procchainutxoworkerlogs"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/proccommandjournal"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procdirectdeals"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procdirecttransferpools"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procdomainevents"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/proceffectlogs"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procgatewayevents"
@@ -129,63 +117,51 @@ var (
 func checkColumn(t, c string) error {
 	initCheck.Do(func() {
 		columnCheck = sql.NewColumnCheck(map[string]func(string) bool{
-			bizbusinesstriggers.Table:                      bizbusinesstriggers.ValidColumn,
-			bizdemandquotearbiters.Table:                   bizdemandquotearbiters.ValidColumn,
-			bizdemandquotes.Table:                          bizdemandquotes.ValidColumn,
-			bizdemands.Table:                               bizdemands.ValidColumn,
-			bizfrontorders.Table:                           bizfrontorders.ValidColumn,
-			bizlivequotes.Table:                            bizlivequotes.ValidColumn,
-			bizpool.Table:                                  bizpool.ValidColumn,
-			bizpoolallocations.Table:                       bizpoolallocations.ValidColumn,
-			bizpricingautopilotaudit.Table:                 bizpricingautopilotaudit.ValidColumn,
-			bizpricingautopilotconfig.Table:                bizpricingautopilotconfig.ValidColumn,
-			bizpricingautopilotstate.Table:                 bizpricingautopilotstate.ValidColumn,
-			bizpurchases.Table:                             bizpurchases.ValidColumn,
-			bizseedchunksupply.Table:                       bizseedchunksupply.ValidColumn,
-			bizseedpricingpolicy.Table:                     bizseedpricingpolicy.ValidColumn,
-			bizseeds.Table:                                 bizseeds.ValidColumn,
-			factbsv21.Table:                                factbsv21.ValidColumn,
-			factbsv21events.Table:                          factbsv21events.ValidColumn,
-			factbsvutxos.Table:                             factbsvutxos.ValidColumn,
-			factpoolsessionevents.Table:                    factpoolsessionevents.ValidColumn,
-			factsettlementchannelchainassetcreate.Table:    factsettlementchannelchainassetcreate.ValidColumn,
-			factsettlementchannelchaindirectpay.Table:      factsettlementchannelchaindirectpay.ValidColumn,
-			factsettlementchannelchainquotepay.Table:       factsettlementchannelchainquotepay.ValidColumn,
-			factsettlementchannelpoolsessionquotepay.Table: factsettlementchannelpoolsessionquotepay.ValidColumn,
-			factsettlementcycles.Table:                     factsettlementcycles.ValidColumn,
-			factsettlementpaymentattempts.Table:            factsettlementpaymentattempts.ValidColumn,
-			factsettlementrecords.Table:                    factsettlementrecords.ValidColumn,
-			facttokencarrierlinks.Table:                    facttokencarrierlinks.ValidColumn,
-			facttokenlots.Table:                            facttokenlots.ValidColumn,
-			ordersettlementevents.Table:                    ordersettlementevents.ValidColumn,
-			ordersettlements.Table:                         ordersettlements.ValidColumn,
-			orders.Table:                                   orders.ValidColumn,
-			procchaintipstate.Table:                        procchaintipstate.ValidColumn,
-			procchaintipworkerlogs.Table:                   procchaintipworkerlogs.ValidColumn,
-			procchainutxoworkerlogs.Table:                  procchainutxoworkerlogs.ValidColumn,
-			proccommandjournal.Table:                       proccommandjournal.ValidColumn,
-			procdirectdeals.Table:                          procdirectdeals.ValidColumn,
-			procdirecttransferpools.Table:                  procdirecttransferpools.ValidColumn,
-			procdomainevents.Table:                         procdomainevents.ValidColumn,
-			proceffectlogs.Table:                           proceffectlogs.ValidColumn,
-			procgatewayevents.Table:                        procgatewayevents.ValidColumn,
-			procgetfilebyhashchunks.Table:                  procgetfilebyhashchunks.ValidColumn,
-			procgetfilebyhashjobs.Table:                    procgetfilebyhashjobs.ValidColumn,
-			procgetfilebyhashquotes.Table:                  procgetfilebyhashquotes.ValidColumn,
-			proclivefollows.Table:                          proclivefollows.ValidColumn,
-			procnodereachabilitycache.Table:                procnodereachabilitycache.ValidColumn,
-			procobservedgatewaystates.Table:                procobservedgatewaystates.ValidColumn,
-			procorchestratorlogs.Table:                     procorchestratorlogs.ValidColumn,
-			procpublishedrouteindexes.Table:                procpublishedrouteindexes.ValidColumn,
-			procschedulertaskruns.Table:                    procschedulertaskruns.ValidColumn,
-			procschedulertasks.Table:                       procschedulertasks.ValidColumn,
-			procselfnodereachabilitystate.Table:            procselfnodereachabilitystate.ValidColumn,
-			procstatesnapshots.Table:                       procstatesnapshots.ValidColumn,
-			walletlocalbroadcasttxs.Table:                  walletlocalbroadcasttxs.ValidColumn,
-			walletutxo.Table:                               walletutxo.ValidColumn,
-			walletutxosynccursor.Table:                     walletutxosynccursor.ValidColumn,
-			walletutxosyncstate.Table:                      walletutxosyncstate.ValidColumn,
-			walletutxotokenverification.Table:              walletutxotokenverification.ValidColumn,
+			bizbusinesstriggers.Table:           bizbusinesstriggers.ValidColumn,
+			bizdemandquotearbiters.Table:        bizdemandquotearbiters.ValidColumn,
+			bizdemandquotes.Table:               bizdemandquotes.ValidColumn,
+			bizdemands.Table:                    bizdemands.ValidColumn,
+			bizfrontorders.Table:                bizfrontorders.ValidColumn,
+			bizlivequotes.Table:                 bizlivequotes.ValidColumn,
+			bizpricingautopilotaudit.Table:      bizpricingautopilotaudit.ValidColumn,
+			bizpricingautopilotconfig.Table:     bizpricingautopilotconfig.ValidColumn,
+			bizpricingautopilotstate.Table:      bizpricingautopilotstate.ValidColumn,
+			bizpurchases.Table:                  bizpurchases.ValidColumn,
+			bizseedchunksupply.Table:            bizseedchunksupply.ValidColumn,
+			bizseedpricingpolicy.Table:          bizseedpricingpolicy.ValidColumn,
+			bizseeds.Table:                      bizseeds.ValidColumn,
+			factbsv21.Table:                     factbsv21.ValidColumn,
+			factbsv21events.Table:               factbsv21events.ValidColumn,
+			factbsvutxos.Table:                  factbsvutxos.ValidColumn,
+			factsettlementrecords.Table:         factsettlementrecords.ValidColumn,
+			facttokencarrierlinks.Table:         facttokencarrierlinks.ValidColumn,
+			facttokenlots.Table:                 facttokenlots.ValidColumn,
+			orders.Table:                        orders.ValidColumn,
+			procchaintipstate.Table:             procchaintipstate.ValidColumn,
+			procchaintipworkerlogs.Table:        procchaintipworkerlogs.ValidColumn,
+			procchainutxoworkerlogs.Table:       procchainutxoworkerlogs.ValidColumn,
+			proccommandjournal.Table:            proccommandjournal.ValidColumn,
+			procdirectdeals.Table:               procdirectdeals.ValidColumn,
+			procdomainevents.Table:              procdomainevents.ValidColumn,
+			proceffectlogs.Table:                proceffectlogs.ValidColumn,
+			procgatewayevents.Table:             procgatewayevents.ValidColumn,
+			procgetfilebyhashchunks.Table:       procgetfilebyhashchunks.ValidColumn,
+			procgetfilebyhashjobs.Table:         procgetfilebyhashjobs.ValidColumn,
+			procgetfilebyhashquotes.Table:       procgetfilebyhashquotes.ValidColumn,
+			proclivefollows.Table:               proclivefollows.ValidColumn,
+			procnodereachabilitycache.Table:     procnodereachabilitycache.ValidColumn,
+			procobservedgatewaystates.Table:     procobservedgatewaystates.ValidColumn,
+			procorchestratorlogs.Table:          procorchestratorlogs.ValidColumn,
+			procpublishedrouteindexes.Table:     procpublishedrouteindexes.ValidColumn,
+			procschedulertaskruns.Table:         procschedulertaskruns.ValidColumn,
+			procschedulertasks.Table:            procschedulertasks.ValidColumn,
+			procselfnodereachabilitystate.Table: procselfnodereachabilitystate.ValidColumn,
+			procstatesnapshots.Table:            procstatesnapshots.ValidColumn,
+			walletlocalbroadcasttxs.Table:       walletlocalbroadcasttxs.ValidColumn,
+			walletutxo.Table:                    walletutxo.ValidColumn,
+			walletutxosynccursor.Table:          walletutxosynccursor.ValidColumn,
+			walletutxosyncstate.Table:           walletutxosyncstate.ValidColumn,
+			walletutxotokenverification.Table:   walletutxotokenverification.ValidColumn,
 		})
 	})
 	return columnCheck(t, c)

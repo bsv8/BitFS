@@ -2,6 +2,7 @@ package clientapp
 
 import (
 	"context"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -154,7 +155,9 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store moduleBoot
 	return nil
 }
 
-func dbLoadWalletUTXOStateRowsTx(ctx context.Context, tx sqlConn, walletID string, address string) (map[string]utxoStateRow, error) {
+func dbLoadWalletUTXOStateRowsTx(ctx context.Context, tx interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, walletID string, address string) (map[string]utxoStateRow, error) {
 	if tx == nil {
 		return nil, fmt.Errorf("tx is nil")
 	}
@@ -207,7 +210,9 @@ func summarizeWalletUTXOState(existing map[string]utxoStateRow) walletUTXOAggreg
 	return stats
 }
 
-func dbUpsertWalletLocalBroadcastStoreTx(ctx context.Context, wtx sqlConn, walletID string, address string, txid string, txHex string, observedAtUnix int64, updatedAt int64) error {
+func dbUpsertWalletLocalBroadcastStoreTx(ctx context.Context, wtx interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, walletID string, address string, txid string, txHex string, observedAtUnix int64, updatedAt int64) error {
 	if wtx == nil {
 		return fmt.Errorf("tx is nil")
 	}

@@ -2,8 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,17 +9,9 @@ import (
 )
 
 // 验证本地投影路径调用 markBSVUTXOSpentConn 后会发出 fact_bsv_spent_applied 事件。
-// 这样 e2e 通过 obs 等待 spent 收敛时，不会因为“只写库不发事件”而卡住。
+// 这样 e2e 通过 obs 等待 spent 收敛时，不会因为"只写库不发事件"而卡住。
 func TestMarkBSVUTXOSpentConn_EmitsFactSpentEvent(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := ensureClientSchemaOnDB(t.Context(), db); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	db := openClientappTestDB(t)
 
 	const (
 		address    = "mtest_fact_spent_event_addr_1"

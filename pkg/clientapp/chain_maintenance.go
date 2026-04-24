@@ -203,6 +203,14 @@ func startChainMaintainer(ctx context.Context, rt *Runtime, store *clientDB) {
 	cm.start(ctx)
 }
 
+// startListenLoops Group 8: fee pool billing loops removed, no-op stub
+func startListenLoops(ctx context.Context, rt *Runtime, store *clientDB) {
+	if rt == nil {
+		return
+	}
+	obs.Info(ServiceName, "listen_loops_disabled", map[string]any{"note": "Group 8 cleanup: fee pool removed"})
+}
+
 func getChainMaintainer(rt *Runtime) *chainMaintainer {
 	if rt == nil {
 		return nil

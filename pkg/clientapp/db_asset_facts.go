@@ -374,7 +374,9 @@ func emitFactBSVSpentAppliedEvent(ctx context.Context, tx EntWriteRoot, address 
 	})
 }
 
-func dbLoadBSVUTXOAddressByIDTx(ctx context.Context, db sqlConn, utxoID string) (string, error) {
+func dbLoadBSVUTXOAddressByIDTx(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, utxoID string) (string, error) {
 	if db == nil {
 		return "", fmt.Errorf("db is nil")
 	}
@@ -389,7 +391,9 @@ func dbLoadBSVUTXOAddressByIDTx(ctx context.Context, db sqlConn, utxoID string) 
 	return strings.TrimSpace(address), nil
 }
 
-func emitFactBSVSpentAppliedEventConn(ctx context.Context, db sqlConn, address string, spentByTxid string) {
+func emitFactBSVSpentAppliedEventConn(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, address string, spentByTxid string) {
 	address = strings.TrimSpace(address)
 	spentByTxid = strings.ToLower(strings.TrimSpace(spentByTxid))
 	if address == "" || spentByTxid == "" {
@@ -410,7 +414,10 @@ func emitFactBSVSpentAppliedEventConn(ctx context.Context, db sqlConn, address s
 
 // dbGetBSVUTXO 查询单个本币UTXO
 
-func dbUpsertBSVUTXODB(ctx context.Context, db sqlConn, e bsvUTXOEntry) error {
+func dbUpsertBSVUTXODB(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, e bsvUTXOEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -514,7 +521,10 @@ func dbUpsertBSVUTXODB(ctx context.Context, db sqlConn, e bsvUTXOEntry) error {
 	return err
 }
 
-func markBSVUTXOSpentConn(ctx context.Context, db sqlConn, utxoID string, spentByTxid string, updatedAt int64) error {
+func markBSVUTXOSpentConn(ctx context.Context, db interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, utxoID string, spentByTxid string, updatedAt int64) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -526,7 +536,7 @@ func markBSVUTXOSpentConn(ctx context.Context, db sqlConn, utxoID string, spentB
 	if updatedAt <= 0 {
 		updatedAt = time.Now().Unix()
 	}
-	result, err := ExecContext(ctx, db,
+	result, err := db.ExecContext(ctx,
 		`UPDATE fact_bsv_utxos SET utxo_state='spent', spent_by_txid=?, spent_at_unix=?, updated_at_unix=? WHERE utxo_id=?`,
 		spentByTxid, updatedAt, updatedAt, utxoID,
 	)
@@ -644,7 +654,10 @@ func dbCalcBSVBalanceDB(ctx context.Context, db sqlConn, ownerPubkeyHex string) 
 
 // dbUpsertTokenLot 幂等写入/更新 Token Lot
 
-func dbUpsertTokenLotDB(ctx context.Context, db sqlConn, e tokenLotEntry) error {
+func dbUpsertTokenLotDB(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, e tokenLotEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -962,7 +975,10 @@ func dbCalcTokenBalanceDB(ctx context.Context, db sqlConn, ownerPubkeyHex string
 
 // dbUpsertTokenCarrierLink 幂等写入/更新 Token Carrier Link
 
-func dbUpsertTokenCarrierLinkDB(ctx context.Context, db sqlConn, e tokenCarrierLinkEntry) error {
+func dbUpsertTokenCarrierLinkDB(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, e tokenCarrierLinkEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -1619,256 +1635,3 @@ func ApplyVerifiedAssetFlow(ctx context.Context, store *clientDB, p verifiedAsse
 		})
 	}
 }
-
-// ========== Settlement Cycle 函数（硬切版保留） ==========
-
-// dbUpsertSettlementPaymentAttempt 幂等写入结算周期，并返回写入后的主键。
-
-// dbUpsertSettlementPaymentAttemptCtx 保持旧签名，内部走主键返回版。
-
-// dbGetSettlementPaymentAttemptBySource 通过 source_type/source_id 查找 settlement_payment_attempt_id
-
-// dbGetSettlementPaymentAttemptSourceTxID 只通过 settlement_payment_attempt 反查来源 txid。
-// 设计说明：
-// - 业务扣账只认 settlement_payment_attempt，不再从 payment 事实绕路取 txid；
-// - 所有来源都按 settlement_payment_attempt_id 回到渠道子表拿 txid；
-// - 其他 source_type 不允许拿来驱动 BSV 扣账。
-func dbGetSettlementPaymentAttemptSourceTxIDCtx(ctx context.Context, db sqlConn, settlementPaymentAttemptID int64) (string, error) {
-	if db == nil {
-		return "", fmt.Errorf("db is nil")
-	}
-	if settlementPaymentAttemptID <= 0 {
-		return "", fmt.Errorf("settlement_payment_attempt_id is required")
-	}
-	var sourceType string
-	var sourceID string
-	if err := QueryRowContext(ctx, db, `SELECT source_type, source_id FROM fact_settlement_payment_attempts WHERE id=?`, settlementPaymentAttemptID).Scan(&sourceType, &sourceID); err != nil {
-		if err == sql.ErrNoRows {
-			return "", fmt.Errorf("settlement payment attempt not found: %d", settlementPaymentAttemptID)
-		}
-		return "", err
-	}
-	switch strings.ToLower(strings.TrimSpace(sourceType)) {
-	case "chain_quote_pay":
-		var txid string
-		if err := QueryRowContext(ctx, db, `SELECT txid FROM fact_settlement_channel_chain_quote_pay WHERE settlement_payment_attempt_id=?`, settlementPaymentAttemptID).Scan(&txid); err != nil {
-			if err == sql.ErrNoRows {
-				return "", fmt.Errorf("channel row not found for settlement payment attempt %d", settlementPaymentAttemptID)
-			}
-			return "", err
-		}
-		return strings.ToLower(strings.TrimSpace(txid)), nil
-	case "chain_direct_pay":
-		var txid string
-		if err := QueryRowContext(ctx, db, `SELECT txid FROM fact_settlement_channel_chain_direct_pay WHERE settlement_payment_attempt_id=?`, settlementPaymentAttemptID).Scan(&txid); err != nil {
-			if err == sql.ErrNoRows {
-				return "", fmt.Errorf("channel row not found for settlement payment attempt %d", settlementPaymentAttemptID)
-			}
-			return "", err
-		}
-		return strings.ToLower(strings.TrimSpace(txid)), nil
-	case "chain_asset_create":
-		var txid string
-		if err := QueryRowContext(ctx, db, `SELECT txid FROM fact_settlement_channel_chain_asset_create WHERE settlement_payment_attempt_id=?`, settlementPaymentAttemptID).Scan(&txid); err != nil {
-			if err == sql.ErrNoRows {
-				return "", fmt.Errorf("channel row not found for settlement payment attempt %d", settlementPaymentAttemptID)
-			}
-			return "", err
-		}
-		return strings.ToLower(strings.TrimSpace(txid)), nil
-	case "pool_session_quote_pay":
-		var txid string
-		err := QueryRowContext(ctx, db,
-			`SELECT txid FROM fact_settlement_channel_pool_session_quote_pay WHERE settlement_payment_attempt_id=?`,
-			settlementPaymentAttemptID,
-		).Scan(&txid)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return "", fmt.Errorf("channel row not found for settlement payment attempt %d", settlementPaymentAttemptID)
-			}
-			return "", err
-		}
-		return strings.ToLower(strings.TrimSpace(txid)), nil
-	default:
-		return "", fmt.Errorf("settlement payment attempt %d source_type %s cannot derive txid", settlementPaymentAttemptID, strings.TrimSpace(sourceType))
-	}
-}
-
-// ========== 消耗记录函数（硬切版） ==========
-
-// dbAppendBSVConsumptionsForSettlementPaymentAttempt 写入 BSV 消耗记录
-func dbAppendBSVConsumptionsForSettlementPaymentAttemptCtx(ctx context.Context, db sqlConn, settlementPaymentAttemptID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	if settlementPaymentAttemptID <= 0 {
-		return fmt.Errorf("settlement_payment_attempt_id is required")
-	}
-	spentByTxid, err := dbGetSettlementPaymentAttemptSourceTxIDCtx(ctx, db, settlementPaymentAttemptID)
-	if err != nil {
-		return fmt.Errorf("resolve settlement payment attempt txid failed: %w", err)
-	}
-
-	for _, fact := range utxoFacts {
-		ioSide := strings.TrimSpace(fact.IOSide)
-		if ioSide != "input" {
-			continue
-		}
-		utxoID := strings.ToLower(strings.TrimSpace(fact.UTXOID))
-		if utxoID == "" {
-			continue
-		}
-
-		// 先确保 settlement record 落库。
-		// 不能依赖 fact_bsv_utxos 的 spent 状态来决定是否写 record，
-		// 因为本地投影可能已经把 UTXO 标为 spent（同一 tx），若这里直接 continue 会丢掉 BSV 结算记录。
-		recordID := fmt.Sprintf("rec_bsv_%d_%s", settlementPaymentAttemptID, utxoID)
-		_, err = ExecContext(ctx, db,
-			`INSERT INTO fact_settlement_records(
-				record_id, settlement_payment_attempt_id, asset_type, owner_pubkey_hex, source_utxo_id,
-				used_satoshi, used_quantity_text, state, occurred_at_unix, confirmed_at_unix, note, payload_json
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(settlement_payment_attempt_id, asset_type, source_utxo_id, source_lot_id) DO UPDATE SET
-				used_satoshi=excluded.used_satoshi,
-				state=CASE WHEN fact_settlement_records.state='confirmed' AND excluded.state='pending'
-					THEN fact_settlement_records.state ELSE excluded.state END`,
-			recordID, settlementPaymentAttemptID, "BSV", "", utxoID,
-			fact.AmountSatoshi, "", "confirmed", occurredAtUnix, occurredAtUnix,
-			"BSV consumed by settlement payment attempt", mustJSONString(fact.Payload),
-		)
-		if err != nil {
-			return fmt.Errorf("append BSV consumption for utxo %s: %w", utxoID, err)
-		}
-
-		var utxoState string
-		var currentSpentByTxid string
-		if err := QueryRowContext(ctx, db, `SELECT utxo_state, COALESCE(spent_by_txid,'') FROM fact_bsv_utxos WHERE utxo_id=?`, utxoID).Scan(&utxoState, &currentSpentByTxid); err != nil {
-			if err == sql.ErrNoRows {
-				return fmt.Errorf("bsv utxo not found: %s", utxoID)
-			}
-			return fmt.Errorf("lookup bsv utxo %s failed: %w", utxoID, err)
-		}
-		utxoState = strings.ToLower(strings.TrimSpace(utxoState))
-		currentSpentByTxid = strings.ToLower(strings.TrimSpace(currentSpentByTxid))
-		if utxoState == "spent" {
-			if currentSpentByTxid == "" {
-				// 旧数据可能只有 spent 状态，没有写入来源 txid。
-				// 这里不重复扣，只把事实补齐成 cycle 反查出的真实 txid。
-				result, err := ExecContext(ctx, db,
-					`UPDATE fact_bsv_utxos SET spent_by_txid=?, spent_at_unix=CASE WHEN spent_at_unix=0 THEN ? ELSE spent_at_unix END, updated_at_unix=? WHERE utxo_id=? AND utxo_state='spent' AND COALESCE(spent_by_txid,'')=''`,
-					spentByTxid, occurredAtUnix, occurredAtUnix, utxoID,
-				)
-				if err != nil {
-					return fmt.Errorf("backfill spent_by_txid for bsv utxo %s failed: %w", utxoID, err)
-				}
-				if result != nil {
-					if affected, affErr := result.RowsAffected(); affErr == nil && affected > 0 {
-						if address, addrErr := dbLoadBSVUTXOAddressByIDTx(ctx, db, utxoID); addrErr == nil {
-							emitFactBSVSpentAppliedEventConn(ctx, db, address, spentByTxid)
-						}
-					}
-				}
-				continue
-			}
-			if currentSpentByTxid == spentByTxid {
-				continue
-			}
-			return fmt.Errorf("bsv utxo %s already spent by %s", utxoID, currentSpentByTxid)
-		}
-
-		// 标记 UTXO 为已花费。这里只认 settlement_payment_attempt 推导出的 txid，禁止旁路写空值。
-		result, err := ExecContext(ctx, db, `UPDATE fact_bsv_utxos SET utxo_state='spent', spent_by_txid=?, spent_at_unix=?, updated_at_unix=? WHERE utxo_id=? AND utxo_state<>'spent'`,
-			spentByTxid, occurredAtUnix, occurredAtUnix, utxoID)
-		if err != nil {
-			return fmt.Errorf("mark bsv utxo spent %s failed: %w", utxoID, err)
-		}
-		if result != nil {
-			if affected, affErr := result.RowsAffected(); affErr == nil && affected > 0 {
-				if address, addrErr := dbLoadBSVUTXOAddressByIDTx(ctx, db, utxoID); addrErr == nil {
-					emitFactBSVSpentAppliedEventConn(ctx, db, address, spentByTxid)
-				}
-			}
-		}
-	}
-	return nil
-}
-
-// dbAppendBSVConsumptionsForSettlementPaymentAttemptEntTx 在 ent 事务里写 BSV 消耗记录。
-func dbAppendBSVConsumptionsForSettlementPaymentAttemptEntTx(ctx context.Context, tx EntWriteRoot, settlementPaymentAttemptID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
-	if tx == nil {
-		return fmt.Errorf("tx is nil")
-	}
-	if settlementPaymentAttemptID <= 0 {
-		return fmt.Errorf("settlement_payment_attempt_id is required")
-	}
-	spentByTxid, err := dbGetSettlementPaymentAttemptSourceTxIDEntTx(ctx, tx, settlementPaymentAttemptID)
-	if err != nil {
-		return fmt.Errorf("resolve settlement payment attempt txid failed: %w", err)
-	}
-	for _, fact := range utxoFacts {
-		if strings.TrimSpace(fact.IOSide) != "input" {
-			continue
-		}
-		utxoID := strings.ToLower(strings.TrimSpace(fact.UTXOID))
-		if utxoID == "" {
-			continue
-		}
-		recordID := fmt.Sprintf("rec_bsv_%d_%s", settlementPaymentAttemptID, utxoID)
-		if err := dbAppendSettlementRecordEntTx(ctx, tx, settlementRecordEntry{
-			RecordID:                   recordID,
-			SettlementPaymentAttemptID: settlementPaymentAttemptID,
-			AssetType:                  "BSV",
-			SourceUTXOID:               utxoID,
-			State:                      "confirmed",
-			OccurredAtUnix:             occurredAtUnix,
-			ConfirmedAtUnix:            occurredAtUnix,
-			Note:                       "BSV consumed by settlement payment attempt",
-			Payload:                    fact.Payload,
-		}); err != nil {
-			return fmt.Errorf("append BSV consumption for utxo %s: %w", utxoID, err)
-		}
-		current, err := tx.FactBsvUtxos.Query().
-			Where(factbsvutxos.UtxoIDEQ(utxoID)).
-			Only(ctx)
-		if err != nil {
-			if gen.IsNotFound(err) {
-				return fmt.Errorf("bsv utxo not found: %s", utxoID)
-			}
-			return fmt.Errorf("lookup bsv utxo %s failed: %w", utxoID, err)
-		}
-		utxoState := strings.ToLower(strings.TrimSpace(current.UtxoState))
-		currentSpentByTxid := strings.ToLower(strings.TrimSpace(current.SpentByTxid))
-		if utxoState == "spent" {
-			if currentSpentByTxid == "" {
-				if _, err := tx.FactBsvUtxos.UpdateOneID(current.ID).
-					SetSpentByTxid(spentByTxid).
-					SetSpentAtUnix(func() int64 {
-						if current.SpentAtUnix <= 0 {
-							return occurredAtUnix
-						}
-						return current.SpentAtUnix
-					}()).
-					SetUpdatedAtUnix(occurredAtUnix).
-					Save(ctx); err != nil {
-					return fmt.Errorf("update spent txid for utxo %s failed: %w", utxoID, err)
-				}
-			}
-			continue
-		}
-		if _, err := tx.FactBsvUtxos.UpdateOneID(current.ID).
-			SetUtxoState("spent").
-			SetSpentByTxid(spentByTxid).
-			SetSpentAtUnix(occurredAtUnix).
-			SetUpdatedAtUnix(occurredAtUnix).
-			Save(ctx); err != nil {
-			return fmt.Errorf("mark bsv utxo spent %s failed: %w", utxoID, err)
-		}
-	}
-	return nil
-}
-
-// dbAppendTokenConsumptionsForSettlementPaymentAttempt 写入 Token 消耗记录
-
-// 从 UTXO 查找对应的 lot
-
-// 更新 lot 的 used_quantity

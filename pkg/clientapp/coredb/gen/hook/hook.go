@@ -81,30 +81,6 @@ func (f BizLiveQuotesFunc) Mutate(ctx context.Context, m gen.Mutation) (gen.Valu
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *gen.BizLiveQuotesMutation", m)
 }
 
-// The BizPoolFunc type is an adapter to allow the use of ordinary
-// function as BizPool mutator.
-type BizPoolFunc func(context.Context, *gen.BizPoolMutation) (gen.Value, error)
-
-// Mutate calls f(ctx, m).
-func (f BizPoolFunc) Mutate(ctx context.Context, m gen.Mutation) (gen.Value, error) {
-	if mv, ok := m.(*gen.BizPoolMutation); ok {
-		return f(ctx, mv)
-	}
-	return nil, fmt.Errorf("unexpected mutation type %T. expect *gen.BizPoolMutation", m)
-}
-
-// The BizPoolAllocationsFunc type is an adapter to allow the use of ordinary
-// function as BizPoolAllocations mutator.
-type BizPoolAllocationsFunc func(context.Context, *gen.BizPoolAllocationsMutation) (gen.Value, error)
-
-// Mutate calls f(ctx, m).
-func (f BizPoolAllocationsFunc) Mutate(ctx context.Context, m gen.Mutation) (gen.Value, error) {
-	if mv, ok := m.(*gen.BizPoolAllocationsMutation); ok {
-		return f(ctx, mv)
-	}
-	return nil, fmt.Errorf("unexpected mutation type %T. expect *gen.BizPoolAllocationsMutation", m)
-}
-
 // The BizPricingAutopilotAuditFunc type is an adapter to allow the use of ordinary
 // function as BizPricingAutopilotAudit mutator.
 type BizPricingAutopilotAuditFunc func(context.Context, *gen.BizPricingAutopilotAuditMutation) (gen.Value, error)
@@ -225,90 +201,6 @@ func (f FactBsvUtxosFunc) Mutate(ctx context.Context, m gen.Mutation) (gen.Value
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *gen.FactBsvUtxosMutation", m)
 }
 
-// The FactPoolSessionEventsFunc type is an adapter to allow the use of ordinary
-// function as FactPoolSessionEvents mutator.
-type FactPoolSessionEventsFunc func(context.Context, *gen.FactPoolSessionEventsMutation) (gen.Value, error)
-
-// Mutate calls f(ctx, m).
-func (f FactPoolSessionEventsFunc) Mutate(ctx context.Context, m gen.Mutation) (gen.Value, error) {
-	if mv, ok := m.(*gen.FactPoolSessionEventsMutation); ok {
-		return f(ctx, mv)
-	}
-	return nil, fmt.Errorf("unexpected mutation type %T. expect *gen.FactPoolSessionEventsMutation", m)
-}
-
-// The FactSettlementChannelChainAssetCreateFunc type is an adapter to allow the use of ordinary
-// function as FactSettlementChannelChainAssetCreate mutator.
-type FactSettlementChannelChainAssetCreateFunc func(context.Context, *gen.FactSettlementChannelChainAssetCreateMutation) (gen.Value, error)
-
-// Mutate calls f(ctx, m).
-func (f FactSettlementChannelChainAssetCreateFunc) Mutate(ctx context.Context, m gen.Mutation) (gen.Value, error) {
-	if mv, ok := m.(*gen.FactSettlementChannelChainAssetCreateMutation); ok {
-		return f(ctx, mv)
-	}
-	return nil, fmt.Errorf("unexpected mutation type %T. expect *gen.FactSettlementChannelChainAssetCreateMutation", m)
-}
-
-// The FactSettlementChannelChainDirectPayFunc type is an adapter to allow the use of ordinary
-// function as FactSettlementChannelChainDirectPay mutator.
-type FactSettlementChannelChainDirectPayFunc func(context.Context, *gen.FactSettlementChannelChainDirectPayMutation) (gen.Value, error)
-
-// Mutate calls f(ctx, m).
-func (f FactSettlementChannelChainDirectPayFunc) Mutate(ctx context.Context, m gen.Mutation) (gen.Value, error) {
-	if mv, ok := m.(*gen.FactSettlementChannelChainDirectPayMutation); ok {
-		return f(ctx, mv)
-	}
-	return nil, fmt.Errorf("unexpected mutation type %T. expect *gen.FactSettlementChannelChainDirectPayMutation", m)
-}
-
-// The FactSettlementChannelChainQuotePayFunc type is an adapter to allow the use of ordinary
-// function as FactSettlementChannelChainQuotePay mutator.
-type FactSettlementChannelChainQuotePayFunc func(context.Context, *gen.FactSettlementChannelChainQuotePayMutation) (gen.Value, error)
-
-// Mutate calls f(ctx, m).
-func (f FactSettlementChannelChainQuotePayFunc) Mutate(ctx context.Context, m gen.Mutation) (gen.Value, error) {
-	if mv, ok := m.(*gen.FactSettlementChannelChainQuotePayMutation); ok {
-		return f(ctx, mv)
-	}
-	return nil, fmt.Errorf("unexpected mutation type %T. expect *gen.FactSettlementChannelChainQuotePayMutation", m)
-}
-
-// The FactSettlementChannelPoolSessionQuotePayFunc type is an adapter to allow the use of ordinary
-// function as FactSettlementChannelPoolSessionQuotePay mutator.
-type FactSettlementChannelPoolSessionQuotePayFunc func(context.Context, *gen.FactSettlementChannelPoolSessionQuotePayMutation) (gen.Value, error)
-
-// Mutate calls f(ctx, m).
-func (f FactSettlementChannelPoolSessionQuotePayFunc) Mutate(ctx context.Context, m gen.Mutation) (gen.Value, error) {
-	if mv, ok := m.(*gen.FactSettlementChannelPoolSessionQuotePayMutation); ok {
-		return f(ctx, mv)
-	}
-	return nil, fmt.Errorf("unexpected mutation type %T. expect *gen.FactSettlementChannelPoolSessionQuotePayMutation", m)
-}
-
-// The FactSettlementCyclesFunc type is an adapter to allow the use of ordinary
-// function as FactSettlementCycles mutator.
-type FactSettlementCyclesFunc func(context.Context, *gen.FactSettlementCyclesMutation) (gen.Value, error)
-
-// Mutate calls f(ctx, m).
-func (f FactSettlementCyclesFunc) Mutate(ctx context.Context, m gen.Mutation) (gen.Value, error) {
-	if mv, ok := m.(*gen.FactSettlementCyclesMutation); ok {
-		return f(ctx, mv)
-	}
-	return nil, fmt.Errorf("unexpected mutation type %T. expect *gen.FactSettlementCyclesMutation", m)
-}
-
-// The FactSettlementPaymentAttemptsFunc type is an adapter to allow the use of ordinary
-// function as FactSettlementPaymentAttempts mutator.
-type FactSettlementPaymentAttemptsFunc func(context.Context, *gen.FactSettlementPaymentAttemptsMutation) (gen.Value, error)
-
-// Mutate calls f(ctx, m).
-func (f FactSettlementPaymentAttemptsFunc) Mutate(ctx context.Context, m gen.Mutation) (gen.Value, error) {
-	if mv, ok := m.(*gen.FactSettlementPaymentAttemptsMutation); ok {
-		return f(ctx, mv)
-	}
-	return nil, fmt.Errorf("unexpected mutation type %T. expect *gen.FactSettlementPaymentAttemptsMutation", m)
-}
-
 // The FactSettlementRecordsFunc type is an adapter to allow the use of ordinary
 // function as FactSettlementRecords mutator.
 type FactSettlementRecordsFunc func(context.Context, *gen.FactSettlementRecordsMutation) (gen.Value, error)
@@ -343,30 +235,6 @@ func (f FactTokenLotsFunc) Mutate(ctx context.Context, m gen.Mutation) (gen.Valu
 		return f(ctx, mv)
 	}
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *gen.FactTokenLotsMutation", m)
-}
-
-// The OrderSettlementEventsFunc type is an adapter to allow the use of ordinary
-// function as OrderSettlementEvents mutator.
-type OrderSettlementEventsFunc func(context.Context, *gen.OrderSettlementEventsMutation) (gen.Value, error)
-
-// Mutate calls f(ctx, m).
-func (f OrderSettlementEventsFunc) Mutate(ctx context.Context, m gen.Mutation) (gen.Value, error) {
-	if mv, ok := m.(*gen.OrderSettlementEventsMutation); ok {
-		return f(ctx, mv)
-	}
-	return nil, fmt.Errorf("unexpected mutation type %T. expect *gen.OrderSettlementEventsMutation", m)
-}
-
-// The OrderSettlementsFunc type is an adapter to allow the use of ordinary
-// function as OrderSettlements mutator.
-type OrderSettlementsFunc func(context.Context, *gen.OrderSettlementsMutation) (gen.Value, error)
-
-// Mutate calls f(ctx, m).
-func (f OrderSettlementsFunc) Mutate(ctx context.Context, m gen.Mutation) (gen.Value, error) {
-	if mv, ok := m.(*gen.OrderSettlementsMutation); ok {
-		return f(ctx, mv)
-	}
-	return nil, fmt.Errorf("unexpected mutation type %T. expect *gen.OrderSettlementsMutation", m)
 }
 
 // The OrdersFunc type is an adapter to allow the use of ordinary
@@ -439,18 +307,6 @@ func (f ProcDirectDealsFunc) Mutate(ctx context.Context, m gen.Mutation) (gen.Va
 		return f(ctx, mv)
 	}
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *gen.ProcDirectDealsMutation", m)
-}
-
-// The ProcDirectTransferPoolsFunc type is an adapter to allow the use of ordinary
-// function as ProcDirectTransferPools mutator.
-type ProcDirectTransferPoolsFunc func(context.Context, *gen.ProcDirectTransferPoolsMutation) (gen.Value, error)
-
-// Mutate calls f(ctx, m).
-func (f ProcDirectTransferPoolsFunc) Mutate(ctx context.Context, m gen.Mutation) (gen.Value, error) {
-	if mv, ok := m.(*gen.ProcDirectTransferPoolsMutation); ok {
-		return f(ctx, mv)
-	}
-	return nil, fmt.Errorf("unexpected mutation type %T. expect *gen.ProcDirectTransferPoolsMutation", m)
 }
 
 // The ProcDomainEventsFunc type is an adapter to allow the use of ordinary

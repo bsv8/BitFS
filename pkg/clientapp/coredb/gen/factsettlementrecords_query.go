@@ -11,7 +11,6 @@ import (
 	"entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementpaymentattempts"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementrecords"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/predicate"
 )
@@ -19,11 +18,10 @@ import (
 // FactSettlementRecordsQuery is the builder for querying FactSettlementRecords entities.
 type FactSettlementRecordsQuery struct {
 	config
-	ctx                          *QueryContext
-	order                        []factsettlementrecords.OrderOption
-	inters                       []Interceptor
-	predicates                   []predicate.FactSettlementRecords
-	withSettlementPaymentAttempt *FactSettlementPaymentAttemptsQuery
+	ctx        *QueryContext
+	order      []factsettlementrecords.OrderOption
+	inters     []Interceptor
+	predicates []predicate.FactSettlementRecords
 	// intermediate query (i.e. traversal path).
 	sql  *sql.Selector
 	path func(context.Context) (*sql.Selector, error)
@@ -58,28 +56,6 @@ func (_q *FactSettlementRecordsQuery) Unique(unique bool) *FactSettlementRecords
 func (_q *FactSettlementRecordsQuery) Order(o ...factsettlementrecords.OrderOption) *FactSettlementRecordsQuery {
 	_q.order = append(_q.order, o...)
 	return _q
-}
-
-// QuerySettlementPaymentAttempt chains the current query on the "settlement_payment_attempt" edge.
-func (_q *FactSettlementRecordsQuery) QuerySettlementPaymentAttempt() *FactSettlementPaymentAttemptsQuery {
-	query := (&FactSettlementPaymentAttemptsClient{config: _q.config}).Query()
-	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
-		if err := _q.prepareQuery(ctx); err != nil {
-			return nil, err
-		}
-		selector := _q.sqlQuery(ctx)
-		if err := selector.Err(); err != nil {
-			return nil, err
-		}
-		step := sqlgraph.NewStep(
-			sqlgraph.From(factsettlementrecords.Table, factsettlementrecords.FieldID, selector),
-			sqlgraph.To(factsettlementpaymentattempts.Table, factsettlementpaymentattempts.FieldID),
-			sqlgraph.Edge(sqlgraph.M2O, false, factsettlementrecords.SettlementPaymentAttemptTable, factsettlementrecords.SettlementPaymentAttemptColumn),
-		)
-		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
-		return fromU, nil
-	}
-	return query
 }
 
 // First returns the first FactSettlementRecords entity from the query.
@@ -269,27 +245,15 @@ func (_q *FactSettlementRecordsQuery) Clone() *FactSettlementRecordsQuery {
 		return nil
 	}
 	return &FactSettlementRecordsQuery{
-		config:                       _q.config,
-		ctx:                          _q.ctx.Clone(),
-		order:                        append([]factsettlementrecords.OrderOption{}, _q.order...),
-		inters:                       append([]Interceptor{}, _q.inters...),
-		predicates:                   append([]predicate.FactSettlementRecords{}, _q.predicates...),
-		withSettlementPaymentAttempt: _q.withSettlementPaymentAttempt.Clone(),
+		config:     _q.config,
+		ctx:        _q.ctx.Clone(),
+		order:      append([]factsettlementrecords.OrderOption{}, _q.order...),
+		inters:     append([]Interceptor{}, _q.inters...),
+		predicates: append([]predicate.FactSettlementRecords{}, _q.predicates...),
 		// clone intermediate query.
 		sql:  _q.sql.Clone(),
 		path: _q.path,
 	}
-}
-
-// WithSettlementPaymentAttempt tells the query-builder to eager-load the nodes that are connected to
-// the "settlement_payment_attempt" edge. The optional arguments are used to configure the query builder of the edge.
-func (_q *FactSettlementRecordsQuery) WithSettlementPaymentAttempt(opts ...func(*FactSettlementPaymentAttemptsQuery)) *FactSettlementRecordsQuery {
-	query := (&FactSettlementPaymentAttemptsClient{config: _q.config}).Query()
-	for _, opt := range opts {
-		opt(query)
-	}
-	_q.withSettlementPaymentAttempt = query
-	return _q
 }
 
 // GroupBy is used to group vertices by one or more fields/columns.
@@ -368,11 +332,8 @@ func (_q *FactSettlementRecordsQuery) prepareQuery(ctx context.Context) error {
 
 func (_q *FactSettlementRecordsQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*FactSettlementRecords, error) {
 	var (
-		nodes       = []*FactSettlementRecords{}
-		_spec       = _q.querySpec()
-		loadedTypes = [1]bool{
-			_q.withSettlementPaymentAttempt != nil,
-		}
+		nodes = []*FactSettlementRecords{}
+		_spec = _q.querySpec()
 	)
 	_spec.ScanValues = func(columns []string) ([]any, error) {
 		return (*FactSettlementRecords).scanValues(nil, columns)
@@ -380,7 +341,6 @@ func (_q *FactSettlementRecordsQuery) sqlAll(ctx context.Context, hooks ...query
 	_spec.Assign = func(columns []string, values []any) error {
 		node := &FactSettlementRecords{config: _q.config}
 		nodes = append(nodes, node)
-		node.Edges.loadedTypes = loadedTypes
 		return node.assignValues(columns, values)
 	}
 	for i := range hooks {
@@ -392,43 +352,7 @@ func (_q *FactSettlementRecordsQuery) sqlAll(ctx context.Context, hooks ...query
 	if len(nodes) == 0 {
 		return nodes, nil
 	}
-	if query := _q.withSettlementPaymentAttempt; query != nil {
-		if err := _q.loadSettlementPaymentAttempt(ctx, query, nodes, nil,
-			func(n *FactSettlementRecords, e *FactSettlementPaymentAttempts) { n.Edges.SettlementPaymentAttempt = e }); err != nil {
-			return nil, err
-		}
-	}
 	return nodes, nil
-}
-
-func (_q *FactSettlementRecordsQuery) loadSettlementPaymentAttempt(ctx context.Context, query *FactSettlementPaymentAttemptsQuery, nodes []*FactSettlementRecords, init func(*FactSettlementRecords), assign func(*FactSettlementRecords, *FactSettlementPaymentAttempts)) error {
-	ids := make([]int64, 0, len(nodes))
-	nodeids := make(map[int64][]*FactSettlementRecords)
-	for i := range nodes {
-		fk := nodes[i].SettlementPaymentAttemptID
-		if _, ok := nodeids[fk]; !ok {
-			ids = append(ids, fk)
-		}
-		nodeids[fk] = append(nodeids[fk], nodes[i])
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-	query.Where(factsettlementpaymentattempts.IDIn(ids...))
-	neighbors, err := query.All(ctx)
-	if err != nil {
-		return err
-	}
-	for _, n := range neighbors {
-		nodes, ok := nodeids[n.ID]
-		if !ok {
-			return fmt.Errorf(`unexpected foreign-key "settlement_payment_attempt_id" returned %v`, n.ID)
-		}
-		for i := range nodes {
-			assign(nodes[i], n)
-		}
-	}
-	return nil
 }
 
 func (_q *FactSettlementRecordsQuery) sqlCount(ctx context.Context) (int, error) {
@@ -455,9 +379,6 @@ func (_q *FactSettlementRecordsQuery) querySpec() *sqlgraph.QuerySpec {
 			if fields[i] != factsettlementrecords.FieldID {
 				_spec.Node.Columns = append(_spec.Node.Columns, fields[i])
 			}
-		}
-		if _q.withSettlementPaymentAttempt != nil {
-			_spec.Node.AddColumnOnce(factsettlementrecords.FieldSettlementPaymentAttemptID)
 		}
 	}
 	if ps := _q.predicates; len(ps) > 0 {

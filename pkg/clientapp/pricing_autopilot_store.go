@@ -14,9 +14,13 @@ import (
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpricingautopilotstate"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizseedpricingpolicy"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizseeds"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 )
 
-func entWriteRootFromSQLConn(conn SQLConn) (EntWriteRoot, error) {
+func entWriteRootFromWriteTx(conn moduleapi.WriteTx) (EntWriteRoot, error) {
+	if conn == nil {
+		return nil, fmt.Errorf("write tx is nil")
+	}
 	tx, ok := conn.(*writeTxConn)
 	if !ok || tx == nil || tx.tx == nil {
 		return nil, fmt.Errorf("ent write tx is required")
@@ -217,8 +221,8 @@ func dbLoadPricingAutopilotConfigOnWriteRoot(ctx context.Context, root EntWriteR
 	return cfg, true, nil
 }
 
-func dbLoadPricingAutopilotConfigOnConn(ctx context.Context, conn SQLConn) (PricingConfig, bool, error) {
-	root, err := entWriteRootFromSQLConn(conn)
+func dbLoadPricingAutopilotConfigOnConn(ctx context.Context, conn moduleapi.WriteTx) (PricingConfig, bool, error) {
+	root, err := entWriteRootFromWriteTx(conn)
 	if err != nil {
 		return PricingConfig{}, false, err
 	}
@@ -241,8 +245,8 @@ func dbUpsertPricingAutopilotConfig(ctx context.Context, store *clientDB, cfg Pr
 	})
 }
 
-func dbUpsertPricingAutopilotConfigOnConn(ctx context.Context, conn SQLConn, cfg PricingConfig, updatedAtUnix int64) error {
-	root, err := entWriteRootFromSQLConn(conn)
+func dbUpsertPricingAutopilotConfigOnConn(ctx context.Context, conn moduleapi.WriteTx, cfg PricingConfig, updatedAtUnix int64) error {
+	root, err := entWriteRootFromWriteTx(conn)
 	if err != nil {
 		return err
 	}
@@ -309,15 +313,15 @@ func dbLoadPricingAutopilotState(ctx context.Context, store *clientDB, seedHash 
 	return out.state, out.ok, nil
 }
 
-func dbLoadPricingAutopilotStateOnConn(ctx context.Context, conn SQLConn, seedHash string) (PricingState, bool, error) {
-	root, err := entWriteRootFromSQLConn(conn)
+func dbLoadPricingAutopilotStateOnConn(ctx context.Context, conn moduleapi.WriteTx, seedHash string) (PricingState, bool, error) {
+	root, err := entWriteRootFromWriteTx(conn)
 	if err != nil {
 		return PricingState{}, false, err
 	}
 	return dbLoadPricingAutopilotStateOnWriteRoot(ctx, root, seedHash)
 }
 
-func loadPricingStateForSeedOnConn(ctx context.Context, conn SQLConn, seedHash string, base uint64, nowUnix int64) (PricingState, bool, error) {
+func loadPricingStateForSeedOnConn(ctx context.Context, conn moduleapi.WriteTx, seedHash string, base uint64, nowUnix int64) (PricingState, bool, error) {
 	state, ok, err := dbLoadPricingAutopilotStateOnConn(ctx, conn, seedHash)
 	if err != nil {
 		return PricingState{}, false, err
@@ -569,8 +573,8 @@ func dbUpsertPricingAutopilotState(ctx context.Context, store *clientDB, state P
 	})
 }
 
-func dbUpsertPricingAutopilotStateOnConn(ctx context.Context, conn SQLConn, state PricingState, updatedAtUnix int64) error {
-	root, err := entWriteRootFromSQLConn(conn)
+func dbUpsertPricingAutopilotStateOnConn(ctx context.Context, conn moduleapi.WriteTx, state PricingState, updatedAtUnix int64) error {
+	root, err := entWriteRootFromWriteTx(conn)
 	if err != nil {
 		return err
 	}
@@ -641,8 +645,8 @@ func dbAppendPricingAutopilotAuditOnRoot(ctx context.Context, root EntWriteRoot,
 	return err
 }
 
-func dbAppendPricingAutopilotAuditOnConn(ctx context.Context, conn SQLConn, item PricingAuditItem) error {
-	root, err := entWriteRootFromSQLConn(conn)
+func dbAppendPricingAutopilotAuditOnConn(ctx context.Context, conn moduleapi.WriteTx, item PricingAuditItem) error {
+	root, err := entWriteRootFromWriteTx(conn)
 	if err != nil {
 		return err
 	}
@@ -728,16 +732,16 @@ func dbListPricingAutopilotAudits(ctx context.Context, store *clientDB, seedHash
 	return out, nil
 }
 
-func dbListAllPricingSeedHashesOnConn(ctx context.Context, conn SQLConn) ([]string, error) {
-	root, err := entWriteRootFromSQLConn(conn)
+func dbListAllPricingSeedHashesOnConn(ctx context.Context, conn moduleapi.WriteTx) ([]string, error) {
+	root, err := entWriteRootFromWriteTx(conn)
 	if err != nil {
 		return nil, err
 	}
 	return dbListAllPricingSeedHashesOnWriteRoot(ctx, root)
 }
 
-func dbLoadSellerSeedSnapshotOnConn(ctx context.Context, conn SQLConn, seedHash string) (sellerSeed, bool, error) {
-	root, err := entWriteRootFromSQLConn(conn)
+func dbLoadSellerSeedSnapshotOnConn(ctx context.Context, conn moduleapi.WriteTx, seedHash string) (sellerSeed, bool, error) {
+	root, err := entWriteRootFromWriteTx(conn)
 	if err != nil {
 		return sellerSeed{}, false, err
 	}

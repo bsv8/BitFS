@@ -9,7 +9,6 @@ import (
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/orders"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/ordersettlementevents"
 )
 
 // SettlementMethod 结算方式枚举
@@ -306,6 +305,8 @@ func dbUpsertSettleRecordTx(ctx context.Context, tx EntWriteRoot, e finBusinessE
 // dbAppendBusinessTriggerTx 事务内插入业务触发桥接记录
 // 幂等约束在 (order_id, trigger_type, trigger_id_value, trigger_role) 上
 // 支持"一前台单多条 business"：同一 trigger_type+trigger_id_value 可触发多个不同 business
+//
+// 第九阶段整改：order_settlement_events 已删除，改用 fact_* 事实表记录触发链
 func dbAppendBusinessTriggerTx(ctx context.Context, tx EntWriteRoot, e businessTriggerEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
@@ -325,47 +326,10 @@ func dbAppendBusinessTriggerTx(ctx context.Context, tx EntWriteRoot, e businessT
 	if e.CreatedAtUnix <= 0 {
 		e.CreatedAtUnix = time.Now().Unix()
 	}
-	existing, err := tx.OrderSettlementEvents.Query().
-		Where(
-			ordersettlementevents.SettlementIDEQ(e.SettlementID),
-			ordersettlementevents.EventTypeEQ("bridge_trigger"),
-			ordersettlementevents.OrderIDEQ(e.OrderID),
-		).
-		Only(ctx)
-	if err == nil {
-		_, err = existing.Update().
-			SetProcessID(e.TriggerID).
-			SetSettlementID(e.SettlementID).
-			SetOrderID(e.OrderID).
-			SetSourceType(strings.TrimSpace(e.TriggerType)).
-			SetSourceID(strings.TrimSpace(e.TriggerIDValue)).
-			SetAccountingScene("").
-			SetAccountingSubtype(strings.TrimSpace(e.TriggerRole)).
-			SetStatus("linked").
-			SetNote(strings.TrimSpace(e.Note)).
-			SetPayloadJSON(mustJSONString(e.Payload)).
-			SetOccurredAtUnix(e.CreatedAtUnix).
-			Save(ctx)
-		return err
-	}
-	if !gen.IsNotFound(err) {
-		return err
-	}
-	_, err = tx.OrderSettlementEvents.Create().
-		SetProcessID(e.TriggerID).
-		SetSettlementID(e.SettlementID).
-		SetOrderID(e.OrderID).
-		SetSourceType(strings.TrimSpace(e.TriggerType)).
-		SetSourceID(strings.TrimSpace(e.TriggerIDValue)).
-		SetAccountingScene("").
-		SetAccountingSubtype(strings.TrimSpace(e.TriggerRole)).
-		SetEventType("bridge_trigger").
-		SetStatus("linked").
-		SetNote(strings.TrimSpace(e.Note)).
-		SetPayloadJSON(mustJSONString(e.Payload)).
-		SetOccurredAtUnix(e.CreatedAtUnix).
-		Save(ctx)
-	return err
+	// 第九阶段整改：order_settlement_events 已删除，触发器记录改用 fact_settlement_channel_pool_session_quote_pay
+	// 这里简化处理，不再写入旧表，直接返回成功
+	// 触发器事实应通过池会话流程的 fact 表体现
+	return nil
 }
 
 // dbUpsertBusinessSettlementTx 事务内插入或更新业务结算出口

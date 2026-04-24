@@ -2,6 +2,7 @@ package clientapp
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,10 +10,14 @@ import (
 	"sync"
 	"sync/atomic"
 
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	contractmessage "github.com/bsv8/BFTP/pkg/infra/ncall"
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/BFTP/pkg/infra/pproto"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	"github.com/bsv8/BitFS/pkg/clientapp/seedstorage"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
@@ -392,6 +397,126 @@ func (h *moduleHost) GatewaySnapshot() []moduleapi.PeerNode {
 	return out
 }
 
+func (h *moduleHost) PeerCallRaw(ctx context.Context, peer string, protocolID string, request moduleapi.PeerCallRequest) (moduleapi.PeerCallResponse, error) {
+	if h == nil || h.rt == nil {
+		return moduleapi.PeerCallResponse{}, fmt.Errorf("runtime is required")
+	}
+	clientStore, ok := h.store.(*clientDB)
+	if !ok || clientStore == nil {
+		return moduleapi.PeerCallResponse{}, fmt.Errorf("peer call store is unavailable")
+	}
+	resp, err := TriggerPeerCall(ctx, h.rt, TriggerPeerCallParams{
+		To:                   strings.TrimSpace(peer),
+		ProtocolID:           protocol.ID(protocolID),
+		ContentType:          strings.TrimSpace(request.ContentType),
+		Body:                 append([]byte(nil), request.Body...),
+		Store:                clientStore,
+		PaymentMode:          strings.TrimSpace(request.PaymentMode),
+		PaymentScheme:        strings.TrimSpace(request.PaymentScheme),
+		ServiceQuote:         append([]byte(nil), request.ServiceQuote...),
+		RequireActiveFeePool: request.RequireActiveFeePool,
+	})
+	if err != nil {
+		return moduleapi.PeerCallResponse{}, err
+	}
+	return toModuleAPICallResponse(resp), nil
+}
+
+func (h *moduleHost) QuoteService(ctx context.Context, peer string, protocolID string, request moduleapi.ServiceQuoteRequest) (moduleapi.ServiceQuoteResponse, error) {
+	return moduleapi.ServiceQuoteResponse{}, fmt.Errorf("QuoteService not implemented: use PaymentFacade instead")
+}
+
+func (h *moduleHost) PaymentFacade() moduleapi.PaymentFacade {
+	if h == nil || h.rt == nil {
+		return nil
+	}
+	return ensurePaymentFacade(h.rt)
+}
+
+func (h *moduleHost) RegisterQuotedServicePayer(scheme string, payer moduleapi.QuotedServicePayer) (func(), error) {
+	if h == nil || h.rt == nil {
+		return nil, fmt.Errorf("runtime not initialized")
+	}
+	return ensurePaymentRegistry(h.rt).RegisterQuotedServicePayer(scheme, payer)
+}
+
+func (h *moduleHost) RegisterServiceCoverageSession(scheme string, session moduleapi.ServiceCoverageSession) (func(), error) {
+	if h == nil || h.rt == nil {
+		return nil, fmt.Errorf("runtime not initialized")
+	}
+	return ensurePaymentRegistry(h.rt).RegisterServiceCoverageSession(scheme, session)
+}
+
+func (h *moduleHost) RegisterTradeSession(scheme string, session moduleapi.TradeSession) (func(), error) {
+	if h == nil || h.rt == nil {
+		return nil, fmt.Errorf("runtime not initialized")
+	}
+	return ensurePaymentRegistry(h.rt).RegisterTradeSession(scheme, session)
+}
+
+func (h *moduleHost) Actor() (*poolcore.Actor, error) {
+	if h == nil || h.rt == nil {
+		return nil, fmt.Errorf("runtime not initialized")
+	}
+	identity, err := h.rt.runtimeIdentity()
+	if err != nil {
+		return nil, err
+	}
+	return identity.Actor, nil
+}
+
+func (h *moduleHost) SendProto(ctx context.Context, peerStr string, protocolID string, in any, out any) error {
+	if h == nil || h.rt == nil {
+		return fmt.Errorf("runtime not initialized")
+	}
+	peerID, err := peer.Decode(peerStr)
+	if err != nil {
+		return fmt.Errorf("decode peer id failed: %w", err)
+	}
+	sec := gwSec(h.rt.TransferRPCTrace())
+	if err := pproto.CallProto[ncall.CallReq, ncall.CallResp](ctx, h.rt.Host, peerID, protocol.ID(protocolID), sec, in.(ncall.CallReq), out.(*ncall.CallResp)); err != nil {
+		return fmt.Errorf("send proto failed: %w", err)
+	}
+	return nil
+}
+
+func (h *moduleHost) WalletUTXOs(ctx context.Context) ([]poolcore.UTXO, error) {
+	if h == nil || h.rt == nil {
+		return nil, fmt.Errorf("runtime not initialized")
+	}
+	store, ok := h.store.(*clientDB)
+	if !ok || store == nil {
+		return nil, fmt.Errorf("client store not available")
+	}
+	return getWalletUTXOsFromDB(ctx, store, h.rt)
+}
+
+func (h *moduleHost) GetGatewayPubkey(gatewayPeerID peer.ID) (*ec.PublicKey, error) {
+	if h == nil || h.rt == nil || h.rt.Host == nil {
+		return nil, fmt.Errorf("runtime not initialized")
+	}
+	pub := h.rt.Host.Peerstore().PubKey(gatewayPeerID)
+	if pub == nil {
+		return nil, fmt.Errorf("missing gateway pubkey")
+	}
+	raw, err := pub.Raw()
+	if err != nil {
+		return nil, err
+	}
+	return ec.PublicKeyFromString(strings.ToLower(hex.EncodeToString(raw)))
+}
+
+func (h *moduleHost) PoolInfo(ctx context.Context, peerStr string) (poolcore.InfoResp, error) {
+	if h == nil || h.rt == nil {
+		return poolcore.InfoResp{}, fmt.Errorf("runtime not initialized")
+	}
+	peerID, err := peer.Decode(peerStr)
+	if err != nil {
+		return poolcore.InfoResp{}, fmt.Errorf("decode peer id failed: %w", err)
+	}
+	return callNodePoolInfo(ctx, h.rt, peerID)
+}
+
 type moduleStoreAdapter struct {
 	store moduleBootstrapStore
 }
@@ -737,4 +862,15 @@ func moduleHTTPHandlerForGate(handler moduleapi.HTTPHandler, gate *moduleRuntime
 		}
 		handler(w, r)
 	}
+}
+
+//窄能力方法：获取 module 专属的 store。
+//设计说明：
+//- 不通过 Host 接口暴露，避免所有 module 都看到所有 store；
+//- 只给需要专属 store 的 module 用类型断言获取。
+func (h *moduleHost) GetModuleStore(name string) any {
+	if h == nil || h.rt == nil {
+		return nil
+	}
+	return h.rt.GetModuleStore(name)
 }

@@ -250,6 +250,12 @@ type ModuleDescriptor struct {
 	Install            Installer
 	ModuleLockName     string
 	ModuleLockProvider func() []LockedFunction
+	// StoreFactory 是 module store 的创建入口。
+// 设计说明：
+// - 接收 moduleapi.Store 而不是 raw *sql.DB，禁止从 rawDB 创建 ent.Client；
+// - 返回值注册到 Runtime，module 通过 host.GetModuleStore(name) 获取；
+// - 每个 module 只创建一次，不允许覆盖。
+StoreFactory func(store Store) any
 }
 
 // Installer 是模块统一安装入口。
@@ -286,6 +292,10 @@ type Host interface {
 
 	PeerCall(context.Context, PeerCallRequest) (PeerCallResponse, error)
 	GatewaySnapshot() []PeerNode
+
+	RegisterQuotedServicePayer(scheme string, payer QuotedServicePayer) (func(), error)
+	RegisterServiceCoverageSession(scheme string, session ServiceCoverageSession) (func(), error)
+	RegisterTradeSession(scheme string, session TradeSession) (func(), error)
 }
 
 type HTTPRoute struct {

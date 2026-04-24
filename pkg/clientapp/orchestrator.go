@@ -17,7 +17,6 @@ import (
 const (
 	orchestratorSignalWorkspaceTick = "workspace.tick"
 	orchestratorSignalChainTip      = "chain.tip_advanced"
-	orchestratorSignalFeePoolTick   = "feepool.billing_tick"
 
 	orchestratorEventStarted          = "orchestrator_started"
 	orchestratorEventSignalReceived   = "signal_received"
@@ -324,50 +323,7 @@ func (o *orchestrator) reconcileSignal(sig orchestratorSignal, now time.Time) []
 			},
 			NextRunAt: now,
 		})
-	case orchestratorSignalFeePoolTick:
-		gwID := strings.TrimSpace(sig.AggregateKey)
-		if gwID == "" {
-			break
-		}
-		out = append(out, &orchestratorTask{
-			TaskID:         newActionID(),
-			TaskType:       "feepool.maintain",
-			GatewayPeerID:  gwID,
-			RequestedBy:    "orchestrator",
-			AggregateID:    "gateway:" + gwID,
-			IdempotencyKey: fmt.Sprintf("feepool_tick:%s:%d", gwID, now.Unix()/10),
-			RequestedAt:    now.Unix(),
-			Payload: map[string]any{
-				"trigger": "billing_tick",
-			},
-			NextRunAt: now,
-		})
 	case orchestratorSignalChainTip:
-		// 设计约束：链高度推进只服务 listen 资金池维护。
-		// 非 listen 场景（例如 gateway 直付、普通 peer.call）不应该因为"配置了网关"就被动开池。
-		if o == nil || o.rt == nil || !cfgBool(o.rt.ConfigSnapshot().Listen.Enabled, true) {
-			break
-		}
-		for _, gw := range snapshotHealthyGateways(o.rt) {
-			gwID := strings.TrimSpace(gw.ID.String())
-			if gwID == "" {
-				continue
-			}
-			out = append(out, &orchestratorTask{
-				TaskID:         newActionID(),
-				TaskType:       "feepool.maintain",
-				GatewayPeerID:  gwID,
-				RequestedBy:    "orchestrator",
-				AggregateID:    "gateway:" + gwID,
-				IdempotencyKey: fmt.Sprintf("chain_tip_tick:%s:%v", gwID, sig.Payload["tip_to"]),
-				RequestedAt:    now.Unix(),
-				Payload: map[string]any{
-					"trigger":      "chain_tip_advanced",
-					"observed_tip": anyToInt64(sig.Payload["tip_to"]),
-				},
-				NextRunAt: now,
-			})
-		}
 	}
 	return out
 }
@@ -460,8 +416,6 @@ func (o *orchestrator) runOneTask(ctx context.Context) {
 	switch strings.TrimSpace(task.TaskType) {
 	case "workspace.sync":
 		res = o.runWorkspaceSync(ctx, task)
-	case "feepool.maintain":
-		res = o.runFeePoolMaintain(ctx, task)
 	default:
 		res = orchestratorTaskResult{Status: "failed", ErrorCode: "unsupported_task", ErrorMessage: fmt.Sprintf("unsupported task type: %s", task.TaskType)}
 	}
@@ -521,72 +475,6 @@ func (o *orchestrator) runOneTask(ctx context.Context) {
 			ErrorMessage:   err,
 		})
 		o.failTask(task, fmt.Errorf("%s", err), o.isRetryableFailure(res))
-	}
-}
-
-// resolveFeePoolMaintainCommandType 决定 maintain 任务走 ensure_active 还是 cycle_tick。
-// 有 active session 走 tick，没有走 ensure_active。
-func resolveFeePoolMaintainCommandType(rt *Runtime, gatewayPeerID string) string {
-	if rt == nil {
-		return feePoolCommandEnsureActive
-	}
-	sess, ok := rt.getFeePool(strings.TrimSpace(gatewayPeerID))
-	if ok && sess != nil && strings.TrimSpace(sess.SpendTxID) != "" && strings.TrimSpace(sess.Status) == "active" {
-		return feePoolCommandCycleTick
-	}
-	return feePoolCommandEnsureActive
-}
-
-func (o *orchestrator) runWorkspaceSync(ctx context.Context, task *orchestratorTask) orchestratorTaskResult {
-	return orchestratorTaskResult{
-		Status:       "rejected",
-		ErrorCode:    "workspace_sync_removed",
-		ErrorMessage: "workspace sync is removed",
-	}
-}
-
-func (o *orchestrator) runFeePoolMaintain(ctx context.Context, task *orchestratorTask) orchestratorTaskResult {
-	if o.rt == nil || o.rt.feePool == nil {
-		return orchestratorTaskResult{
-			Status:       "rejected",
-			ErrorCode:    "fee_pool_not_initialized",
-			ErrorMessage: "fee pool not initialized",
-		}
-	}
-	gwID := strings.TrimSpace(task.GatewayPeerID)
-	if gwID == "" {
-		return orchestratorTaskResult{
-			Status:       "rejected",
-			ErrorCode:    "gateway_required",
-			ErrorMessage: "gateway peer id required",
-		}
-	}
-	gw, err := o.rt.PickGatewayForBusiness(gwID)
-	if err != nil || gw.ID == "" {
-		return orchestratorTaskResult{
-			Status:       "rejected",
-			ErrorCode:    "gateway_not_found",
-			ErrorMessage: fmt.Sprintf("gateway not found: %s", gwID),
-		}
-	}
-	cmdType := resolveFeePoolMaintainCommandType(o.rt, gwID)
-	cmd := feePoolKernelCommand{
-		CommandID:       strings.TrimSpace(task.TaskID),
-		CommandType:     cmdType,
-		RequestedBy:     strings.TrimSpace(task.RequestedBy),
-		AllowWhenPaused: false,
-		TriggerKey:      strings.TrimSpace(task.TriggerKey),
-		Payload:         task.Payload,
-	}
-	res := o.rt.feePool.dispatch(ctx, gw, cmd)
-	return orchestratorTaskResult{
-		Status:       res.Status,
-		ErrorCode:    res.ErrorCode,
-		ErrorMessage: res.ErrorMessage,
-		Data: map[string]any{
-			"state_before": res.StateBefore,
-			"state_after":  res.StateAfter,
-		},
 	}
 }
 
@@ -660,6 +548,20 @@ func (o *orchestrator) failTask(task *orchestratorTask, err error, retryable boo
 		},
 	})
 	o.wakeupTaskRunner()
+}
+
+func (o *orchestrator) runWorkspaceSync(ctx context.Context, task *orchestratorTask) orchestratorTaskResult {
+	if o == nil || o.rt == nil {
+		return orchestratorTaskResult{Status: "failed", ErrorCode: "runtime_nil", ErrorMessage: "runtime not initialized"}
+	}
+	if o.rt.Workspace == nil {
+		return orchestratorTaskResult{Status: "failed", ErrorCode: "workspace_nil", ErrorMessage: "workspace not initialized"}
+	}
+	_, err := o.rt.Workspace.SyncOnce(ctx)
+	if err != nil {
+		return orchestratorTaskResult{Status: "failed", ErrorCode: "workspace_sync_failed", ErrorMessage: err.Error()}
+	}
+	return orchestratorTaskResult{Status: "applied"}
 }
 
 func (o *orchestrator) setStartedAt(unix int64) {

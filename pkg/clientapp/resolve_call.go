@@ -9,6 +9,7 @@ import (
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -36,6 +37,7 @@ type peerCallPaymentDecision struct {
 // - 硬切后不再使用 node.call + route 分发模型；
 // - 调用方直接指定完整 protocol.ID，如 /bsv-transfer/index/resolve/1.0.0；
 // - 每个能力模块独立注册自己的 protocol.ID handler。
+// - 支付逻辑已迁移到 PaymentFacade，TriggerPeerCall 只负责业务调用和结果转换。
 func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) (ncall.CallResp, error) {
 	var out ncall.CallResp
 	if rt == nil || rt.Host == nil {
@@ -59,7 +61,7 @@ func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) 
 	}
 	paymentMode := normalizePeerCallPaymentMode(p.PaymentMode)
 	if paymentMode == "pay" && len(p.ServiceQuote) > 0 {
-		return payPeerCallWithAcceptedQuote(ctx, rt, p.Store, peerID, req, p.ServiceQuote, p.PaymentScheme, p.RequireActiveFeePool, p.ProtocolID)
+		return payViaPaymentFacade(ctx, rt, peerID, req, p.ServiceQuote, p.PaymentScheme, p.ProtocolID)
 	}
 	out, err = callProto(ctx, rt, peerID, p.ProtocolID, req)
 	if err != nil {
@@ -73,13 +75,43 @@ func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) 
 		return ncall.CallResp{}, err
 	}
 	if paymentMode == "quote" {
-		return quotePeerCallFromPaymentQuoted(ctx, rt, p.Store, peerID, req, decision.Option, p.RequireActiveFeePool, p.ProtocolID)
+		return out, nil
 	}
-	paidOut, payErr := retryPeerCallWithAutoPayment(ctx, rt, p.Store, peerID, req, decision.Option, p.RequireActiveFeePool, p.ProtocolID)
+	paidOut, payErr := payViaPaymentFacade(ctx, rt, peerID, req, out.ServiceQuote, decision.Scheme, p.ProtocolID)
 	if payErr != nil {
 		return ncall.CallResp{}, payErr
 	}
 	return paidOut, nil
+}
+
+func payViaPaymentFacade(ctx context.Context, rt *Runtime, peerID peer.ID, req ncall.CallReq, rawQuote []byte, scheme string, protoID protocol.ID) (ncall.CallResp, error) {
+	facade := ensurePaymentFacade(rt)
+	if facade == nil {
+		return ncall.CallResp{}, fmt.Errorf("payment facade not available")
+	}
+	targetPeer := peerID.String()
+	scReq := moduleapi.ServiceCallRequest{
+		Route:       string(protoID),
+		Body:        req.Body,
+		ContentType: req.ContentType,
+	}
+	scResp, receipt, err := facade.PayQuotedService(ctx, scheme, rawQuote, scReq, targetPeer)
+	if err != nil {
+		return ncall.CallResp{}, err
+	}
+	receiptScheme := ""
+	if len(receipt) > 0 {
+		receiptScheme = scheme
+	}
+	return ncall.CallResp{
+		Ok:                   scResp.OK,
+		Code:                 scResp.Code,
+		Message:              scResp.Message,
+		ContentType:          scResp.ContentType,
+		Body:                 scResp.Body,
+		PaymentReceiptScheme: receiptScheme,
+		PaymentReceipt:       receipt,
+	}, nil
 }
 
 func callProto(ctx context.Context, rt *Runtime, peerID peer.ID, protoID protocol.ID, req ncall.CallReq) (ncall.CallResp, error) {
@@ -207,4 +239,36 @@ func resolvePeerCallTarget(ctx context.Context, rt *Runtime, raw string) (string
 		return "", "", err
 	}
 	return pubkeyHex, pid, nil
+}
+
+func choosePeerCallPaymentOption(options []*ncall.PaymentOption, preferredScheme string) (*ncall.PaymentOption, bool) {
+	preferredScheme, err := normalizePreferredPaymentScheme(preferredScheme)
+	if err != nil {
+		preferredScheme = defaultPreferredPaymentScheme
+	}
+	for _, item := range options {
+		if item == nil {
+			continue
+		}
+		if strings.TrimSpace(item.Scheme) == preferredScheme {
+			return item, true
+		}
+	}
+	for _, item := range options {
+		if item == nil {
+			continue
+		}
+		if strings.TrimSpace(item.Scheme) == ncall.PaymentSchemePool2of2V1 {
+			return item, true
+		}
+	}
+	for _, item := range options {
+		if item == nil {
+			continue
+		}
+		if strings.TrimSpace(item.Scheme) == ncall.PaymentSchemeChainTxV1 {
+			return item, true
+		}
+	}
+	return nil, false
 }

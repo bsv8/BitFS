@@ -233,6 +233,12 @@ type sellerCatalog struct {
 	stale     atomic.Bool
 }
 
+// SQLConn 是 raw SQL 回调的类型别名。
+type SQLConn = *sql.DB
+
+// sqlConn 是内部 raw SQL 回调的类型别名。
+type sqlConn = *sql.DB
+
 // ClientStore 是业务主路可见的最小数据库能力。
 // 设计约束：
 // - 业务主路只拿 ent 读写能力；
@@ -283,6 +289,8 @@ type Runtime struct {
 	// DBActor         *sqliteactor.Actor
 	store           *clientDB
 	modules         *moduleRegistry
+	paymentRegistry moduleapi.PaymentRegistry
+	paymentFacade   moduleapi.PaymentFacade
 	identity        *clientIdentityCaps
 	config          *runtimeConfigService
 	StartedAtUnix   int64
@@ -297,14 +305,8 @@ type Runtime struct {
 
 	ActionChain poolcore.ChainClient
 	WalletChain walletChainClient
-	feePoolsMu  sync.RWMutex
-	feePools    map[string]*feePoolSession
-	// feePoolPayLocks 按 gateway 串行化费用池扣费路径（listen cycle / publish demand / publish live demand）。
-	// 设计约束：同一 gateway 只能有一个扣费请求在飞，避免 sequence/server_amount 并发竞争。
-	feePoolPayLocksMu sync.Mutex
-	feePoolPayLocks   map[string]*sync.Mutex
-	tripleMu          sync.RWMutex
-	triplePool        map[string]*triplePoolSession
+	tripleMu    sync.RWMutex
+	triplePool  map[string]*triplePoolSession
 
 	// 设计说明：
 	// - open 阶段涉及 deal/session 建立与钱包输入准备，仍用全局锁保证顺序；
@@ -315,6 +317,9 @@ type Runtime struct {
 	// walletAllocMu 保证“钱包 UTXO 分配”串行执行，避免并发选中同一输入导致冲突。
 	// 分配完成后，基于专属 UTXO 的后续池内操作可并行。
 	walletAllocMu sync.Mutex
+
+	moduleStores   map[string]any
+	moduleStoresMu sync.RWMutex
 
 	rpcTrace            pproto.TraceSink
 	live                *liveRuntime
@@ -328,7 +333,6 @@ type Runtime struct {
 	chainMaint  *chainMaintainer
 	taskSched   *taskScheduler
 	taskSchedMu sync.Mutex
-	feePool     *feePoolKernel
 
 	bgCancel context.CancelFunc
 
@@ -379,6 +383,54 @@ func (r *Runtime) Store() ClientStore {
 		return nil
 	}
 	return r.store
+}
+
+// RegisterModuleStore 注册 module 专属的 store 能力。
+// module 只应该调用一次，不允许覆盖。
+func (r *Runtime) RegisterModuleStore(name string, store any) error {
+	if r == nil {
+		return fmt.Errorf("runtime is nil")
+	}
+	if name == "" {
+		return fmt.Errorf("module name is required")
+	}
+	if store == nil {
+		return fmt.Errorf("module store is nil")
+	}
+	r.moduleStoresMu.Lock()
+	defer r.moduleStoresMu.Unlock()
+	if r.moduleStores == nil {
+		r.moduleStores = make(map[string]any)
+	}
+	if _, exists := r.moduleStores[name]; exists {
+		return fmt.Errorf("module %q store already registered", name)
+	}
+	r.moduleStores[name] = store
+	return nil
+}
+
+// GetModuleStore 获取 module 专属的 store 能力。
+func (r *Runtime) GetModuleStore(name string) any {
+	if r == nil {
+		return nil
+	}
+	r.moduleStoresMu.RLock()
+	defer r.moduleStoresMu.RUnlock()
+	if r.moduleStores == nil {
+		return nil
+	}
+	return r.moduleStores[name]
+}
+
+func (r *Runtime) UnregisterModuleStore(name string) {
+	if r == nil {
+		return
+	}
+	r.moduleStoresMu.Lock()
+	defer r.moduleStoresMu.Unlock()
+	if r.moduleStores != nil {
+		delete(r.moduleStores, name)
+	}
 }
 
 func (r *Runtime) Close() error {

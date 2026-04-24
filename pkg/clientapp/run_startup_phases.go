@@ -285,8 +285,6 @@ func (p *runStartupPhases) StartServices() error {
 		live:                     newLiveRuntime(),
 		sqlTraceDir:              st.sqlTraceDir,
 		sqlTraceSummaryPath:      st.sqlTraceSummary,
-		feePools:                 map[string]*feePoolSession{},
-		feePoolPayLocks:          map[string]*sync.Mutex{},
 		triplePool:               map[string]*triplePoolSession{},
 		transferPoolSessionLocks: map[string]*sync.Mutex{},
 		rpcTrace:                 st.trace,
@@ -299,8 +297,7 @@ func (p *runStartupPhases) StartServices() error {
 	rt.taskSched = newTaskScheduler(st.store, ServiceName)
 	rt.taskSched.ctx = st.rtCtx
 	rt.orch = newOrchestrator(rt, st.store)
-	rt.feePool = newFeePoolKernel(rt, st.store)
-	if closeModule, err := installBuiltinModules(st.rtCtx, rt, st.store); err != nil {
+	if closeModule, err := installBuiltinModules(st.rtCtx, rt, st.store, st.db); err != nil {
 		return err
 	} else if closeModule != nil {
 		st.closeModules = append(st.closeModules, closeModule)

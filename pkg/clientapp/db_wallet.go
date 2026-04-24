@@ -6,7 +6,6 @@ import (
 
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpurchases"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factbsvutxos"
-	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factpoolsessionevents"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementrecords"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/facttokenlots"
 )
@@ -110,13 +109,8 @@ func dbLoadWalletSummaryCounters(ctx context.Context, store *clientDB) (walletSu
 		out.TotalReturned = 0 // 已废弃
 
 		// 4. 交易历史、购买、网关事件的总数
-		txCount, err := root.FactPoolSessionEvents.Query().
-			Where(factpoolsessionevents.EventKindEQ(PoolFactEventKindTxHistory)).
-			Count(ctx)
-		if err != nil {
-			return walletSummaryCounters{}, err
-		}
-		out.TxCount = int64(txCount)
+		// 第九阶段整改：fact_pool_session_events 已删除，TxCount 设为 0
+		out.TxCount = 0
 
 		purchaseCount, err := root.BizPurchases.Query().
 			Where(bizpurchases.StatusEQ("done")).

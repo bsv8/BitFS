@@ -151,6 +151,15 @@ func (h *testHost) RegisterCloseHook(hook moduleapi.CloseHook) (func(), error) {
 	h.closeHooks = append(h.closeHooks, hook)
 	return func() {}, nil
 }
+func (h *testHost) RegisterQuotedServicePayer(scheme string, payer moduleapi.QuotedServicePayer) (func(), error) {
+	return func() {}, nil
+}
+func (h *testHost) RegisterServiceCoverageSession(scheme string, session moduleapi.ServiceCoverageSession) (func(), error) {
+	return func() {}, nil
+}
+func (h *testHost) RegisterTradeSession(scheme string, session moduleapi.TradeSession) (func(), error) {
+	return func() {}, nil
+}
 
 func (h *testHost) ListWorkspaces(ctx context.Context) ([]moduleapi.WorkspaceItem, error) {
 	rows, err := h.store.db.QueryContext(ctx, `SELECT workspace_path, max_bytes, enabled, created_at_unix FROM biz_workspaces ORDER BY workspace_path`)

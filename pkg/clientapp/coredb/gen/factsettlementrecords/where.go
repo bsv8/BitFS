@@ -4,7 +4,6 @@ package factsettlementrecords
 
 import (
 	"entgo.io/ent/dialect/sql"
-	"entgo.io/ent/dialect/sql/sqlgraph"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/predicate"
 )
 
@@ -201,6 +200,26 @@ func SettlementPaymentAttemptIDIn(vs ...int64) predicate.FactSettlementRecords {
 // SettlementPaymentAttemptIDNotIn applies the NotIn predicate on the "settlement_payment_attempt_id" field.
 func SettlementPaymentAttemptIDNotIn(vs ...int64) predicate.FactSettlementRecords {
 	return predicate.FactSettlementRecords(sql.FieldNotIn(FieldSettlementPaymentAttemptID, vs...))
+}
+
+// SettlementPaymentAttemptIDGT applies the GT predicate on the "settlement_payment_attempt_id" field.
+func SettlementPaymentAttemptIDGT(v int64) predicate.FactSettlementRecords {
+	return predicate.FactSettlementRecords(sql.FieldGT(FieldSettlementPaymentAttemptID, v))
+}
+
+// SettlementPaymentAttemptIDGTE applies the GTE predicate on the "settlement_payment_attempt_id" field.
+func SettlementPaymentAttemptIDGTE(v int64) predicate.FactSettlementRecords {
+	return predicate.FactSettlementRecords(sql.FieldGTE(FieldSettlementPaymentAttemptID, v))
+}
+
+// SettlementPaymentAttemptIDLT applies the LT predicate on the "settlement_payment_attempt_id" field.
+func SettlementPaymentAttemptIDLT(v int64) predicate.FactSettlementRecords {
+	return predicate.FactSettlementRecords(sql.FieldLT(FieldSettlementPaymentAttemptID, v))
+}
+
+// SettlementPaymentAttemptIDLTE applies the LTE predicate on the "settlement_payment_attempt_id" field.
+func SettlementPaymentAttemptIDLTE(v int64) predicate.FactSettlementRecords {
+	return predicate.FactSettlementRecords(sql.FieldLTE(FieldSettlementPaymentAttemptID, v))
 }
 
 // AssetTypeEQ applies the EQ predicate on the "asset_type" field.
@@ -841,29 +860,6 @@ func PayloadJSONEqualFold(v string) predicate.FactSettlementRecords {
 // PayloadJSONContainsFold applies the ContainsFold predicate on the "payload_json" field.
 func PayloadJSONContainsFold(v string) predicate.FactSettlementRecords {
 	return predicate.FactSettlementRecords(sql.FieldContainsFold(FieldPayloadJSON, v))
-}
-
-// HasSettlementPaymentAttempt applies the HasEdge predicate on the "settlement_payment_attempt" edge.
-func HasSettlementPaymentAttempt() predicate.FactSettlementRecords {
-	return predicate.FactSettlementRecords(func(s *sql.Selector) {
-		step := sqlgraph.NewStep(
-			sqlgraph.From(Table, FieldID),
-			sqlgraph.Edge(sqlgraph.M2O, false, SettlementPaymentAttemptTable, SettlementPaymentAttemptColumn),
-		)
-		sqlgraph.HasNeighbors(s, step)
-	})
-}
-
-// HasSettlementPaymentAttemptWith applies the HasEdge predicate on the "settlement_payment_attempt" edge with a given conditions (other predicates).
-func HasSettlementPaymentAttemptWith(preds ...predicate.FactSettlementPaymentAttempts) predicate.FactSettlementRecords {
-	return predicate.FactSettlementRecords(func(s *sql.Selector) {
-		step := newSettlementPaymentAttemptStep()
-		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
-			for _, p := range preds {
-				p(s)
-			}
-		})
-	})
 }
 
 // And groups predicates with the AND operator between them.

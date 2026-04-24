@@ -4,7 +4,6 @@ package factsettlementrecords
 
 import (
 	"entgo.io/ent/dialect/sql"
-	"entgo.io/ent/dialect/sql/sqlgraph"
 )
 
 const (
@@ -38,17 +37,8 @@ const (
 	FieldNote = "note"
 	// FieldPayloadJSON holds the string denoting the payload_json field in the database.
 	FieldPayloadJSON = "payload_json"
-	// EdgeSettlementPaymentAttempt holds the string denoting the settlement_payment_attempt edge name in mutations.
-	EdgeSettlementPaymentAttempt = "settlement_payment_attempt"
 	// Table holds the table name of the factsettlementrecords in the database.
 	Table = "fact_settlement_records"
-	// SettlementPaymentAttemptTable is the table that holds the settlement_payment_attempt relation/edge.
-	SettlementPaymentAttemptTable = "fact_settlement_records"
-	// SettlementPaymentAttemptInverseTable is the table name for the FactSettlementPaymentAttempts entity.
-	// It exists in this package in order to avoid circular dependency with the "factsettlementpaymentattempts" package.
-	SettlementPaymentAttemptInverseTable = "fact_settlement_payment_attempts"
-	// SettlementPaymentAttemptColumn is the table column denoting the settlement_payment_attempt relation/edge.
-	SettlementPaymentAttemptColumn = "settlement_payment_attempt_id"
 )
 
 // Columns holds all SQL columns for factsettlementrecords fields.
@@ -167,18 +157,4 @@ func ByNote(opts ...sql.OrderTermOption) OrderOption {
 // ByPayloadJSON orders the results by the payload_json field.
 func ByPayloadJSON(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldPayloadJSON, opts...).ToFunc()
-}
-
-// BySettlementPaymentAttemptField orders the results by settlement_payment_attempt field.
-func BySettlementPaymentAttemptField(field string, opts ...sql.OrderTermOption) OrderOption {
-	return func(s *sql.Selector) {
-		sqlgraph.OrderByNeighborTerms(s, newSettlementPaymentAttemptStep(), sql.OrderByField(field, opts...))
-	}
-}
-func newSettlementPaymentAttemptStep() *sqlgraph.Step {
-	return sqlgraph.NewStep(
-		sqlgraph.From(Table, FieldID),
-		sqlgraph.To(SettlementPaymentAttemptInverseTable, FieldID),
-		sqlgraph.Edge(sqlgraph.M2O, false, SettlementPaymentAttemptTable, SettlementPaymentAttemptColumn),
-	)
 }

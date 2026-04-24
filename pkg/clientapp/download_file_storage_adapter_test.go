@@ -322,15 +322,7 @@ func newDownloadFileWorkspaceAdapterTestEnv(t *testing.T) downloadFileWorkspaceA
 	if err := os.MkdirAll(filepath.Join(configDir, pubkeyHex, "seeds"), 0o755); err != nil {
 		t.Fatalf("mkdir seed dir failed: %v", err)
 	}
-	dbPath := filepath.Join(dataDir, "client-index.sqlite")
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatalf("open db failed: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := ensureClientSchemaOnDB(t.Context(), NewClientStore(db, nil)); err != nil {
-		t.Fatalf("ensure schema failed: %v", err)
-	}
+	db := openClientappTestDB(t)
 	store := NewClientStore(db, nil)
 	if _, err := dbAddWorkspace(t.Context(), store, workspaceDir, 0); err != nil {
 		t.Fatalf("add workspace failed: %v", err)

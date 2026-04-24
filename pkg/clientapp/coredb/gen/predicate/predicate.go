@@ -24,12 +24,6 @@ type BizFrontOrders func(*sql.Selector)
 // BizLiveQuotes is the predicate function for bizlivequotes builders.
 type BizLiveQuotes func(*sql.Selector)
 
-// BizPool is the predicate function for bizpool builders.
-type BizPool func(*sql.Selector)
-
-// BizPoolAllocations is the predicate function for bizpoolallocations builders.
-type BizPoolAllocations func(*sql.Selector)
-
 // BizPricingAutopilotAudit is the predicate function for bizpricingautopilotaudit builders.
 type BizPricingAutopilotAudit func(*sql.Selector)
 
@@ -60,27 +54,6 @@ type FactBsv21Events func(*sql.Selector)
 // FactBsvUtxos is the predicate function for factbsvutxos builders.
 type FactBsvUtxos func(*sql.Selector)
 
-// FactPoolSessionEvents is the predicate function for factpoolsessionevents builders.
-type FactPoolSessionEvents func(*sql.Selector)
-
-// FactSettlementChannelChainAssetCreate is the predicate function for factsettlementchannelchainassetcreate builders.
-type FactSettlementChannelChainAssetCreate func(*sql.Selector)
-
-// FactSettlementChannelChainDirectPay is the predicate function for factsettlementchannelchaindirectpay builders.
-type FactSettlementChannelChainDirectPay func(*sql.Selector)
-
-// FactSettlementChannelChainQuotePay is the predicate function for factsettlementchannelchainquotepay builders.
-type FactSettlementChannelChainQuotePay func(*sql.Selector)
-
-// FactSettlementChannelPoolSessionQuotePay is the predicate function for factsettlementchannelpoolsessionquotepay builders.
-type FactSettlementChannelPoolSessionQuotePay func(*sql.Selector)
-
-// FactSettlementCycles is the predicate function for factsettlementcycles builders.
-type FactSettlementCycles func(*sql.Selector)
-
-// FactSettlementPaymentAttempts is the predicate function for factsettlementpaymentattempts builders.
-type FactSettlementPaymentAttempts func(*sql.Selector)
-
 // FactSettlementRecords is the predicate function for factsettlementrecords builders.
 type FactSettlementRecords func(*sql.Selector)
 
@@ -89,12 +62,6 @@ type FactTokenCarrierLinks func(*sql.Selector)
 
 // FactTokenLots is the predicate function for facttokenlots builders.
 type FactTokenLots func(*sql.Selector)
-
-// OrderSettlementEvents is the predicate function for ordersettlementevents builders.
-type OrderSettlementEvents func(*sql.Selector)
-
-// OrderSettlements is the predicate function for ordersettlements builders.
-type OrderSettlements func(*sql.Selector)
 
 // Orders is the predicate function for orders builders.
 type Orders func(*sql.Selector)
@@ -113,9 +80,6 @@ type ProcCommandJournal func(*sql.Selector)
 
 // ProcDirectDeals is the predicate function for procdirectdeals builders.
 type ProcDirectDeals func(*sql.Selector)
-
-// ProcDirectTransferPools is the predicate function for procdirecttransferpools builders.
-type ProcDirectTransferPools func(*sql.Selector)
 
 // ProcDomainEvents is the predicate function for procdomainevents builders.
 type ProcDomainEvents func(*sql.Selector)

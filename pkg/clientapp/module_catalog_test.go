@@ -10,7 +10,7 @@ func TestBuiltinModulesOrderAndCapabilityRegistration(t *testing.T) {
 	store := newClientDB(db, nil)
 	rt := &Runtime{ctx: t.Context(), modules: newModuleRegistry()}
 
-	closeModule, err := installBuiltinModules(t.Context(), rt, store)
+	closeModule, err := installBuiltinModules(t.Context(), rt, store, db)
 	if err != nil {
 		t.Fatalf("install builtin modules failed: %v", err)
 	}

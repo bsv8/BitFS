@@ -63,9 +63,6 @@ func newRuntimeForTest(t *testing.T, cfg Config, privHex string, opts ...func(*R
 			opt(rt)
 		}
 	}
-	if rt.feePool == nil && rt.store != nil {
-		rt.feePool = newFeePoolKernel(rt, rt.store)
-	}
 	return rt
 }
 

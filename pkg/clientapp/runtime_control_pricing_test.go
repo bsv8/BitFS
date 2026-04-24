@@ -12,15 +12,7 @@ import (
 )
 
 func TestCurrentLiveSellerPricingReadsPersistedBase(t *testing.T) {
-	root := t.TempDir()
-	db, err := sql.Open("sqlite", filepath.Join(root, "pricing.sqlite"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := ensureClientSchemaOnDB(t.Context(), NewClientStore(db, nil)); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	db := openClientappTestDB(t)
 
 	cfg := Config{}
 	cfg.Seller.Pricing.LiveBasePriceSatPer64K = 1000
@@ -47,19 +39,11 @@ func TestCurrentLiveSellerPricingReadsPersistedBase(t *testing.T) {
 }
 
 func TestCurrentSeedLiveSellerPricingReadsPersistedEffectivePrice(t *testing.T) {
-	root := t.TempDir()
-	db, err := sql.Open("sqlite", filepath.Join(root, "pricing.sqlite"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := ensureClientSchemaOnDB(t.Context(), NewClientStore(db, nil)); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	db := openClientappTestDB(t)
 
 	seedHash := strings.Repeat("ef", 32)
 	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,seed_file_path,chunk_count,file_size,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,
-		seedHash, filepath.Join(root, "seed.bse"), 4, 1024, "seed.bin", "application/octet-stream"); err != nil {
+		seedHash, "/tmp/seed.bse", 4, 1024, "seed.bin", "application/octet-stream"); err != nil {
 		t.Fatalf("insert seed: %v", err)
 	}
 
@@ -98,19 +82,11 @@ func TestCurrentSeedLiveSellerPricingReadsPersistedEffectivePrice(t *testing.T) 
 }
 
 func TestTriggerPricingGetStateSynthesizesSeedWithoutPriorState(t *testing.T) {
-	root := t.TempDir()
-	db, err := sql.Open("sqlite", filepath.Join(root, "pricing.sqlite"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := ensureClientSchemaOnDB(t.Context(), NewClientStore(db, nil)); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	db := openClientappTestDB(t)
 
 	seedHash := strings.Repeat("ab", 32)
 	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,seed_file_path,chunk_count,file_size,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,
-		seedHash, filepath.Join(root, "seed.bse"), 4, 1024, "seed.bin", "application/octet-stream"); err != nil {
+		seedHash, "/tmp/seed.bse", 4, 1024, "seed.bin", "application/octet-stream"); err != nil {
 		t.Fatalf("insert seed: %v", err)
 	}
 
@@ -137,24 +113,15 @@ func TestTriggerPricingGetStateSynthesizesSeedWithoutPriorState(t *testing.T) {
 }
 
 func TestPricingStateAndAuditsPersistAcrossRuntimeRecreate(t *testing.T) {
-	root := t.TempDir()
-	db, err := sql.Open("sqlite", filepath.Join(root, "pricing.sqlite"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := ensureClientSchemaOnDB(t.Context(), NewClientStore(db, nil)); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	db := openClientappTestDB(t)
 
 	seedHash := strings.Repeat("cd", 32)
 	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,seed_file_path,chunk_count,file_size,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,
-		seedHash, filepath.Join(root, "seed.bse"), 4, 1024, "seed.bin", "application/octet-stream"); err != nil {
+		seedHash, "/tmp/seed.bse", 4, 1024, "seed.bin", "application/octet-stream"); err != nil {
 		t.Fatalf("insert seed: %v", err)
 	}
 
 	cfg := Config{}
-	cfg.Storage.DataDir = filepath.Join(root, "data")
 	cfg.Seller.Pricing.LiveBasePriceSatPer64K = 1000
 	rt1, err := NewPricingTestRuntime(t.Context(), db, cfg)
 	if err != nil {
@@ -215,23 +182,15 @@ func TestPricingStateAndAuditsPersistAcrossRuntimeRecreate(t *testing.T) {
 func TestTriggerPricingSetBasePersistsConfigAndSurvivesReload(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, "runtime-config.yaml")
-	db, err := sql.Open("sqlite", filepath.Join(root, "pricing.sqlite"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := ensureClientSchemaOnDB(t.Context(), NewClientStore(db, nil)); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
+	db := openClientappTestDB(t)
 
 	seedHash := strings.Repeat("aa", 32)
 	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,seed_file_path,chunk_count,file_size,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,
-		seedHash, filepath.Join(root, "seed.bse"), 4, 1024, "seed.bin", "application/octet-stream"); err != nil {
+		seedHash, "/tmp/seed.bse", 4, 1024, "seed.bin", "application/octet-stream"); err != nil {
 		t.Fatalf("insert seed: %v", err)
 	}
 
 	cfg := Config{}
-	cfg.Storage.DataDir = filepath.Join(root, "data")
 	cfg.Seller.Pricing.LiveBasePriceSatPer64K = 1000
 	rt := newRuntimeForTest(t, cfg, "", withRuntimeConfigPath(configPath))
 	rt.store = newClientDB(db, nil)
