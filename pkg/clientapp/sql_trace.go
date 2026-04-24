@@ -14,8 +14,8 @@ import (
 
 	"runtime"
 
-	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
-	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/storeactor"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 )
 
 type sqlTraceContextKey string

@@ -8,8 +8,9 @@ import (
 
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
 	contractprotoid "github.com/bsv8/BFTP-contract/pkg/v1/protoid"
-	domainmodule "github.com/bsv8/BFTP/pkg/modules/domain"
+	domainwire "github.com/bsv8/BitFS/pkg/clientapp/modules/domain/domainwire"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	oldproto "github.com/golang/protobuf/proto"
 )
 
@@ -51,7 +52,7 @@ func resolveDomainRemote(ctx context.Context, host moduleapi.Host, rawDomain str
 		return "", NewError(CodeDomainResolverUnavailable, "host is required")
 	}
 
-	domainName, err := domainmodule.NormalizeName(rawDomain)
+	domainName, err := domainwire.NormalizeName(rawDomain)
 	if err != nil {
 		return "", NewError(CodeBadRequest, err.Error())
 	}
@@ -69,7 +70,7 @@ func resolveDomainRemote(ctx context.Context, host moduleapi.Host, rawDomain str
 		}
 		resp, err := host.PeerCall(ctx, moduleapi.PeerCallRequest{
 			To:          gateway.Pubkey,
-			ProtocolID:  contractprotoid.ProtoDomainResolveNamePaid,
+			ProtocolID:  protocol.ID(contractprotoid.ProtoDomainResolveNamePaid),
 			ContentType: contractmessage.ContentTypeProto,
 			Body:        payload,
 		})

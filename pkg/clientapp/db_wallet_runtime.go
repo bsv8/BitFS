@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bsv8/BFTP/pkg/infra/fundalloc"
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/BitFS/pkg/clientapp/fundalloc"
+	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factbsvutxos"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/walletutxo"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/walletutxosyncstate"

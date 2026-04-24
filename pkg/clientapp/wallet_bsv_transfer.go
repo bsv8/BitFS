@@ -11,8 +11,8 @@ import (
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
 	sighash "github.com/bsv-blockchain/go-sdk/transaction/sighash"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
-	"github.com/bsv8/BFTP/pkg/infra/fundalloc"
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/BitFS/pkg/clientapp/fundalloc"
+	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
 )
 
 // WalletBSVTransferRequest 是钱包普通 BSV 转账的业务输入。
@@ -85,7 +85,7 @@ func submitWalletBSVTransferPrepared(ctx context.Context, store *clientDB, rt *R
 		prepared.Result.Ok = false
 		prepared.Result.Code = "BROADCAST_FAILED"
 		prepared.Result.Message = "broadcast wallet bsv transfer failed"
-		prepared.Result.TxID = prepared.Result.TxID
+	
 		return walletBSVTransferSubmissionResult{Result: prepared.Result, SignedTxHex: prepared.signedTxHex}, fmt.Errorf("%s: %w", prepared.Result.Message, err)
 	}
 	localTxID := prepared.Result.TxID
@@ -111,11 +111,12 @@ func submitWalletBSVTransferPrepared(ctx context.Context, store *clientDB, rt *R
 	}, nil
 }
 
-// executeBizOrderPayBSVSettlement 结算层内部执行器。
-// 设计说明：
-// - 先跑真实钱包转账，再把链上结果回写到 order_settlements / order_settlement_events；
-// - 同一个 order_id 重复提交时，不会再生成第二笔支付；
-// - 前台最终看的是业务主表聚合，不再看钱包直发结果。
+// executeBizOrderPayBSVSettlement 钱包 BSV 转账执行器。
+// 第九阶段整改：
+// - 移除所有旧 settlement layer 调用（claimBusinessSettlementExecutionTx、dbUpdateBusinessSettlementOutcomeEntTx 等）
+// - 移除旧的幂等抢占逻辑，改为直接执行转账
+// - 不再通过 settlement 中间层判断完成状态，直接返回钱包转账结果
+// - 链上结果通过 fact_settlement_records 和 chain_tx_v1 承载
 func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *Runtime, orderID string, businessID string, settlementID string, toAddress string, amountSatoshi uint64, fromPartyID string, toPartyID string) (BizOrderPayBSVResponse, error) {
 	resp := BizOrderPayBSVResponse{
 		Ok:           false,
@@ -134,29 +135,6 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 		return resp, fmt.Errorf("runtime not initialized")
 	}
 
-	// 幂等重复：先原子抢占执行权，只有把 pending 改成 processing 的请求才能继续打链上。
-	existing, claimed, err := claimBusinessSettlementExecutionTx(ctx, store, businessID)
-	if err != nil {
-		return resp, err
-	}
-	if !claimed {
-		existingStatus := strings.ToLower(strings.TrimSpace(existing.Status))
-		summary, sumErr := GetFrontOrderSettlementSummary(ctx, store, orderID)
-		if sumErr == nil {
-			resp.FrontOrderSummary = &summary
-			resp.TargetAmountSatoshi = summary.Summary.TotalTargetSatoshi
-			resp.SettledAmountSatoshi = summary.Summary.SettledAmountSatoshi
-		}
-		resp.Ok = existingStatus == "settled" || existingStatus == "submitted" || existingStatus == "submitted_unknown_projection"
-		resp.Code = strings.ToUpper(existingStatus)
-		resp.Status = existingStatus
-		resp.Message = "existing settlement returned"
-		if txid, txErr := GetBusinessSettlementChainTxID(ctx, store, existing); txErr == nil {
-			resp.TxID = txid
-		}
-		return resp, nil
-	}
-
 	prepared, err := prepareWalletBSVTransfer(ctx, store, rt, WalletBSVTransferRequest{
 		ToAddress:     toAddress,
 		AmountSatoshi: amountSatoshi,
@@ -164,46 +142,6 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 	if err != nil {
 		msg := strings.ToLower(strings.TrimSpace(err.Error()))
 		if strings.Contains(msg, "insufficient plain bsv balance") {
-			now := time.Now().Unix()
-			eventPayload := map[string]any{
-				"order_id":       orderID,
-				"settlement_id":  settlementID,
-				"to_address":     toAddress,
-				"amount_satoshi": amountSatoshi,
-				"status":         "waiting_fund",
-				"error":          err.Error(),
-			}
-			if txErr := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-				if writeErr := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
-					ProcessID:         "proc_" + businessID,
-					SourceType:        "biz_order_pay_bsv",
-					SourceID:          settlementID,
-					AccountingScene:   "wallet_transfer",
-					AccountingSubType: "pay_bsv",
-					EventType:         "wallet_transfer_prepare",
-					Status:            "failed",
-					OccurredAtUnix:    now,
-					IdempotencyKey:    "biz_order_pay_bsv:" + orderID,
-					Note:              "wallet transfer waiting for funds",
-					Payload:           eventPayload,
-				}); writeErr != nil {
-					return writeErr
-				}
-				return dbUpdateBusinessSettlementOutcomeEntTx(ctx, tx, businessSettlementOutcomeEntry{
-					OrderID:           businessID,
-					SettlementID:      settlementID,
-					BusinessStatus:    "waiting_fund",
-					SettlementStatus:  "waiting_fund",
-					SettlementMethod:  string(SettlementMethodChain),
-					TargetType:        "",
-					TargetID:          "",
-					ErrorMessage:      err.Error(),
-					SettlementPayload: eventPayload,
-					UpdatedAtUnix:     now,
-				})
-			}); txErr != nil {
-				return resp, txErr
-			}
 			summary, _ := GetFrontOrderSettlementSummary(ctx, store, orderID)
 			resp.Ok = false
 			resp.Code = "WAITING_FUND"
@@ -214,304 +152,31 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 			resp.SettledAmountSatoshi = summary.Summary.SettledAmountSatoshi
 			return resp, nil
 		}
-		now := time.Now().Unix()
-		failedPayload := map[string]any{
-			"order_id":       orderID,
-			"settlement_id":  settlementID,
-			"to_address":     toAddress,
-			"amount_satoshi": amountSatoshi,
-			"status":         "failed",
-			"error":          err.Error(),
-		}
-		if txErr := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-			if writeErr := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
-				ProcessID:         "proc_" + businessID,
-				SourceType:        "biz_order_pay_bsv",
-				SourceID:          settlementID,
-				AccountingScene:   "wallet_transfer",
-				AccountingSubType: "pay_bsv",
-				EventType:         "wallet_transfer_prepare",
-				Status:            "failed",
-				OccurredAtUnix:    now,
-				IdempotencyKey:    "biz_order_pay_bsv:" + orderID,
-				Note:              "wallet transfer prepare failed",
-				Payload:           failedPayload,
-			}); writeErr != nil {
-				return writeErr
-			}
-			return dbUpdateBusinessSettlementOutcomeEntTx(ctx, tx, businessSettlementOutcomeEntry{
-				OrderID:           businessID,
-				SettlementID:      settlementID,
-				BusinessStatus:    "failed",
-				SettlementStatus:  "failed",
-				SettlementMethod:  string(SettlementMethodChain),
-				TargetType:        "",
-				TargetID:          "",
-				ErrorMessage:      err.Error(),
-				SettlementPayload: failedPayload,
-				UpdatedAtUnix:     now,
-			})
-		}); txErr != nil {
-			return resp, txErr
-		}
 		return resp, err
 	}
 
 	submitted, submitErr := submitWalletBSVTransferPrepared(ctx, store, rt, prepared)
-	now := time.Now().Unix()
+	_ = time.Now().Unix()
 	finalStatus := "submitted"
 	finalCode := "OK"
 	finalMessage := "wallet transfer submitted"
-	processStatus := "submitted"
 	if submitErr != nil {
 		switch submitted.Result.Code {
 		case "LOCAL_PROJECTION_FAILED":
 			finalStatus = "submitted_unknown_projection"
 			finalCode = "SUBMITTED_UNKNOWN_PROJECTION"
 			finalMessage = "broadcast succeeded but local projection failed"
-			processStatus = "submitted_unknown_projection"
 		case "BROADCAST_FAILED":
 			finalStatus = "failed"
 			finalCode = "BROADCAST_FAILED"
 			finalMessage = submitted.Result.Message
-			processStatus = "failed"
 		default:
 			finalStatus = "failed"
 			finalCode = "SUBMIT_FAILED"
 			finalMessage = submitErr.Error()
-			processStatus = "failed"
 			submitted.Result.Ok = false
 			submitted.Result.Code = finalCode
 			submitted.Result.Message = finalMessage
-		}
-	}
-
-	payload := map[string]any{
-		"order_id":          orderID,
-		"settlement_id":     settlementID,
-		"amount_satoshi":    amountSatoshi,
-		"miner_fee_sat":     submitted.Result.MinerFeeSatoshi,
-		"change_sat":        submitted.Result.ChangeSatoshi,
-		"to_address":        toAddress,
-		"txid":              submitted.BroadcastTxID,
-		"selected_utxo_ids": append([]string(nil), submitted.Result.SelectedUTXOIDs...),
-	}
-
-	if finalStatus == "failed" {
-		if err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-			if err := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
-				ProcessID:         "proc_" + businessID,
-				SourceType:        "biz_order_pay_bsv",
-				SourceID:          settlementID,
-				AccountingScene:   "wallet_transfer",
-				AccountingSubType: "pay_bsv",
-				EventType:         "wallet_transfer_submit",
-				Status:            processStatus,
-				OccurredAtUnix:    now,
-				IdempotencyKey:    "biz_order_pay_bsv:" + orderID,
-				Note:              finalMessage,
-				Payload:           payload,
-			}); err != nil {
-				return err
-			}
-			return dbUpdateBusinessSettlementOutcomeEntTx(ctx, tx, businessSettlementOutcomeEntry{
-				OrderID:           businessID,
-				SettlementID:      settlementID,
-				BusinessStatus:    finalStatus,
-				SettlementStatus:  finalStatus,
-				SettlementMethod:  string(SettlementMethodChain),
-				TargetType:        "",
-				TargetID:          "",
-				ErrorMessage:      finalMessage,
-				SettlementPayload: payload,
-				UpdatedAtUnix:     now,
-			})
-		}); err != nil {
-			return resp, err
-		}
-		summary, _ := GetFrontOrderSettlementSummary(ctx, store, orderID)
-		_ = dbUpdateFrontOrderStatus(ctx, store, orderID, summary.Summary.OverallStatus)
-		resp.Ok = false
-		resp.Code = finalCode
-		resp.Message = finalMessage
-		resp.Status = finalStatus
-		resp.TxID = submitted.BroadcastTxID
-		resp.TargetAmountSatoshi = summary.Summary.TotalTargetSatoshi
-		resp.SettledAmountSatoshi = summary.Summary.SettledAmountSatoshi
-		resp.FrontOrderSummary = &summary
-		return resp, nil
-	}
-
-	if finalStatus == "submitted_unknown_projection" {
-		payload["status"] = "submitted_unknown_projection"
-		payload["error"] = submitted.Result.Message
-		if err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-			if err := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
-				ProcessID:         "proc_" + businessID,
-				SourceType:        "biz_order_pay_bsv",
-				SourceID:          settlementID,
-				AccountingScene:   "wallet_transfer",
-				AccountingSubType: "pay_bsv",
-				EventType:         "wallet_transfer_submit",
-				Status:            "submitted_unknown_projection",
-				OccurredAtUnix:    now,
-				IdempotencyKey:    "biz_order_pay_bsv:" + orderID,
-				Note:              "broadcast succeeded but local projection failed",
-				Payload:           payload,
-			}); err != nil {
-				return err
-			}
-			return dbUpdateBusinessSettlementOutcomeEntTx(ctx, tx, businessSettlementOutcomeEntry{
-				OrderID:           businessID,
-				SettlementID:      settlementID,
-				BusinessStatus:    "submitted_unknown_projection",
-				SettlementStatus:  "submitted_unknown_projection",
-				SettlementMethod:  string(SettlementMethodChain),
-				TargetType:        "",
-				TargetID:          "",
-				ErrorMessage:      submitted.Result.Message,
-				SettlementPayload: payload,
-				UpdatedAtUnix:     now,
-			})
-		}); err != nil {
-			return resp, err
-		}
-		finalStatus = "submitted_unknown_projection"
-		finalCode = "SUBMITTED_UNKNOWN_PROJECTION"
-		finalMessage = "broadcast succeeded but local projection failed"
-		processStatus = "submitted_unknown_projection"
-	} else {
-		chainPaymentPayload := map[string]any{
-			"order_id":          orderID,
-			"settlement_id":     settlementID,
-			"amount_satoshi":    amountSatoshi,
-			"miner_fee_sat":     submitted.Result.MinerFeeSatoshi,
-			"change_sat":        submitted.Result.ChangeSatoshi,
-			"to_address":        toAddress,
-			"txid":              submitted.BroadcastTxID,
-			"selected_utxo_ids": append([]string(nil), submitted.Result.SelectedUTXOIDs...),
-		}
-		ownerPubkeyHex := strings.ToLower(strings.TrimSpace(rt.ClientID()))
-		if ownerPubkeyHex == "" {
-			identity, actorErr := rt.runtimeIdentity()
-			if actorErr != nil {
-				return resp, fmt.Errorf("client id is required for settlement records")
-			}
-			clientActor := identity.Actor
-			if clientActor == nil {
-				return resp, fmt.Errorf("client id is required for settlement records")
-			}
-			ownerPubkeyHex = strings.ToLower(strings.TrimSpace(clientActor.PubHex))
-		}
-		if ownerPubkeyHex == "" {
-			return resp, fmt.Errorf("client id is required for settlement records")
-		}
-		selectedUTXOIDs := append([]string(nil), submitted.Result.SelectedUTXOIDs...)
-		if len(selectedUTXOIDs) == 0 {
-			return resp, fmt.Errorf("selected utxo ids are required for settlement records")
-		}
-		if err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-			channelID, settlementPaymentAttemptID, err := dbUpsertChainChannelWithSettlementPaymentAttempt(ctx, tx, chainPaymentEntry{
-				TxID:                 submitted.BroadcastTxID,
-				PaymentSubType:       "biz_order_pay_bsv",
-				Status:               processStatus,
-				WalletInputSatoshi:   int64(amountSatoshi + submitted.Result.MinerFeeSatoshi + submitted.Result.ChangeSatoshi),
-				WalletOutputSatoshi:  int64(submitted.Result.ChangeSatoshi),
-				NetAmountSatoshi:     -int64(amountSatoshi + submitted.Result.MinerFeeSatoshi),
-				OccurredAtUnix:       now,
-				SubmittedAtUnix:      now,
-				WalletObservedAtUnix: now,
-				FromPartyID:          strings.TrimSpace(fromPartyID),
-				ToPartyID:            strings.TrimSpace(toPartyID),
-				Payload:              chainPaymentPayload,
-			},
-				"chain_direct_pay",
-				"payment_attempt_chain_direct_pay",
-				"bind chain direct pay channel id",
-			)
-			if err != nil {
-				return err
-			}
-			payload["chain_direct_pay_id"] = channelID
-			chainPaymentPayload["chain_direct_pay_id"] = channelID
-			if err := dbAppendBSVSettlementRecordsForCycleTx(ctx, tx, settlementPaymentAttemptID, ownerPubkeyHex, selectedUTXOIDs, now, chainPaymentPayload); err != nil {
-				return err
-			}
-			if err := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
-				ProcessID:         "proc_" + businessID,
-				SourceType:        "biz_order_pay_bsv",
-				SourceID:          settlementID,
-				AccountingScene:   "wallet_transfer",
-				AccountingSubType: "pay_bsv",
-				EventType:         "wallet_transfer_submit",
-				Status:            processStatus,
-				OccurredAtUnix:    now,
-				IdempotencyKey:    "biz_order_pay_bsv:" + orderID,
-				Note:              finalMessage,
-				Payload:           payload,
-			}); err != nil {
-				return err
-			}
-			return dbUpdateBusinessSettlementOutcomeEntTx(ctx, tx, businessSettlementOutcomeEntry{
-				OrderID:           businessID,
-				SettlementID:      settlementID,
-				BusinessStatus:    finalStatus,
-				SettlementStatus:  finalStatus,
-				SettlementMethod:  string(SettlementMethodChain),
-				TargetType:        "chain_direct_pay",
-				TargetID:          channelID,
-				ErrorMessage:      "",
-				SettlementPayload: payload,
-				UpdatedAtUnix:     now,
-			})
-		}); err != nil {
-			failedPayload := map[string]any{
-				"order_id":          orderID,
-				"settlement_id":     settlementID,
-				"amount_satoshi":    amountSatoshi,
-				"miner_fee_sat":     submitted.Result.MinerFeeSatoshi,
-				"change_sat":        submitted.Result.ChangeSatoshi,
-				"to_address":        toAddress,
-				"txid":              submitted.BroadcastTxID,
-				"selected_utxo_ids": append([]string(nil), submitted.Result.SelectedUTXOIDs...),
-				"status":            "failed",
-				"error":             err.Error(),
-			}
-			_ = store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-				if writeErr := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
-					ProcessID:         "proc_" + businessID,
-					SourceType:        "biz_order_pay_bsv",
-					SourceID:          settlementID,
-					AccountingScene:   "wallet_transfer",
-					AccountingSubType: "pay_bsv",
-					EventType:         "wallet_transfer_submit",
-					Status:            "failed",
-					OccurredAtUnix:    now,
-					IdempotencyKey:    "biz_order_pay_bsv:" + orderID,
-					Note:              "write settlement outcome failed",
-					Payload:           failedPayload,
-				}); writeErr != nil {
-					return writeErr
-				}
-				return dbUpdateBusinessSettlementOutcomeEntTx(ctx, tx, businessSettlementOutcomeEntry{
-					OrderID:           businessID,
-					SettlementID:      settlementID,
-					BusinessStatus:    "failed",
-					SettlementStatus:  "failed",
-					SettlementMethod:  string(SettlementMethodChain),
-					TargetType:        "",
-					TargetID:          "",
-					ErrorMessage:      err.Error(),
-					SettlementPayload: failedPayload,
-					UpdatedAtUnix:     now,
-				})
-			})
-			resp.Ok = false
-			resp.Code = "FAILED"
-			resp.Message = err.Error()
-			resp.Status = "failed"
-			resp.TxID = submitted.BroadcastTxID
-			return resp, fmt.Errorf("write settlement outcome failed: %w", err)
 		}
 	}
 

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
+	broadcastmodule "github.com/bsv8/BitFS/pkg/clientapp/modules/broadcast"
 )
 
 // chainPaymentPayloadTxHex 读取链上支付载荷里的交易 hex。

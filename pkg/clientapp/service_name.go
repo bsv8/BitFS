@@ -1,6 +1,6 @@
 package clientapp
 
-import "github.com/bsv8/BFTP/pkg/obs"
+import "github.com/bsv8/BitFS/pkg/clientapp/obs"
 
 // ServiceName 是 BitFS 客户端进程的统一服务名。
 // 设计说明：

@@ -242,20 +242,9 @@ func (a domainModuleAdapter) UpsertBusiness(ctx context.Context, entry domain.Bu
 }
 
 func (a domainModuleAdapter) UpsertBusinessSettlement(ctx context.Context, entry domain.BusinessSettlementEntry) error {
-	return a.store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-		return dbUpsertSettleRecordSettlementTx(ctx, tx, businessSettlementEntry{
-			SettlementID:     entry.SettlementID,
-			OrderID:          entry.BusinessID,
-			SettlementMethod: entry.SettlementMethod,
-			Status:           entry.Status,
-			TargetType:       entry.SettlementTargetType,
-			TargetID:         entry.SettlementTargetID,
-			ErrorMessage:     entry.SettlementErrorMessage,
-			CreatedAtUnix:    entry.CreatedAtUnix,
-			UpdatedAtUnix:    entry.UpdatedAtUnix,
-			Payload:          entry.SettlementPayload,
-		})
-	})
+	// 第九阶段整改：order_settlements schema 已删除，此接口不再有实际存储操作
+	// 结算状态由业务单本身的状态和 pool_2of3_v1 store 承载
+	return nil
 }
 
 func (a domainModuleAdapter) AppendBusinessTrigger(ctx context.Context, entry domain.BusinessTriggerEntry) error {

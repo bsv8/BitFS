@@ -3,7 +3,7 @@ package clientapp
 import (
 	"context"
 
-	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	filedownload "github.com/bsv8/BitFS/pkg/clientapp/download/file"
 )
 

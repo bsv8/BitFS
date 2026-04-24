@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 )
 
 type fileHTTPServer struct {
@@ -569,7 +569,7 @@ func (sess *fileDownloadSession) prepareAndDownload() error {
 			DebugLogEnabled: sess.server.runtimeConfigSnapshot().FSHTTP.StrategyDebugLogEnabled,
 			Logf:            sess.strategyLog,
 			OnChunk: func(chunkIndex uint32, chunk []byte, w *transferSellerWorker, elapsed time.Duration) (uint64, error) {
-				off := int64(chunkIndex) * seedBlockSize
+				off := int64(chunkIndex) * int64(seedBlockSize)
 				writeN := len(chunk)
 				maxN := int64(meta.FileSize) - off
 				if maxN < int64(writeN) {
@@ -792,8 +792,8 @@ func (s *fileHTTPServer) serveFromSession(w http.ResponseWriter, r *http.Request
 			return fmt.Errorf("range not satisfiable")
 		}
 	}
-	startChunk := uint32(start / seedBlockSize)
-	endChunk := uint32(end / seedBlockSize)
+	startChunk := uint32(start / int64(seedBlockSize))
+	endChunk := uint32(end / int64(seedBlockSize))
 	sess.addWantedRange(startChunk, endChunk)
 	defer sess.removeWantedRange(startChunk, endChunk)
 
@@ -820,11 +820,11 @@ func (s *fileHTTPServer) serveFromSession(w http.ResponseWriter, r *http.Request
 	buf := make([]byte, 32*1024)
 	cur := start
 	for cur <= end {
-		chunk := uint32(cur / seedBlockSize)
+		chunk := uint32(cur / int64(seedBlockSize))
 		if err := sess.waitChunkDone(r.Context(), chunk); err != nil {
 			return err
 		}
-		chunkEnd := (int64(chunk)+1)*seedBlockSize - 1
+		chunkEnd := (int64(chunk)+1)*int64(seedBlockSize) - 1
 		if chunkEnd > end {
 			chunkEnd = end
 		}

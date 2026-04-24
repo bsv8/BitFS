@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	domaincore "github.com/bsv8/BFTP/pkg/modules/domain"
+	domainwire "github.com/bsv8/BitFS/pkg/clientapp/modules/domain/domainwire"
 )
 
 // TriggerDomainRegisterName 通过 domain 系统完成“查询 -> 锁名 -> 本地构交易 -> 远端提交”。
@@ -79,7 +79,7 @@ func TriggerDomainRegisterLock(ctx context.Context, store BusinessStore, rt Runt
 	if err != nil {
 		return out, err
 	}
-	name, err := domaincore.NormalizeName(p.Name)
+	name, err := domainwire.NormalizeName(p.Name)
 	if err != nil {
 		return out, err
 	}
@@ -181,7 +181,7 @@ func TriggerDomainPrepareRegister(ctx context.Context, store BusinessStore, rt R
 	if err != nil {
 		return out, err
 	}
-	name, err := domaincore.NormalizeName(p.Name)
+	name, err := domainwire.NormalizeName(p.Name)
 	if err != nil {
 		return out, err
 	}
@@ -354,7 +354,7 @@ func TriggerDomainSetTarget(ctx context.Context, store BusinessStore, rt Runtime
 	if err != nil {
 		return out, err
 	}
-	name, err := domaincore.NormalizeName(p.Name)
+	name, err := domainwire.NormalizeName(p.Name)
 	if err != nil {
 		return out, err
 	}

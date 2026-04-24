@@ -4,7 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 
-	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
+	broadcastmodule "github.com/bsv8/BitFS/pkg/clientapp/modules/broadcast"
 )
 
 func marshalSignedNodeReachabilityAnnouncement(ann broadcastmodule.NodeReachabilityAnnouncement) ([]byte, error) {

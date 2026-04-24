@@ -8,7 +8,7 @@ import (
 	"time"
 
 	entsql "entgo.io/ent/dialect/sql"
-	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factbsvutxos"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/facttokencarrierlinks"

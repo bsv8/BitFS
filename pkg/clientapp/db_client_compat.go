@@ -57,31 +57,7 @@ type businessTriggerEntry struct {
 	Payload        any
 }
 
-// businessSettlementEntry order_settlements schema 已删除，保留结构体定义仅供编译通过
-type businessSettlementEntry struct {
-	SettlementID     string
-	OrderID          string
-	SettlementMethod string
-	Status           string
-	TargetType       string
-	TargetID         string
-	ErrorMessage     string
-	CreatedAtUnix    int64
-	UpdatedAtUnix    int64
-	Payload          any
-}
 
-// chainPaymentUTXOLinkEntry fact_settlement_channel_chain_asset_create schema 已删除，保留结构体定义仅供编译通过
-type chainPaymentUTXOLinkEntry struct {
-	UTXOID        string
-	IOSide        string
-	UTXORole      string
-	AmountSatoshi int64
-	QuantityText  string
-	CreatedAtUnix int64
-	Note          string
-	Payload       any
-}
 
 // dbUpsertTokenLot 幂等写入/更新 Token Lot。
 func dbUpsertTokenLot(ctx context.Context, store *clientDB, e tokenLotEntry) error {

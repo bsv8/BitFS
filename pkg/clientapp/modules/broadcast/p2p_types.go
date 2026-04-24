@@ -1,0 +1,18 @@
+package broadcast
+
+import contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+
+type DemandPublishReq = contractmessage.DemandPublishReq
+type ListenCycleReq = contractmessage.ListenCycleReq
+type DemandPublishBatchReq = contractmessage.DemandPublishBatchReq
+type LiveDemandPublishReq = contractmessage.LiveDemandPublishReq
+type NodeReachabilityAnnounceReq = contractmessage.NodeReachabilityAnnounceReq
+type NodeReachabilityQueryReq = contractmessage.NodeReachabilityQueryReq
+type DemandPublishPaidResp = contractmessage.DemandPublishPaidResp
+type ListenCyclePaidResp = contractmessage.ListenCyclePaidResp
+type DemandPublishBatchPaidItem = contractmessage.DemandPublishBatchPaidItem
+type DemandPublishBatchPaidResult = contractmessage.DemandPublishBatchPaidResult
+type DemandPublishBatchPaidResp = contractmessage.DemandPublishBatchPaidResp
+type LiveDemandPublishPaidResp = contractmessage.LiveDemandPublishPaidResp
+type NodeReachabilityAnnouncePaidResp = contractmessage.NodeReachabilityAnnouncePaidResp
+type NodeReachabilityQueryPaidResp = contractmessage.NodeReachabilityQueryPaidResp

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
+	"github.com/bsv8/BitFS/pkg/clientapp/storeactor"
 )
 
 func TestDBUpsertChainTipStateDoesNotTriggerDriverTypeError(t *testing.T) {

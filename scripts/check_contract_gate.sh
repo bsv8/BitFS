@@ -2,10 +2,10 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-contract_root="${CONTRACT_ROOT:-/home/david/Workspaces/bsv8/BitFS-contract}"
+contract_root="${CONTRACT_ROOT:-/home/david/Workspaces/bsv8/BFTP-contract}"
 
-echo "[bitfs-gate] check bitfs local contract boundary"
-"$repo_root/scripts/check_bitfs_contract_boundary.sh"
+echo "[bitfs-gate] check bftp local contract boundary"
+"$repo_root/scripts/check_bftp_contract_boundary.sh"
 
 echo "[bitfs-gate] check main framework function lock"
 "$repo_root/scripts/check_function_lock.sh"
@@ -13,7 +13,7 @@ echo "[bitfs-gate] check main framework function lock"
 echo "[bitfs-gate] check module function lock"
 "$repo_root/scripts/check_module_function_lock.sh"
 
-echo "[bitfs-gate] check BitFS-contract gate"
+echo "[bitfs-gate] check BFTP-contract gate"
 "$contract_root/scripts/check_ci_gate.sh"
 
 echo "[bitfs-gate] all contract gates passed"

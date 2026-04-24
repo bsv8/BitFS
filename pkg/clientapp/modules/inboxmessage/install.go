@@ -6,6 +6,7 @@ import (
 
 	contractprotoid "github.com/bsv8/BFTP-contract/pkg/v1/protoid"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
+	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
 type inboxMessageStoreAdapter struct {
@@ -52,14 +53,14 @@ func Install(ctx context.Context, host moduleapi.Host) (func(), error) {
 		ID:      ModuleID,
 		Version: CapabilityVersion,
 		Capabilities: []moduleapi.Capability{
-			{ID: ModuleID, Version: uint32(CapabilityVersion), ProtocolID: contractprotoid.ProtoInboxMessage},
+			{ID: ModuleID, Version: uint32(CapabilityVersion), ProtocolID: protocol.ID(contractprotoid.ProtoInboxMessage)},
 		},
 		HTTP: []moduleapi.HTTPRoute{
 			{Path: "/v1/settings/inbox/messages", Handler: handleInboxMessagesSettings(moduleStore)},
 			{Path: "/v1/settings/inbox/messages/detail", Handler: handleInboxMessageDetailSettings(moduleStore)},
 		},
 		LibP2P: []moduleapi.LibP2PRoute{
-			{ProtocolID: contractprotoid.ProtoInboxMessage, Handler: receiveInboxMessage(moduleStore)},
+			{ProtocolID: protocol.ID(contractprotoid.ProtoInboxMessage), Handler: receiveInboxMessage(moduleStore)},
 		},
 	})
 }

@@ -3,10 +3,8 @@ package clientapp
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -15,16 +13,18 @@ import (
 	tx "github.com/bsv-blockchain/go-sdk/transaction"
 	sighash "github.com/bsv-blockchain/go-sdk/transaction/sighash"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
-	ncall "github.com/bsv8/BFTP/pkg/infra/ncall"
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
-	"github.com/bsv8/BFTP/pkg/infra/pproto"
-	"github.com/bsv8/BFTP/pkg/obs"
+	ncall "github.com/bsv8/BitFS/pkg/clientapp/infra/ncall"
+	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
+	"github.com/bsv8/BitFS/pkg/clientapp/infra/pproto"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	kmlibs "github.com/bsv8/MultisigPool/pkg/libs"
 	te "github.com/bsv8/MultisigPool/pkg/triple_endpoint"
 	crypto "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
 // 说明：
@@ -83,10 +83,19 @@ func TriggerBizOrderPayBSV(ctx context.Context, store *clientDB, rt *Runtime, re
 		"from_address":    fromAddress,
 	}
 
-	if _, err := dbGetBusinessSettlementByBusinessID(ctx, store, businessID); err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			return BizOrderPayBSVResponse{}, err
+	var businessExists bool
+	_ = store.Read(ctx, func(rc moduleapi.ReadConn) error {
+		var count int
+		err := QueryRowContext(ctx, rc,
+			`SELECT COUNT(1) FROM orders WHERE order_id=?`,
+			frontOrderID,
+		).Scan(&count)
+		if err == nil {
+			businessExists = count > 0
 		}
+		return err
+	})
+	if !businessExists {
 		if err := CreateBusinessWithFrontTriggerAndPendingSettlement(ctx, store, CreateBusinessWithFrontTriggerAndPendingSettlementInput{
 			FrontOrderID:      frontOrderID,
 			FrontType:         "biz_order",
@@ -330,7 +339,7 @@ func TriggerGatewayPublishDemand(ctx context.Context, store *clientDB, rt *Runti
 		"job_id":         strings.TrimSpace(p.JobID),
 		"front_order_id": strings.TrimSpace(p.FrontOrderID),
 	})
-	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), ncall.ProtoBroadcastDemandPublish, body, decodeDemandPublishRouteResp)
+	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), protocol.ID(ncall.ProtoBroadcastDemandPublish), body, decodeDemandPublishRouteResp)
 	if err != nil {
 		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_failed", map[string]any{"error": err.Error()})
 		return contractmessage.DemandPublishPaidResp{}, err
@@ -381,7 +390,7 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, store *clientDB, rt *
 		BuyerAddrs: localAdvertiseAddrs(rt),
 	}
 	obs.Business(ServiceName, "evt_trigger_gateway_demand_publish_batch_begin", map[string]any{"item_count": len(items)})
-	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), ncall.ProtoBroadcastDemandPublishBatch, body, decodeDemandPublishBatchRouteResp)
+	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), protocol.ID(ncall.ProtoBroadcastDemandPublishBatch), body, decodeDemandPublishBatchRouteResp)
 	if err != nil {
 		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_batch_failed", map[string]any{"error": err.Error()})
 		return contractmessage.DemandPublishBatchPaidResp{}, err
@@ -428,7 +437,7 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, store *clientDB, rt *R
 		Window:           p.Window,
 		BuyerAddrs:       localAdvertiseAddrs(rt),
 	}
-	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), ncall.ProtoBroadcastLiveDemandPublish, body, decodeLiveDemandPublishRouteResp)
+	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), protocol.ID(ncall.ProtoBroadcastLiveDemandPublish), body, decodeLiveDemandPublishRouteResp)
 	if err != nil {
 		return contractmessage.LiveDemandPublishPaidResp{}, err
 	}
@@ -1466,28 +1475,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer tr
 		return directTransferPoolPayResult{}, err
 	}
 
-	// 第三步：第一次成功的真实业务 pay allocation 时回写 settlement
-	// Open 只是开池准备，第一条真实 pay allocation 才代表收费事实
-	// 判定条件：这是第一次成功的 pay（PayCount 在 update session 之前还是 0，++后变成 1）
-	settlementID := strings.TrimSpace(session.SettlementID)
-	if settlementID != "" && session.PayCount == 1 {
-		// 通过 allocation_id 拿到 pool_allocation.id
-		_, allocID := directTransferPoolAccountingSource(session.SessionID, "pay", req.Sequence)
-		poolAllocationID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, allocID)
-		if err != nil {
-			obs.Error(ServiceName, "download_pool_settlement_pay_failed", map[string]any{"error": err.Error(), "settlement_id": settlementID})
-			return directTransferPoolPayResult{}, fmt.Errorf("resolve pool_allocation id for settlement: %w", err)
-		}
-		if err := dbUpdateBusinessSettlementStatus(ctx, store, settlementID, "settled", ""); err != nil {
-			obs.Error(ServiceName, "download_pool_settlement_update_failed", map[string]any{"error": err.Error(), "settlement_id": settlementID})
-			return directTransferPoolPayResult{}, fmt.Errorf("update settlement status: %w", err)
-		}
-		// 回写 target_type='pool_allocation', target_id=<pool_allocation.id>
-		if err := dbUpdateBusinessSettlementTarget(ctx, store, settlementID, "pool_allocation", fmt.Sprintf("%d", poolAllocationID)); err != nil {
-			obs.Error(ServiceName, "download_pool_settlement_target_failed", map[string]any{"error": err.Error(), "settlement_id": settlementID})
-			return directTransferPoolPayResult{}, fmt.Errorf("update settlement target: %w", err)
-		}
-	}
+
 
 	obs.Business(ServiceName, "evt_trigger_direct_transfer_pool_pay_end", map[string]any{
 		"job_id":         strings.TrimSpace(session.JobID),
@@ -1763,7 +1751,7 @@ func parseSeedV1(seed []byte) (seedV1Meta, error) {
 		return seedV1Meta{}, fmt.Errorf("invalid seed magic")
 	}
 	chunkSize := binary.BigEndian.Uint32(seed[6:10])
-	if chunkSize != seedBlockSize {
+	if chunkSize != uint32(seedBlockSize) {
 		return seedV1Meta{}, fmt.Errorf("unsupported chunk size")
 	}
 	fileSize := binary.BigEndian.Uint64(seed[10:18])

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
 )
 
 // clientIdentityCaps 是运行时启动后一次性装配好的身份能力。

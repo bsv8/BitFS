@@ -7,7 +7,7 @@ import (
 
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
 	contractprotoid "github.com/bsv8/BFTP-contract/pkg/v1/protoid"
-	"github.com/bsv8/BFTP/pkg/infra/ncall"
+	"github.com/bsv8/BitFS/pkg/clientapp/infra/ncall"
 	"github.com/libp2p/go-libp2p/core/protocol"
 )
 

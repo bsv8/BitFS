@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
-	"github.com/bsv8/BFTP/pkg/infra/ncall"
+	"github.com/bsv8/BitFS/pkg/clientapp/infra/ncall"
 	"github.com/bsv8/BitFS/pkg/clientapp/modulelock"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	domainbiz "github.com/bsv8/BitFS/pkg/clientapp/modules/domain"

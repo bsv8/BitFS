@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
+	"github.com/bsv8/BitFS/pkg/clientapp/storeactor"
 )
 
 func TestRun_RejectsEmptyConfigPathWhenHTTPManagementIsEnabled(t *testing.T) {

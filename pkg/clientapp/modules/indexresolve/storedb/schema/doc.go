@@ -1,4 +1,4 @@
-// Package schema 是 bitfs-contract 的数据库契约真源（v1）。
+// Package schema 是 BitFS 客户端的数据库契约真源（v1）。
 //
 // 设计说明：
 // 1) 本目录按 BitFS 当前真实库结构对齐；

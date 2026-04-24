@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 )
 
 // NetworkInitDefaults 按网络定义“产品启动补齐阶段使用”的初始化值。

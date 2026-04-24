@@ -3,7 +3,7 @@ package managedclient
 import (
 	"testing"
 
-	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 )
 
 func TestMapManagedObsEvents_WorkspaceChangedOnlyForMutationEvents(t *testing.T) {

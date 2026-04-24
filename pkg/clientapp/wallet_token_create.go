@@ -13,7 +13,7 @@ import (
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
 	sighash "github.com/bsv-blockchain/go-sdk/transaction/sighash"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
 )
 
 const (

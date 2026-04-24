@@ -3,7 +3,7 @@ package clientapp
 import (
 	"context"
 
-	"github.com/bsv8/BFTP/pkg/infra/ncall"
+	"github.com/bsv8/BitFS/pkg/clientapp/infra/ncall"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 )

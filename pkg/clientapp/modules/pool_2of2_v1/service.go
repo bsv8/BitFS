@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/infra/ncall"
-	"github.com/bsv8/BFTP/pkg/infra/payflow"
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/BitFS/pkg/clientapp/infra/ncall"
+	"github.com/bsv8/BitFS/pkg/clientapp/payflow"
+	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
 	libs "github.com/bsv8/MultisigPool/pkg/libs"
 	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
 	"github.com/libp2p/go-libp2p/core/peer"

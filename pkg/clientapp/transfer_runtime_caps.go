@@ -1,8 +1,8 @@
 package clientapp
 
 import (
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
-	"github.com/bsv8/BFTP/pkg/infra/pproto"
+	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
+	"github.com/bsv8/BitFS/pkg/clientapp/infra/pproto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"sync"
 )

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
+	broadcastmodule "github.com/bsv8/BitFS/pkg/clientapp/modules/broadcast"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/proclivefollows"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procnodereachabilitycache"

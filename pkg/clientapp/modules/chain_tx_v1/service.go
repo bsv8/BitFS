@@ -13,9 +13,9 @@ import (
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
 	sighash "github.com/bsv-blockchain/go-sdk/transaction/sighash"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
-	ncall "github.com/bsv8/BFTP/pkg/infra/ncall"
-	"github.com/bsv8/BFTP/pkg/infra/payflow"
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	ncall "github.com/bsv8/BitFS/pkg/clientapp/infra/ncall"
+	"github.com/bsv8/BitFS/pkg/clientapp/payflow"
+	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
 	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/peer"
 

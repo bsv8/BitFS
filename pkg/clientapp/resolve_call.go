@@ -6,9 +6,9 @@ import (
 	"strings"
 
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
-	"github.com/bsv8/BFTP/pkg/infra/ncall"
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
-	"github.com/bsv8/BFTP/pkg/infra/pproto"
+	"github.com/bsv8/BitFS/pkg/clientapp/infra/ncall"
+	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
+	"github.com/bsv8/BitFS/pkg/clientapp/infra/pproto"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/peer"

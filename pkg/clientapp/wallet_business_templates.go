@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	domainmodule "github.com/bsv8/BFTP/pkg/modules/domain"
+	domainwire "github.com/bsv8/BitFS/pkg/clientapp/modules/domain/domainwire"
 )
 
 // WalletOrderRequest 是页面交给钱包的签名订单原文。
@@ -188,7 +188,7 @@ func walletOrderTemplateRegistry() map[string]walletOrderTemplate {
 }
 
 func walletOrderTemplateIDFromEnvelope(raw []byte) (string, error) {
-	var env domainmodule.SignedEnvelope
+	var env domainwire.SignedEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return "", fmt.Errorf("decode signed envelope: %w", err)
 	}

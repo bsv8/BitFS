@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/chainbridge"
-	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/chainbridge"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp"
 	"github.com/bsv8/BitFS/pkg/clientapp/modulelock"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"

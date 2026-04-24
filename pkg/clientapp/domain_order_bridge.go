@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/orders"
 )
@@ -178,27 +178,7 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 			return fmt.Errorf("append business: %w", err)
 		}
 
-		// 3. 创建 business_settlement(status='pending')
-		if err := dbUpsertSettleRecordSettlementTx(ctx, tx, businessSettlementEntry{
-			SettlementID:     in.SettlementID,
-			OrderID:          in.BusinessID,
-			SettlementMethod: string(in.SettlementMethod),
-			Status:           "pending",
-			TargetType:       in.SettlementTargetType,
-			TargetID:         in.SettlementTargetID,
-			CreatedAtUnix:    now,
-			UpdatedAtUnix:    now,
-			Payload:          in.SettlementPayload,
-		}); err != nil {
-			obs.Error(ServiceName, "bridge_settlement_failed", map[string]any{
-				"error":         err.Error(),
-				"settlement_id": in.SettlementID,
-				"order_id":      in.BusinessID,
-			})
-			return fmt.Errorf("upsert business_settlement: %w", err)
-		}
-
-		// 4. 创建 business_trigger（支持一前台单多条 business）
+		// 3. 创建 business_trigger（支持一前台单多条 business）
 		// 幂等约束在 (order_id, trigger_type, trigger_id_value, trigger_role) 上
 		if err := dbAppendBusinessTriggerTx(ctx, tx, businessTriggerEntry{
 			TriggerID:      triggerID,
@@ -332,11 +312,3 @@ func dbAppendBusinessTriggerTx(ctx context.Context, tx EntWriteRoot, e businessT
 	return nil
 }
 
-// dbUpsertBusinessSettlementTx 事务内插入或更新业务结算出口
-// 校验：settlement_method 只允许 'pool' 或 'chain'
-func dbUpsertSettleRecordSettlementTx(ctx context.Context, tx EntWriteRoot, e businessSettlementEntry) error {
-	if tx == nil {
-		return fmt.Errorf("tx is nil")
-	}
-	return dbUpsertBusinessSettlementEntTx(ctx, tx, e)
-}

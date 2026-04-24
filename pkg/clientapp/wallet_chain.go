@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/bsv8/BFTP/pkg/chainbridge"
+	"github.com/bsv8/BitFS/pkg/clientapp/chainbridge"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 )
 

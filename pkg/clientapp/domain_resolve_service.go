@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	domainmodule "github.com/bsv8/BFTP/pkg/modules/domain"
 	domainbiz "github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
+	domainwire "github.com/bsv8/BitFS/pkg/clientapp/modules/domain/domainwire"
 )
 
 // ResolveDomainToPubkey 是 BitFS 基座统一域名解析入口。
@@ -26,7 +26,7 @@ func ResolveDomainToPubkey(ctx context.Context, rt *Runtime, rawDomain string) (
 		return "", domainbiz.NewError(domainbiz.CodeDomainResolverUnavailable, "domain resolver is unavailable")
 	}
 
-	domain, err := domainmodule.NormalizeName(rawDomain)
+	domain, err := domainwire.NormalizeName(rawDomain)
 	if err != nil {
 		return "", domainbiz.NewError(domainbiz.CodeBadRequest, err.Error())
 	}

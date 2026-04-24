@@ -18,17 +18,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	bftpv1 "github.com/bsv8/BFTP-contract/gen/go/v1"
+		bftpv1 "github.com/bsv8/BFTP-contract/gen/go/v1"
 	contractprotoid "github.com/bsv8/BFTP-contract/pkg/v1/protoid"
-	"github.com/bsv8/BFTP/pkg/dealprod"
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
-	"github.com/bsv8/BFTP/pkg/infra/pproto"
-	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
-	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/dealprod"
+	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
+	"github.com/bsv8/BitFS/pkg/clientapp/infra/pproto"
+	"github.com/bsv8/BitFS/pkg/clientapp/storeactor"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	"github.com/bsv8/BitFS/pkg/clientapp/seedcore"
-	bitfsv1 "github.com/bsv8/bitfs-contract/gen/go/v1"
-	bitfsprotoid "github.com/bsv8/bitfs-contract/pkg/v1/protoid"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -37,22 +35,22 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-const (
+var (
 	BBroadcastSuiteVersion             = "BBroadcast/1.0"
 	BBroadcastProtocolName             = "Bitcast Broadcast Protocol"
-	ProtoGatewayHealth     protocol.ID = contractprotoid.ProtoGatewayHealth
-	ProtoArbiterHealth     protocol.ID = contractprotoid.ProtoArbiterHealth
-	ProtoSeedGet           protocol.ID = bitfsprotoid.ProtoSeedGet
-	ProtoQuoteDirectSubmit protocol.ID = bitfsprotoid.ProtoQuoteDirectSubmit
-	ProtoLiveQuoteSubmit   protocol.ID = bitfsprotoid.ProtoLiveQuoteSubmit
-	ProtoDirectDealAccept  protocol.ID = bitfsprotoid.ProtoDirectDealAccept
-	ProtoTransferPoolOpen  protocol.ID = bitfsprotoid.ProtoTransferPoolOpen
-	ProtoTransferChunkGet  protocol.ID = bitfsprotoid.ProtoTransferChunkGet
-	ProtoTransferPoolPay   protocol.ID = bitfsprotoid.ProtoTransferPoolPay
-	ProtoTransferArbitrate protocol.ID = bitfsprotoid.ProtoTransferArbitrate
-	ProtoTransferPoolClose protocol.ID = bitfsprotoid.ProtoTransferPoolClose
-	ProtoLiveSubscribe     protocol.ID = bitfsprotoid.ProtoLiveSubscribe
-	ProtoLiveHeadPush      protocol.ID = bitfsprotoid.ProtoLiveHeadPush
+	ProtoGatewayHealth     = protocol.ID(contractprotoid.ProtoGatewayHealth)
+	ProtoArbiterHealth     = protocol.ID(contractprotoid.ProtoArbiterHealth)
+	ProtoSeedGet           = protocol.ID(contractprotoid.ProtoSeedGet)
+	ProtoQuoteDirectSubmit = protocol.ID(contractprotoid.ProtoQuoteDirectSubmit)
+	ProtoLiveQuoteSubmit   = protocol.ID(contractprotoid.ProtoLiveQuoteSubmit)
+	ProtoDirectDealAccept  = protocol.ID(contractprotoid.ProtoDirectDealAccept)
+	ProtoTransferPoolOpen  = protocol.ID(contractprotoid.ProtoTransferPoolOpen)
+	ProtoTransferChunkGet  = protocol.ID(contractprotoid.ProtoTransferChunkGet)
+	ProtoTransferPoolPay   = protocol.ID(contractprotoid.ProtoTransferPoolPay)
+	ProtoTransferArbitrate = protocol.ID(contractprotoid.ProtoTransferArbitrate)
+	ProtoTransferPoolClose = protocol.ID(contractprotoid.ProtoTransferPoolClose)
+	ProtoLiveSubscribe     = protocol.ID(contractprotoid.ProtoLiveSubscribe)
+	ProtoLiveHeadPush      = protocol.ID(contractprotoid.ProtoLiveHeadPush)
 
 	bootPeerConnectTimeout = 5 * time.Second
 	bootPeerHealthTimeout  = 5 * time.Second
@@ -72,32 +70,32 @@ const (
 	StartupModeTest    StartupMode = "test"
 )
 
-type seedGetReq = bitfsv1.SeedGetReq
-type seedGetResp = bitfsv1.SeedGetResp
-type directQuoteSubmitReq = bitfsv1.DirectQuoteSubmitReq
-type directQuoteSubmitResp = bitfsv1.DirectQuoteSubmitResp
-type directDealAcceptReq = bitfsv1.DirectDealAcceptReq
-type directDealAcceptResp = bitfsv1.DirectDealAcceptResp
-type directTransferPoolOpenReq = bitfsv1.DirectTransferPoolOpenReq
-type directTransferPoolOpenResp = bitfsv1.DirectTransferPoolOpenResp
-type directTransferChunkGetReq = bitfsv1.DirectTransferChunkGetReq
-type directTransferChunkGetResp = bitfsv1.DirectTransferChunkGetResp
-type directTransferPoolPayReq = bitfsv1.DirectTransferPoolPayReq
-type directTransferPoolPayResp = bitfsv1.DirectTransferPoolPayResp
-type directTransferArbitrateReq = bitfsv1.DirectTransferArbitrateReq
-type directTransferArbitrateResp = bitfsv1.DirectTransferArbitrateResp
-type directTransferPoolCloseReq = bitfsv1.DirectTransferPoolCloseReq
-type directTransferPoolCloseResp = bitfsv1.DirectTransferPoolCloseResp
-type liveSegmentDataPB = bitfsv1.LiveSegmentData
-type liveSegmentPB = bitfsv1.LiveSegment
-type liveSegmentRefPB = bitfsv1.LiveSegmentRef
-type liveSubscribeReq = bitfsv1.LiveSubscribeReq
-type liveSubscribeResp = bitfsv1.LiveSubscribeResp
-type liveHeadPushReq = bitfsv1.LiveHeadPushReq
-type liveHeadPushResp = bitfsv1.LiveHeadPushResp
-type liveQuoteSegmentPB = bitfsv1.LiveSegmentRef
-type liveQuoteSubmitReq = bitfsv1.LiveQuoteSubmitReq
-type liveQuoteSubmitResp = bitfsv1.LiveQuoteSubmitResp
+type seedGetReq = bftpv1.SeedGetReq
+type seedGetResp = bftpv1.SeedGetResp
+type directQuoteSubmitReq = bftpv1.DirectQuoteSubmitReq
+type directQuoteSubmitResp = bftpv1.DirectQuoteSubmitResp
+type directDealAcceptReq = bftpv1.DirectDealAcceptReq
+type directDealAcceptResp = bftpv1.DirectDealAcceptResp
+type directTransferPoolOpenReq = bftpv1.DirectTransferPoolOpenReq
+type directTransferPoolOpenResp = bftpv1.DirectTransferPoolOpenResp
+type directTransferChunkGetReq = bftpv1.DirectTransferChunkGetReq
+type directTransferChunkGetResp = bftpv1.DirectTransferChunkGetResp
+type directTransferPoolPayReq = bftpv1.DirectTransferPoolPayReq
+type directTransferPoolPayResp = bftpv1.DirectTransferPoolPayResp
+type directTransferArbitrateReq = bftpv1.DirectTransferArbitrateReq
+type directTransferArbitrateResp = bftpv1.DirectTransferArbitrateResp
+type directTransferPoolCloseReq = bftpv1.DirectTransferPoolCloseReq
+type directTransferPoolCloseResp = bftpv1.DirectTransferPoolCloseResp
+type liveSegmentDataPB = bftpv1.LiveSegmentData
+type liveSegmentPB = bftpv1.LiveSegment
+type liveSegmentRefPB = bftpv1.LiveSegmentRef
+type liveSubscribeReq = bftpv1.LiveSubscribeReq
+type liveSubscribeResp = bftpv1.LiveSubscribeResp
+type liveHeadPushReq = bftpv1.LiveHeadPushReq
+type liveHeadPushResp = bftpv1.LiveHeadPushResp
+type liveQuoteSegmentPB = bftpv1.LiveSegmentRef
+type liveQuoteSubmitReq = bftpv1.LiveQuoteSubmitReq
+type liveQuoteSubmitResp = bftpv1.LiveQuoteSubmitResp
 
 type Config struct {
 	ClientID string `yaml:"-" toml:"-"`

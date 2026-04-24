@@ -8,12 +8,13 @@ import (
 	"time"
 
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
-	ncall "github.com/bsv8/BFTP/pkg/infra/ncall"
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
-	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
-	"github.com/bsv8/BFTP/pkg/obs"
+	ncall "github.com/bsv8/BitFS/pkg/clientapp/infra/ncall"
+	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
+	broadcastmodule "github.com/bsv8/BitFS/pkg/clientapp/modules/broadcast"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	libnetwork "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	ma "github.com/multiformats/go-multiaddr"
 )
 
@@ -282,7 +283,7 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, store *clientDB
 	body := &contractmessage.NodeReachabilityAnnounceReq{
 		SignedAnnouncement: append([]byte(nil), signedAnnouncement...),
 	}
-	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), ncall.ProtoBroadcastV1NodeReachabilityAnnounce, body, decodeNodeReachabilityAnnounceRouteResp)
+	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), protocol.ID(ncall.ProtoBroadcastV1NodeReachabilityAnnounce), body, decodeNodeReachabilityAnnounceRouteResp)
 	if err != nil {
 		return contractmessage.NodeReachabilityAnnouncePaidResp{}, err
 	}
@@ -334,7 +335,7 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, store *clientDB, r
 	body := &contractmessage.NodeReachabilityQueryReq{
 		TargetNodePubkeyHex: targetNodePubkeyHex,
 	}
-	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), ncall.ProtoBroadcastV1NodeReachabilityQuery, body, decodeNodeReachabilityQueryRouteResp)
+	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), protocol.ID(ncall.ProtoBroadcastV1NodeReachabilityQuery), body, decodeNodeReachabilityQueryRouteResp)
 	if err != nil {
 		return contractmessage.NodeReachabilityQueryPaidResp{}, err
 	}

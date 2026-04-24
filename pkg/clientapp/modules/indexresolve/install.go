@@ -6,6 +6,7 @@ import (
 
 	contractprotoid "github.com/bsv8/BFTP-contract/pkg/v1/protoid"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
+	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
 type indexResolveStoreAdapter struct {
@@ -53,10 +54,10 @@ func Install(ctx context.Context, host moduleapi.Host) (func(), error) {
 		ID:      ModuleID,
 		Version: CapabilityVersion,
 		Capabilities: []moduleapi.Capability{
-			{ID: ModuleID, Version: uint32(CapabilityVersion), ProtocolID: contractprotoid.ProtoIndexResolve},
+			{ID: ModuleID, Version: uint32(CapabilityVersion), ProtocolID: protocol.ID(contractprotoid.ProtoIndexResolve)},
 		},
 		LibP2P: []moduleapi.LibP2PRoute{
-			{ProtocolID: contractprotoid.ProtoIndexResolve, Handler: handleIndexResolve(store)},
+			{ProtocolID: protocol.ID(contractprotoid.ProtoIndexResolve), Handler: handleIndexResolve(store)},
 		},
 		Settings: indexResolveSettingsActions(store),
 		OBS:      indexResolveOBSActions(store),

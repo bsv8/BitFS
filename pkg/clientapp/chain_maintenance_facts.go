@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
 )
 
 func getWalletUTXOsFromDB(ctx context.Context, store ClientStore, rt walletIdentityCaps) ([]poolcore.UTXO, error) {

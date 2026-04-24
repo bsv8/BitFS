@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/bsv-blockchain/go-sdk/script"
-	"github.com/bsv8/BFTP/pkg/infra/fundalloc"
-	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/fundalloc"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 )
 
 const walletAssetPreviewFeeRateSatPerKB = 0.5

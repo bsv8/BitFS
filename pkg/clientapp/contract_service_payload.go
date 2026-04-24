@@ -6,7 +6,7 @@ import (
 
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
 	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
 )
 
 const (

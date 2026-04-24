@@ -6,7 +6,7 @@ import (
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	poolcore "github.com/bsv8/BFTP/pkg/infra/poolcore"
+	poolcore "github.com/bsv8/BitFS/pkg/clientapp/poolcore"
 )
 
 // PaymentHost is the payment capability extension for Host interface.

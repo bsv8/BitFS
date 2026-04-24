@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	domainmodule "github.com/bsv8/BFTP/pkg/modules/domain"
+	domainwire "github.com/bsv8/BitFS/pkg/clientapp/modules/domain/domainwire"
 )
 
 // BizResolve 是模块自己的最小业务入口。
@@ -24,7 +24,7 @@ func BizResolve(ctx context.Context, resolver Resolver, rawDomain string) (Resol
 		return ResolveResult{}, moduleDisabledErr()
 	}
 
-	domainName, err := domainmodule.NormalizeName(rawDomain)
+	domainName, err := domainwire.NormalizeName(rawDomain)
 	if err != nil {
 		return ResolveResult{}, NewError(CodeBadRequest, err.Error())
 	}

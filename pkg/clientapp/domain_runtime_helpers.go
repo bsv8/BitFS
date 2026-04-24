@@ -13,13 +13,14 @@ import (
 	sighash "github.com/bsv-blockchain/go-sdk/transaction/sighash"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
-	ncall "github.com/bsv8/BFTP/pkg/infra/ncall"
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
-	domainmodule "github.com/bsv8/BFTP/pkg/modules/domain"
+	ncall "github.com/bsv8/BitFS/pkg/clientapp/infra/ncall"
+	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
+	domainwire "github.com/bsv8/BitFS/pkg/clientapp/modules/domain/domainwire"
 	oldproto "github.com/golang/protobuf/proto"
 	crypto "github.com/libp2p/go-libp2p/core/crypto"
 	libnetwork "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
 type domainQueryResult struct {
@@ -101,7 +102,7 @@ func triggerDomainQueryName(ctx context.Context, store *clientDB, rt *Runtime, r
 	}
 	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
 		To:          resolverPubkeyHex,
-		ProtocolID:  ncall.ProtoDomainQueryNamePaid,
+		ProtocolID:  protocol.ID(ncall.ProtoDomainQueryNamePaid),
 		ContentType: contractmessage.ContentTypeProto,
 		Body:        payload,
 		Store:       store,
@@ -129,7 +130,7 @@ func triggerDomainRegisterLock(ctx context.Context, store *clientDB, rt *Runtime
 	}
 	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
 		To:          strings.TrimSpace(resolverPubkeyHex),
-		ProtocolID:  ncall.ProtoDomainRegisterLock,
+		ProtocolID:  protocol.ID(ncall.ProtoDomainRegisterLock),
 		ContentType: contractmessage.ContentTypeProto,
 		Body:        payload,
 		Store:       store,
@@ -154,7 +155,7 @@ func triggerDomainRegisterSubmit(ctx context.Context, rt *Runtime, store *client
 	}
 	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
 		To:          strings.TrimSpace(resolverPubkeyHex),
-		ProtocolID:  ncall.ProtoDomainRegisterSubmit,
+		ProtocolID:  protocol.ID(ncall.ProtoDomainRegisterSubmit),
 		ContentType: contractmessage.ContentTypeProto,
 		Body:        payload,
 		Store:       store,
@@ -182,7 +183,7 @@ func triggerDomainSetTarget(ctx context.Context, store *clientDB, rt *Runtime, r
 	}
 	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
 		To:          strings.TrimSpace(resolverPubkeyHex),
-		ProtocolID:  ncall.ProtoDomainSetTargetPaid,
+		ProtocolID:  protocol.ID(ncall.ProtoDomainSetTargetPaid),
 		ContentType: contractmessage.ContentTypeProto,
 		Body:        payload,
 		Store:       store,
@@ -214,7 +215,7 @@ func verifyRegisterQuote(resolverPubkeyHex string, raw []byte) (domainRegisterQu
 	if err != nil {
 		return out, fmt.Errorf("unmarshal resolver public key: %w", err)
 	}
-	env, err := domainmodule.VerifyEnvelope(raw, pub.Verify)
+	env, err := domainwire.VerifyEnvelope(raw, pub.Verify)
 	if err != nil {
 		return out, err
 	}
@@ -324,7 +325,7 @@ func buildDomainRegisterTxWithUTXOsDetailed(actor *poolcore.Actor, selected []po
 	if err := txBuilder.PayToAddress(strings.TrimSpace(payToAddress), payAmount); err != nil {
 		return builtDomainRegisterTx{}, fmt.Errorf("build register payment output failed: %w", err)
 	}
-	opReturnScript, err := domainmodule.BuildSignedEnvelopeOpReturnScript(signedQuoteJSON)
+	opReturnScript, err := domainwire.BuildSignedEnvelopeOpReturnScript(signedQuoteJSON)
 	if err != nil {
 		return builtDomainRegisterTx{}, fmt.Errorf("build register quote op_return failed: %w", err)
 	}

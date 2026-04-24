@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 )
 
 // 验证本地投影路径调用 markBSVUTXOSpentConn 后会发出 fact_bsv_spent_applied 事件。

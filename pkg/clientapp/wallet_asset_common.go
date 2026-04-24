@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
 )
 
 // 这些 helper 只服务于当前保留下来的 bsv21 create/send 主链路。

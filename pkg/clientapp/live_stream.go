@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/infra/pproto"
-	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/infra/pproto"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"

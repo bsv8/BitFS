@@ -255,7 +255,7 @@ func dbLoadChunkBytesBySeedHash(ctx context.Context, store *clientDB, seedHash s
 		return nil, err
 	}
 	defer f.Close()
-	offset := int64(chunkIndex) * seedBlockSize
+	offset := int64(chunkIndex) * int64(seedBlockSize)
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
 		return nil, err
 	}

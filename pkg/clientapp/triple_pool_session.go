@@ -12,8 +12,8 @@ import (
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	tx "github.com/bsv-blockchain/go-sdk/transaction"
-	"github.com/bsv8/BFTP/pkg/infra/pproto"
-	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/infra/pproto"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	te "github.com/bsv8/MultisigPool/pkg/triple_endpoint"
 	"github.com/libp2p/go-libp2p/core/host"
 )

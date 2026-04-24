@@ -8,8 +8,8 @@ import (
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
 	contractprotoid "github.com/bsv8/BFTP-contract/pkg/v1/protoid"
 	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
-	"github.com/bsv8/BFTP/pkg/infra/ncall"
-	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/infra/ncall"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -122,7 +122,7 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 		Route:       string(contractroute.RouteBroadcastV1DemandPublish),
 		ContentType: contractmessage.ContentTypeProto,
 		Body:        bodyRaw,
-	}, contractprotoid.ProtoBroadcastV1DemandPublish)
+	}, protocol.ID(contractprotoid.ProtoBroadcastV1DemandPublish))
 	if err != nil {
 		out.Error = err.Error()
 		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": err.Error()})
@@ -147,7 +147,7 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 		Description:     string(contractroute.RouteBroadcastV1DemandPublish),
 		PricingMode:     "",
 		ServiceQuantity: 1,
-	}, contractprotoid.ProtoBroadcastV1DemandPublish)
+	}, protocol.ID(contractprotoid.ProtoBroadcastV1DemandPublish))
 	if err != nil {
 		out.Error = err.Error()
 		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": err.Error()})
@@ -176,7 +176,7 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 		Description:     string(contractroute.RouteBroadcastV1DemandPublish),
 		PricingMode:     "",
 		ServiceQuantity: 1,
-	}, quoted, contractprotoid.ProtoBroadcastV1DemandPublish)
+	}, quoted, protocol.ID(contractprotoid.ProtoBroadcastV1DemandPublish))
 	if payErr != nil {
 		if strings.Contains(strings.ToLower(payErr.Error()), "submitted_unknown_projection") {
 			out.Status = "submitted_unknown_projection"

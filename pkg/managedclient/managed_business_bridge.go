@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/infra/ncall"
+	"github.com/bsv8/BitFS/pkg/clientapp/infra/ncall"
 	"github.com/bsv8/BitFS/pkg/clientapp"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -240,47 +240,6 @@ func (d *managedDaemon) executeManagedBusinessControlCommand(req controlCommandR
 			return businessActionFailure(req, d, err.Error(), payload), nil
 		}
 		return businessActionSuccess(req, "queried", payload, d), nil
-
-	case controlActionFeePoolEnsureActive:
-		allowWhenPaused, _ := businessPayloadBool(req.Payload, "allow_when_paused")
-		result, err := clientapp.TriggerGatewayFeePoolEnsureActiveRuntime(ctx, rt, clientapp.FeePoolEnsureActiveParams{
-			GatewayPeerID:   strings.TrimSpace(controlCommandPayloadString(req.Payload, "gateway_pubkey_hex")),
-			AllowWhenPaused: allowWhenPaused,
-			RequestedBy:     strings.TrimSpace(controlCommandPayloadString(req.Payload, "requested_by")),
-		})
-		payload := map[string]any{
-			"feepool_ensure_active_result": result,
-		}
-		if err != nil {
-			return businessActionFailure(req, d, err.Error(), payload), nil
-		}
-		if !result.Accepted {
-			msg := strings.TrimSpace(result.ErrorMessage)
-			if msg == "" {
-				msg = "fee pool ensure active rejected"
-			}
-			return businessActionFailure(req, d, msg, payload), nil
-		}
-		return businessActionSuccess(req, result.Status, payload, d), nil
-
-	case controlActionFeePoolClose:
-		result, err := clientapp.TriggerGatewayFeePoolCloseRuntime(ctx, rt, clientapp.FeePoolGatewayParams{
-			GatewayPeerID: strings.TrimSpace(controlCommandPayloadString(req.Payload, "gateway_pubkey_hex")),
-		})
-		payload := map[string]any{
-			"feepool_close_result": result,
-		}
-		if err != nil {
-			return businessActionFailure(req, d, err.Error(), payload), nil
-		}
-		if !result.Result.Success {
-			msg := strings.TrimSpace(result.Result.Error)
-			if msg == "" {
-				msg = "fee pool close failed"
-			}
-			return businessActionFailure(req, d, msg, payload), nil
-		}
-		return businessActionSuccess(req, "closed", payload, d), nil
 
 	case controlActionDomainResolve:
 		domain := strings.TrimSpace(controlCommandPayloadString(req.Payload, "domain"))

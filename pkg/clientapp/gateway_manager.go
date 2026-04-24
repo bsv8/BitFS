@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	libnetwork "github.com/libp2p/go-libp2p/core/network"

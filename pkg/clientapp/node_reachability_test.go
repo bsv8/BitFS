@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
+	broadcastmodule "github.com/bsv8/BitFS/pkg/clientapp/modules/broadcast"
 )
 
 func TestNodeReachabilityCacheAndSelfState(t *testing.T) {

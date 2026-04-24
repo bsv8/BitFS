@@ -18,11 +18,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/chainbridge"
-	"github.com/bsv8/BFTP/pkg/infra/caps"
-	"github.com/bsv8/BFTP/pkg/infra/lhttp"
-	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
-	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/chainbridge"
+	"github.com/bsv8/BitFS/pkg/clientapp/infra/caps"
+	"github.com/bsv8/BitFS/pkg/clientapp/infra/lhttp"
+	"github.com/bsv8/BitFS/pkg/clientapp/storeactor"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
@@ -106,8 +106,6 @@ const (
 	controlActionGatewayPublishDemandChainTxQuotePay = "gateway.publish_demand_chain_tx_quote_pay"
 	controlActionGatewayReachabilityAnnounce         = "gateway.reachability_announce"
 	controlActionGatewayReachabilityQuery            = "gateway.reachability_query"
-	controlActionFeePoolEnsureActive                 = "feepool.ensure_active"
-	controlActionFeePoolClose                        = "feepool.close"
 
 	controlActionDomainResolve   = "domain.resolve"
 	controlActionDomainRegister  = "domain.register"
@@ -962,8 +960,6 @@ func (d *managedDaemon) executeManagedControlCommand(req controlCommandRequest) 
 		controlActionGatewayPublishDemandChainTxQuotePay,
 		controlActionGatewayReachabilityAnnounce,
 		controlActionGatewayReachabilityQuery,
-		controlActionFeePoolEnsureActive,
-		controlActionFeePoolClose,
 		controlActionDomainResolve,
 		controlActionDomainRegister,
 		controlActionDomainSetTarget,

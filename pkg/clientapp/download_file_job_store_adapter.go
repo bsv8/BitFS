@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	filedownload "github.com/bsv8/BitFS/pkg/clientapp/download/file"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procgetfilebyhashchunks"

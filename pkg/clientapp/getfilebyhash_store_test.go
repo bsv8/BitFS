@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
+	"github.com/bsv8/BitFS/pkg/clientapp/storeactor"
 	"github.com/bsv8/BitFS/pkg/clientapp/download/file"
 )
 

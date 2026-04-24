@@ -11,7 +11,7 @@ import (
 	"time"
 
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
-	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/facttokencarrierlinks"
@@ -420,10 +420,10 @@ func splitUTXOID(utxoID string) (string, uint32, bool) {
 }
 
 // appendBSV21TokenSendAccountingAfterBroadcast token 发送成功后写入单一事实入口。
-// 设计说明：
-// - 一次只落 1 条 business + 1 条 settlement_payment_attempt；
-// - token 记录按 lot 拆成多条 settlement_records；
-// - 本币消耗事实放到 settlement_records 之后再展开，避免先写资产再补结算。
+// 第九阶段整改：
+// - 移除旧的 settlement_payment_attempt 语义和 dbUpsertChainChannelWithSettlementPaymentAttempt 调用
+// - 只保留 token lot 状态更新和 fact_settlement_records 写入
+// - BSV 消耗由 MultisigPool 模块自行处理，不再通过旧 settlement layer
 func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *clientDB, rt *Runtime, txHex string, txID string) error {
 	if store == nil {
 		return fmt.Errorf("db is nil")
@@ -454,6 +454,10 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 	walletID := walletIDByAddress(walletAddr)
 	now := time.Now().Unix()
 
+	// 第九阶段整改：settlementPaymentAttemptID 改为由调用方在 tx 广播成功后自行生成
+	// 这里使用简化的 recordID 格式，不再依赖旧 settlement layer 的自增 ID
+	sendRecordID := fmt.Sprintf("tok_send_%s", txID)
+
 	return store.WriteEntTx(ctx, func(dbtx EntWriteRoot) error {
 		lots, consumedText, err := collectBSV21TokenSendLotsForTx(ctx, dbtx, parsed, walletScriptHex)
 		if err != nil {
@@ -466,59 +470,11 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 			return fmt.Errorf("no token transfer outputs found in txid %s", txID)
 		}
 
-		_, settlementPaymentAttemptID, err := dbUpsertChainChannelWithSettlementPaymentAttempt(ctx, dbtx, chainPaymentEntry{
-			TxID:                 txID,
-			PaymentSubType:       "bsv21_transfer",
-			Status:               "confirmed",
-			WalletInputSatoshi:   0,
-			WalletOutputSatoshi:  0,
-			NetAmountSatoshi:     0,
-			OccurredAtUnix:       now,
-			SubmittedAtUnix:      now,
-			WalletObservedAtUnix: now,
-			FromPartyID:          "wallet:" + walletAddr,
-			ToPartyID:            "external:unknown",
-			Payload: map[string]any{
-				"txid":            txID,
-				"wallet_id":       walletID,
-				"wallet_address":  walletAddr,
-				"token_send_text": consumedText,
-				"token_lot_count": len(lots),
-				"token_send_type": "bsv21_transfer",
-				"tx_hex":          txHex,
-			},
-		}, "chain_direct_pay", "payment_attempt_chain_direct_pay", "bind chain direct pay channel id")
-		if err != nil {
-			return fmt.Errorf("upsert direct pay channel for token send: %w", err)
-		}
-
-		if err := dbAppendSettlementPaymentAttemptFinBusiness(ctx, dbtx, settlementPaymentAttemptID, finBusinessEntry{
-			OrderID:           walletBSV21SendBusinessID(txID),
-			BusinessRole:      "process",
-			AccountingScene:   "wallet_transfer",
-			AccountingSubType: "bsv21_send",
-			FromPartyID:       "wallet:" + walletAddr,
-			ToPartyID:         "external:unknown",
-			Status:            "posted",
-			OccurredAtUnix:    now,
-			IdempotencyKey:    "wallet_bsv21_send:" + txID,
-			Note:              "bsv21 token send broadcast",
-			Payload: map[string]any{
-				"txid":            txID,
-				"wallet_id":       walletID,
-				"wallet_address":  walletAddr,
-				"token_send_text": consumedText,
-				"token_lot_count": len(lots),
-			},
-		}); err != nil {
-			return fmt.Errorf("append settle record failed: %w", err)
-		}
-
 		for _, lot := range lots {
-			recordID := fmt.Sprintf("rec_token_%d_%s", settlementPaymentAttemptID, lot.Lot.LotID)
+			recordID := fmt.Sprintf("%s_lot_%s", sendRecordID, lot.Lot.LotID)
 			if err := dbAppendSettlementRecordEntTx(ctx, dbtx, settlementRecordEntry{
 				RecordID:                   recordID,
-				SettlementPaymentAttemptID: settlementPaymentAttemptID,
+				SettlementPaymentAttemptID: 0, // 第九阶段：不再使用旧 settlement_payment_attempt_id
 				AssetType:                  "TOKEN",
 				OwnerPubkeyHex:             lot.Lot.OwnerPubkeyHex,
 				SourceLotID:                lot.Lot.LotID,
@@ -561,82 +517,11 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 				return fmt.Errorf("update token lot %s: %w", lot.Lot.LotID, err)
 			}
 		}
-
-		bsvFacts, err := collectBSVInputFactsForTx(ctx, dbtx, parsed)
-		if err != nil {
-			return err
-		}
-		// token carrier(1sat) 只参与 token 结算，不计入普通 BSV 扣账记录。
-		// 这里显式排除 carrier 输入，避免把 token 输入误记到 BSV 资产事实。
-		carrierInputs := make(map[string]struct{}, len(lots))
-		for _, lot := range lots {
-			utxoID := strings.ToLower(strings.TrimSpace(lot.CarrierUTXOID))
-			if utxoID == "" {
-				continue
-			}
-			carrierInputs[utxoID] = struct{}{}
-		}
-		filteredBSVFacts := make([]chainPaymentUTXOLinkEntry, 0, len(bsvFacts))
-		for _, fact := range bsvFacts {
-			utxoID := strings.ToLower(strings.TrimSpace(fact.UTXOID))
-			if _, isCarrier := carrierInputs[utxoID]; isCarrier {
-				continue
-			}
-			filteredBSVFacts = append(filteredBSVFacts, fact)
-		}
-		if len(filteredBSVFacts) == 0 {
-			return fmt.Errorf("no wallet input facts found for txid %s", txID)
-		}
-		var grossInputSat int64
-		for _, fact := range filteredBSVFacts {
-			grossInputSat += fact.AmountSatoshi
-		}
-		if err := dbAppendBSVConsumptionsForSettlementPaymentAttemptEntTx(ctx, dbtx, settlementPaymentAttemptID, filteredBSVFacts, now); err != nil {
-			return fmt.Errorf("append BSV settlement records for token send failed: %w", err)
-		}
-		changeBackSat := int64(0)
-		counterpartyOutSat := int64(0)
-		for _, out := range parsed.Outputs {
-			if out == nil || out.LockingScript == nil {
-				continue
-			}
-			amount := int64(out.Satoshis)
-			if amount <= 0 {
-				continue
-			}
-			scriptHex := hex.EncodeToString(out.LockingScript.Bytes())
-			if walletScriptHexMatchesAddressControl(scriptHex, walletScriptHex) {
-				changeBackSat += amount
-				continue
-			}
-			payload, ok := decodeWalletTokenTransferPayload(out.LockingScript)
-			if !ok || !strings.EqualFold(strings.TrimSpace(firstNonEmptyStringField(payload, "op")), "transfer") {
-				continue
-			}
-			counterpartyOutSat += amount
-		}
-		minerFeeSat := grossInputSat - changeBackSat - counterpartyOutSat
-		if minerFeeSat < 0 {
-			minerFeeSat = 0
-		}
-		// 旧 tx 拆解/UTXO 明细层已下线，这里只保留 token 事实和流程事件。
-		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(ctx, dbtx, settlementPaymentAttemptID, finProcessEventEntry{
-			ProcessID:         "proc_wallet_bsv21_send_" + txID,
-			AccountingScene:   "wallet_transfer",
-			AccountingSubType: "bsv21_send",
-			EventType:         "accounting",
-			Status:            "applied",
-			OccurredAtUnix:    now,
-			IdempotencyKey:    "wallet_bsv21_send_event:" + txID,
-			Note:              "bsv21 token send accounting event",
-			Payload: map[string]any{
-				"txid":            txID,
-				"token_lot_count": len(lots),
-				"token_send_text": consumedText,
-			},
-		}); err != nil {
-			return fmt.Errorf("append order_settlement_events failed: %w", err)
-		}
+		// 第九阶段整改：
+		// - BSV 输入事实收集和记录已移除（由 MultisigPool 模块自行处理）
+		// - 不再调用旧 settlement layer 的 BSV 消耗记录接口
+		_ = walletID
+		_ = consumedText
 		return nil
 	})
 }
@@ -757,37 +642,7 @@ func collectBSV21TokenSendConsumedText(tx *txsdk.Transaction, walletScriptHex st
 	return total, nil
 }
 
-func collectBSVInputFactsForTx(ctx context.Context, db EntWriteRoot, tx *txsdk.Transaction) ([]chainPaymentUTXOLinkEntry, error) {
-	if db == nil {
-		return nil, fmt.Errorf("db is nil")
-	}
-	if tx == nil {
-		return nil, fmt.Errorf("tx is nil")
-	}
-	out := make([]chainPaymentUTXOLinkEntry, 0, len(tx.Inputs))
-	for _, inp := range tx.Inputs {
-		if inp == nil || inp.SourceTXID == nil {
-			continue
-		}
-		utxoID := strings.ToLower(strings.TrimSpace(inp.SourceTXID.String())) + ":" + fmt.Sprint(inp.SourceTxOutIndex)
-		value, ok, err := dbWalletUTXOValueConn(ctx, db, utxoID)
-		if err != nil {
-			return nil, fmt.Errorf("lookup wallet input value for %s failed: %w", utxoID, err)
-		}
-		if !ok {
-			continue
-		}
-		out = append(out, chainPaymentUTXOLinkEntry{
-			UTXOID:        utxoID,
-			IOSide:        "input",
-			UTXORole:      "wallet_input",
-			AmountSatoshi: value,
-			CreatedAtUnix: time.Now().Unix(),
-			Note:          "bsv21 token send input",
-		})
-	}
-	return out, nil
-}
+
 
 // dbGetLotByCarrierUTXO 根据 carrier UTXO 查询 lot_id。
 // 设计说明：只给本文件的 token send 结算入口使用，避免把 lot 查询再散到业务层。

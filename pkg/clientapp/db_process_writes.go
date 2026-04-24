@@ -7,7 +7,7 @@ import (
 	"time"
 
 	entsql "entgo.io/ent/dialect/sql"
-	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procchaintipworkerlogs"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procchainutxoworkerlogs"
 )
@@ -686,79 +686,3 @@ func dbUpsertBusinessSettlementEntTx(ctx context.Context, tx EntWriteRoot, e any
 	return fmt.Errorf("business settlement not available after Group 8 cleanup")
 }
 
-// Group 8: settlement structs and functions removed, stubs for compilation
-type businessSettlementOutcomeEntry struct {
-	OrderID           string
-	SettlementID      string
-	BusinessStatus    string
-	SettlementStatus  string
-	SettlementMethod  string
-	TargetType        string
-	TargetID          string
-	ErrorMessage      string
-	SettlementPayload map[string]any
-	UpdatedAtUnix     int64
-}
-
-type businessSettlementClaimResult struct {
-	Status string
-}
-
-func dbGetBusinessSettlementByBusinessID(ctx context.Context, store *clientDB, businessID string) (any, error) {
-	return nil, fmt.Errorf("business settlement lookup not available after Group 8 cleanup")
-}
-
-func dbGetPoolAllocationIDByAllocationID(ctx context.Context, store *clientDB, allocationID string) (int64, error) {
-	return 0, fmt.Errorf("pool allocation lookup not available after Group 8 cleanup")
-}
-
-func dbUpdateBusinessSettlementStatus(ctx context.Context, store *clientDB, settlementID string, status string, errorMsg string) error {
-	return fmt.Errorf("business settlement status update not available after Group 8 cleanup")
-}
-
-func dbUpdateBusinessSettlementTarget(ctx context.Context, store *clientDB, settlementID string, targetType string, targetValue string) error {
-	return fmt.Errorf("business settlement target update not available after Group 8 cleanup")
-}
-
-func dbUpdateBusinessSettlementOutcomeEntTx(ctx context.Context, tx EntWriteRoot, e businessSettlementOutcomeEntry) error {
-	return fmt.Errorf("business settlement outcome update not available after Group 8 cleanup")
-}
-
-type chainPaymentEntry struct {
-	ChannelID            string
-	State                string
-	Status               string
-	TxID                 string
-	TxHex                string
-	Note                 string
-	PaymentSubType       string
-	WalletInputSatoshi   int64
-	WalletOutputSatoshi  int64
-	NetAmountSatoshi     int64
-	OccurredAtUnix       int64
-	SubmittedAtUnix      int64
-	WalletObservedAtUnix int64
-	FromPartyID          string
-	ToPartyID            string
-	Payload              map[string]any
-}
-
-func dbUpsertChainChannelWithSettlementPaymentAttempt(ctx context.Context, tx any, e chainPaymentEntry, scene string, subType string, note string) (string, int64, error) {
-	return "", 0, fmt.Errorf("chain channel with settlement payment attempt not available after Group 8 cleanup")
-}
-
-func dbAppendBSVConsumptionsForSettlementPaymentAttemptEntTx(ctx context.Context, tx EntWriteRoot, settlementPaymentAttemptID int64, items []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
-	return fmt.Errorf("bsv consumption append not available after Group 8 cleanup")
-}
-
-func dbWalletUTXOValueConn(ctx context.Context, conn EntWriteRoot, utxoID string) (int64, bool, error) {
-	return 0, false, fmt.Errorf("wallet utxo value lookup not available after Group 8 cleanup")
-}
-
-func claimBusinessSettlementExecutionTx(ctx context.Context, store *clientDB, businessID string) (businessSettlementClaimResult, bool, error) {
-	return businessSettlementClaimResult{Status: "unavailable"}, false, fmt.Errorf("business settlement execution not available after Group 8 cleanup")
-}
-
-func GetBusinessSettlementChainTxID(ctx context.Context, store *clientDB, settlement any) (string, error) {
-	return "", fmt.Errorf("business settlement chain txid lookup not available after Group 8 cleanup")
-}
