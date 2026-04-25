@@ -48,6 +48,17 @@ type ManagedJSONRequest = {
   timeout_ms?: number;
 };
 
+type ManagedWalletSummaryEnvelopeError = {
+  code?: string;
+  message?: string;
+};
+
+type ManagedWalletSummaryEnvelope<T> = {
+  status: string;
+  data?: T;
+  error?: ManagedWalletSummaryEnvelopeError | string | null;
+};
+
 type StaticUploadRequest = {
   filePath: string;
   fileName?: string;
@@ -264,6 +275,93 @@ export class ManagedClientSupervisor extends EventEmitter {
       buildJSONRequestInit(request.method, request.body, request.headers),
       Number(request.timeout_ms || 0)
     );
+  }
+
+  async requestManagedWalletSummaryJSON<T>(request: ManagedJSONRequest): Promise<T> {
+    await this.ensureReachable();
+    const pathname = request.pathname;
+    const target = `${this.launch.apiBase}${pathname}`;
+    const method = String(request.method || "GET");
+    const timeoutMs = Number(request.timeout_ms || 0) || 3_000;
+    debugLogger.log("supervisor.http", "request", {
+      method,
+      url: target,
+      timeout_ms: timeoutMs
+    });
+    const response = await fetch(target, {
+      ...buildJSONRequestInit(request.method, request.body, request.headers),
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    const text = (await response.text()).trim();
+    let payload: ManagedWalletSummaryEnvelope<T> | null = null;
+    if (text !== "") {
+      try {
+        payload = JSON.parse(text) as ManagedWalletSummaryEnvelope<T>;
+      } catch {
+        payload = null;
+      }
+    }
+    if (payload && typeof payload === "object") {
+      if (String(payload.status || "") === "ok") {
+        if (!Object.prototype.hasOwnProperty.call(payload, "data")) {
+          debugLogger.log("supervisor.http", "response_error", {
+            method,
+            url: target,
+            status: response.status,
+            body: text
+          });
+          throw new Error("invalid status envelope");
+        }
+        if (!response.ok) {
+          debugLogger.log("supervisor.http", "response_error", {
+            method,
+            url: target,
+            status: response.status,
+            body: text
+          });
+          throw new Error(normalizeManagedHTTPError(text, response.status));
+        }
+        debugLogger.log("supervisor.http", "response_ok", {
+          method,
+          url: target,
+          status: response.status
+        });
+        return payload.data as T;
+      }
+      if (String(payload.status || "") === "error") {
+        const code = typeof payload.error === "object" && payload.error !== null && !Array.isArray(payload.error)
+          ? String(payload.error.code || "").trim()
+          : "";
+        const message = typeof payload.error === "object" && payload.error !== null && !Array.isArray(payload.error)
+          ? String(payload.error.message || "").trim()
+          : String(payload.error || "").trim();
+        const errorText = code && message ? `${code}: ${message}` : (message || code || `request failed: ${response.status}`);
+        debugLogger.log("supervisor.http", "response_error", {
+          method,
+          url: target,
+          status: response.status,
+          code,
+          body: text
+        });
+        throw new Error(errorText);
+      }
+    }
+    if (!response.ok) {
+      debugLogger.log("supervisor.http", "response_error", {
+        method,
+        url: target,
+        status: response.status,
+        body: text
+      });
+      throw new Error(normalizeManagedHTTPError(text, response.status));
+    }
+    debugLogger.log("supervisor.http", "response_error", {
+      method,
+      url: target,
+      status: response.status,
+      body: text
+    });
+    throw new Error("invalid status envelope");
   }
 
   async uploadStaticFile<T>(request: StaticUploadRequest): Promise<T> {

@@ -135,7 +135,7 @@ export class ElectronE2EController {
         return;
       }
       if (method === "GET" && url.pathname === "/e2e/wallet-summary") {
-        const summary = await this.supervisor.requestManagedJSON<Record<string, unknown>>({
+        const summary = await this.supervisor.requestManagedWalletSummaryJSON<Record<string, unknown>>({
           method: "GET",
           pathname: "/api/v1/wallet/summary",
           timeout_ms: 5_000

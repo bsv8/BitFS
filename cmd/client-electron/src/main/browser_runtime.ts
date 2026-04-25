@@ -90,6 +90,17 @@ type GetFileByHashEnvelope<T> = {
   data: T;
 };
 
+type StatusDataEnvelopeError = {
+  code?: string;
+  message?: string;
+};
+
+type StatusDataEnvelope<T> = {
+  status: string;
+  data?: T;
+  error?: StatusDataEnvelopeError | string | null;
+};
+
 type DownloadQuoteItem = {
   seller_pubkey_hex?: string;
   seed_price_sat?: number;
@@ -867,14 +878,14 @@ export class BitfsBrowserRuntime extends EventEmitter {
     debugLogger.log("runtime", "get_wallet_summary", {
       trace_id: this.currentTraceID
     });
-    return this.fetchJSON<Record<string, unknown>>("/api/v1/wallet/summary");
+    return this.fetchStatusDataJSON<Record<string, unknown>>("/api/v1/wallet/summary");
   }
 
   async getPublicWalletBalance(): Promise<BitfsPublicWalletBalance> {
     debugLogger.log("runtime", "get_public_wallet_balance", {
       trace_id: this.currentTraceID
     });
-    const summary = await this.fetchJSON<Record<string, unknown>>("/api/v1/wallet/summary");
+    const summary = await this.getWalletSummary();
     // 设计说明：
     // - 公开余额接口只表达“当前最新公开余额”，不把“本轮同步是否刚跑完”这类内部判定暴露给页面；
     // - 因此优先读取本地钱包投影里的 plain BSV 余额，避免首页首次进入先看到 0。
@@ -892,7 +903,7 @@ export class BitfsBrowserRuntime extends EventEmitter {
     });
     const [info, summary] = await Promise.all([
       this.fetchJSON<Record<string, unknown>>("/api/v1/info"),
-      this.fetchJSON<Record<string, unknown>>("/api/v1/wallet/summary")
+      this.getWalletSummary()
     ]);
     const pubkeyHex = normalizePubkeyHex(readStringField(info, "pubkey_hex", "client_pubkey_hex"));
     const walletAddress = readStringField(summary, "wallet_address");
@@ -1760,6 +1771,102 @@ export class BitfsBrowserRuntime extends EventEmitter {
       throw new Error(text || `request failed: ${response.status}`);
     }
     return await response.json() as T;
+  }
+
+  private async fetchStatusDataJSON<T>(pathOrURL: string, init?: RequestInit): Promise<T> {
+    const target = pathOrURL.startsWith("http://") || pathOrURL.startsWith("https://")
+      ? pathOrURL
+      : `${this.clientAPIBase}${pathOrURL}`;
+    const method = String(init?.method || "GET");
+    debugLogger.log("runtime.http", "request", {
+      method,
+      url: target,
+      trace_id: this.currentTraceID
+    });
+    const response = await fetch(target, init);
+    const text = await response.text();
+    const raw = text.trim();
+    let payload: StatusDataEnvelope<T> | null = null;
+    if (raw !== "") {
+      try {
+        payload = JSON.parse(raw) as StatusDataEnvelope<T>;
+      } catch {
+        payload = null;
+      }
+    }
+    if (payload && typeof payload === "object") {
+      if (String(payload.status || "") === "ok") {
+        if (!Object.prototype.hasOwnProperty.call(payload, "data")) {
+          this.lastError = "invalid status envelope";
+          debugLogger.log("runtime.http", "response_error", {
+            method,
+            url: target,
+            status: response.status,
+            body: raw,
+            trace_id: this.currentTraceID
+          });
+          throw new Error("invalid status envelope");
+        }
+        if (!response.ok) {
+          this.lastError = raw || `request failed: ${response.status}`;
+          debugLogger.log("runtime.http", "response_error", {
+            method,
+            url: target,
+            status: response.status,
+            body: raw,
+            trace_id: this.currentTraceID
+          });
+          throw new Error(raw || `request failed: ${response.status}`);
+        }
+        this.lastError = "";
+        debugLogger.log("runtime.http", "response_ok", {
+          method,
+          url: target,
+          status: response.status,
+          trace_id: this.currentTraceID
+        });
+        return payload.data as T;
+      }
+      if (String(payload.status || "") === "error") {
+        const code = typeof payload.error === "object" && payload.error !== null && !Array.isArray(payload.error)
+          ? String(payload.error.code || "").trim()
+          : "";
+        const message = typeof payload.error === "object" && payload.error !== null && !Array.isArray(payload.error)
+          ? String(payload.error.message || "").trim()
+          : String(payload.error || "").trim();
+        const errorText = code && message ? `${code}: ${message}` : (message || code || `request failed: ${response.status}`);
+        this.lastError = errorText;
+        debugLogger.log("runtime.http", "response_error", {
+          method,
+          url: target,
+          status: response.status,
+          code,
+          body: raw,
+          trace_id: this.currentTraceID
+        });
+        throw new Error(errorText);
+      }
+    }
+    if (!response.ok) {
+      this.lastError = raw || `request failed: ${response.status}`;
+      debugLogger.log("runtime.http", "response_error", {
+        method,
+        url: target,
+        status: response.status,
+        body: raw,
+        trace_id: this.currentTraceID
+      });
+      throw new Error(raw || `request failed: ${response.status}`);
+    }
+    this.lastError = raw === "" ? "" : raw;
+    debugLogger.log("runtime.http", "response_error", {
+      method,
+      url: target,
+      status: response.status,
+      body: raw,
+      trace_id: this.currentTraceID
+    });
+    throw new Error("invalid status envelope");
   }
 
   private async fetchLatestWalletFundFlowIDSilent(): Promise<number> {

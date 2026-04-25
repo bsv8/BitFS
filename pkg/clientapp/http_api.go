@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"github.com/bsv8/BitFS/pkg/clientapp/infra/pproto"
-	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	"github.com/libp2p/go-libp2p/core/host"
 	libnetwork "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -325,6 +325,9 @@ func (s *httpAPIServer) handleInfo(w http.ResponseWriter, r *http.Request) {
 		startedAtUnix = s.startedAt.Unix()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
+		"ready":               true,
+		"phase":               "ready",
+		"message":             "runtime is ready",
 		"client_pubkey_hex":   cfg.ClientID,
 		"transport_peer_id":   s.h.ID().String(),
 		"pubkey_hex":          cfg.ClientID,
@@ -393,16 +396,16 @@ func (s *httpAPIServer) handleAdminWalletConsistency(w http.ResponseWriter, r *h
 
 func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		writeWalletSummaryEnvelopeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
 	if s == nil || httpStore(s) == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		writeWalletSummaryEnvelopeError(w, http.StatusServiceUnavailable, "RUNTIME_NOT_INITIALIZED", "runtime not initialized")
 		return
 	}
 	counters, err := dbLoadWalletSummaryCounters(r.Context(), httpStore(s))
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeWalletSummaryEnvelopeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
 	walletAddr := ""
@@ -605,7 +608,20 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 			"onchain_balance_satoshi":           onchainBal,
 		})
 	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok",
+		"data":   resp,
+	})
+}
+
+func writeWalletSummaryEnvelopeError(w http.ResponseWriter, status int, code string, message string) {
+	writeJSON(w, status, map[string]any{
+		"status": "error",
+		"error": map[string]any{
+			"code":    strings.TrimSpace(code),
+			"message": strings.TrimSpace(message),
+		},
+	})
 }
 
 func walletUTXOSyncStateStaleness(syncState walletUTXOSyncState, runtimeStartedAtUnix int64) (bool, string) {
