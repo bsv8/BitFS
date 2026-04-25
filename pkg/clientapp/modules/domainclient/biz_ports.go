@@ -14,7 +14,6 @@ type BusinessStore interface {
 	UpsertBusiness(ctx context.Context, entry BusinessEntry) error
 	UpsertBusinessSettlement(ctx context.Context, entry BusinessSettlementEntry) error
 	AppendBusinessTrigger(ctx context.Context, entry BusinessTriggerEntry) error
-	GetChainPaymentByTxID(ctx context.Context, txID string) (int64, error)
 	UpdateOrderSettlement(ctx context.Context, settlementID, status, targetType, targetID, errMsg string, updatedAtUnix int64) error
 }
 

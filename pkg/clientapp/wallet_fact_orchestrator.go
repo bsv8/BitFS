@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 )
 
 // confirmedUTXOChange 已确认 UTXO 变化（来自同步层，供 fact 层消费）
@@ -329,6 +329,8 @@ func ApplyConfirmedUTXOChanges(ctx context.Context, store *clientDB, changes []c
 			ownerPubkeyHex := strings.ToLower(strings.TrimSpace(change.WalletID))
 			ownerPubkeyHex = strings.TrimPrefix(ownerPubkeyHex, "wallet:")
 
+			// 这一步只负责把链上确认事实写进 fact。
+			// 事实表的 upsert 规则必须单调，不能被旧链视图回刷回 unspent。
 			entry := bsvUTXOEntry{
 				UTXOID:         change.UTXOID,
 				OwnerPubkeyHex: ownerPubkeyHex,
@@ -390,10 +392,21 @@ func backfillFactSpentFromWalletUTXO(ctx context.Context, db interface {
 		return fmt.Errorf("wallet_id and address are required")
 	}
 	startedAt := time.Now()
-	// 先拿“本轮刚变化为 spent”的明细，再按 utxo_id 定点回填，避免大范围更新导致锁等待。
-	rows, err := QueryContext(ctx, db, `SELECT LOWER(TRIM(utxo_id)), LOWER(TRIM(COALESCE(spent_txid,'')))
-FROM wallet_utxo
-WHERE wallet_id=? AND address=? AND state='spent' AND updated_at_unix=?`, walletID, address, updatedAt)
+	// 先拿 wallet 里已经 spent，但 fact 里还没完全收口的那部分，再按 utxo_id 定点回填。
+	// 这里不仅补 utxo_state='spent'，也补 fact 已 spent 但 spent_by_txid 仍为空的行。
+	// 这样不会依赖“刚好同一秒”的更新时间戳，也不会大范围扫表。
+	rows, err := QueryContext(ctx, db, `SELECT
+		LOWER(TRIM(w.utxo_id)),
+		LOWER(TRIM(COALESCE(w.spent_txid,''))),
+		LOWER(TRIM(COALESCE(f.utxo_state,''))),
+		LOWER(TRIM(COALESCE(f.spent_by_txid,'')))
+FROM wallet_utxo w
+LEFT JOIN fact_bsv_utxos f ON f.utxo_id=LOWER(TRIM(w.utxo_id))
+WHERE w.wallet_id=? AND w.address=? AND w.state='spent' AND (
+	f.utxo_id IS NULL
+	OR f.utxo_state<>'spent'
+	OR (f.utxo_state='spent' AND COALESCE(f.spent_by_txid,'')='' AND COALESCE(w.spent_txid,'')<>'')
+)`, walletID, address)
 	if err != nil {
 		return fmt.Errorf("query changed spent rows: %w", err)
 	}
@@ -403,12 +416,20 @@ WHERE wallet_id=? AND address=? AND state='spent' AND updated_at_unix=?`, wallet
 	for rows.Next() {
 		var utxoID string
 		var spentTxID string
-		if err := rows.Scan(&utxoID, &spentTxID); err != nil {
+		var factState string
+		var factSpentBy string
+		if err := rows.Scan(&utxoID, &spentTxID, &factState, &factSpentBy); err != nil {
 			return fmt.Errorf("scan changed spent rows: %w", err)
 		}
 		utxoID = strings.ToLower(strings.TrimSpace(utxoID))
 		spentTxID = strings.ToLower(strings.TrimSpace(spentTxID))
+		factState = strings.ToLower(strings.TrimSpace(factState))
+		factSpentBy = strings.ToLower(strings.TrimSpace(factSpentBy))
 		if utxoID == "" {
+			continue
+		}
+		if factState == "spent" && factSpentBy != "" && spentTxID == "" {
+			// 事实已经完整收口且 wallet 侧没有新的 spent_txid，就不做无意义回填。
 			continue
 		}
 		spentByUTXO[utxoID] = spentTxID
@@ -423,25 +444,23 @@ WHERE wallet_id=? AND address=? AND state='spent' AND updated_at_unix=?`, wallet
 		return nil
 	}
 	for utxoID, spentTxID := range spentByUTXO {
-		if strings.TrimSpace(spentTxID) == "" {
-			if _, err := ExecContext(ctx, db, `UPDATE fact_bsv_utxos
-SET utxo_state='spent',
-    spent_at_unix=CASE WHEN spent_at_unix=0 THEN ? ELSE spent_at_unix END,
-    updated_at_unix=?
-WHERE utxo_id=? AND utxo_state<>'spent'`,
-				updatedAt, updatedAt, utxoID,
-			); err != nil {
-				return fmt.Errorf("update fact spent without spent_txid by utxo_id=%s: %w", utxoID, err)
-			}
-			continue
-		}
 		if _, err := ExecContext(ctx, db, `UPDATE fact_bsv_utxos
 SET utxo_state='spent',
-    spent_by_txid=?,
-    spent_at_unix=CASE WHEN spent_at_unix=0 THEN ? ELSE spent_at_unix END,
+    spent_by_txid=CASE
+        WHEN COALESCE(spent_by_txid,'')='' AND ?<>'' THEN ?
+        ELSE spent_by_txid
+    END,
+    spent_at_unix=CASE
+        WHEN spent_at_unix=0 AND ?<>'' THEN ?
+        ELSE spent_at_unix
+    END,
     updated_at_unix=?
-WHERE utxo_id=? AND (utxo_state<>'spent' OR COALESCE(spent_by_txid,'')='')`,
-			spentTxID, updatedAt, updatedAt, utxoID,
+WHERE utxo_id=?
+  AND (
+    utxo_state<>'spent'
+    OR (utxo_state='spent' AND COALESCE(spent_by_txid,'')='' AND ?<>'')
+  )`,
+			spentTxID, spentTxID, spentTxID, updatedAt, updatedAt, utxoID, spentTxID,
 		); err != nil {
 			return fmt.Errorf("update fact spent by utxo_id=%s: %w", utxoID, err)
 		}

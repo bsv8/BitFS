@@ -2,7 +2,6 @@ package domainclient
 
 import (
 	"context"
-	"database/sql"
 	"strings"
 	"sync"
 	"testing"
@@ -14,7 +13,6 @@ import (
 type fakeBusinessStore struct {
 	createCalled     bool
 	createInput      CreateBusinessWithFrontTriggerAndPendingSettlementInput
-	settlementByTxID map[string]int64
 	settlementUpdate []struct {
 		settlementID string
 		status       string
@@ -55,23 +53,20 @@ func (s *fakeBusinessStore) AppendBusinessTrigger(context.Context, BusinessTrigg
 	return nil
 }
 
-func (s *fakeBusinessStore) GetChainPaymentByTxID(context.Context, string) (int64, error) {
-	if s.settlementByTxID != nil {
-		if id, ok := s.settlementByTxID["register_tx_id"]; ok {
-			return id, nil
-		}
-	}
-	return 0, sql.ErrNoRows
-}
-
-func (s *fakeBusinessStore) UpdateOrderSettlement(context.Context, string, string, string, string, string, int64) error {
+func (s *fakeBusinessStore) UpdateOrderSettlement(_ context.Context, settlementID, status, targetType, targetID, errMsg string, _ int64) error {
 	s.settlementUpdate = append(s.settlementUpdate, struct {
 		settlementID string
 		status       string
 		targetType   string
 		targetID     string
 		errMsg       string
-	}{})
+	}{
+		settlementID: settlementID,
+		status:       status,
+		targetType:   targetType,
+		targetID:     targetID,
+		errMsg:       errMsg,
+	})
 	return nil
 }
 
@@ -158,7 +153,7 @@ func (r resolverStub) ResolveDomainToPubkeyDirect(context.Context, string) (stri
 func TestTriggerDomainRegisterNameMainFlow(t *testing.T) {
 	t.Parallel()
 
-	store := &fakeBusinessStore{settlementByTxID: map[string]int64{"register_tx_id": 42}}
+	store := &fakeBusinessStore{}
 	rt := &fakeRuntimePorts{
 		clientID: "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		queryResp: DomainQueryResponse{
@@ -217,5 +212,33 @@ func TestTriggerDomainRegisterNameMainFlow(t *testing.T) {
 	}
 	if !strings.EqualFold(store.createInput.TargetObjectID, "movie.david") {
 		t.Fatalf("unexpected target object id: %+v", store.createInput.TargetObjectID)
+	}
+	if strings.TrimSpace(store.createInput.SettlementTargetType) != "chain_tx" {
+		t.Fatalf("unexpected settlement target type: %+v", store.createInput.SettlementTargetType)
+	}
+}
+
+func TestFinalizeDomainRegisterSettlementUsesTxIDDirectly(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeBusinessStore{}
+	if err := FinalizeDomainRegisterSettlement(context.Background(), store, "set_domain_reg_123", true, "TX123", ""); err != nil {
+		t.Fatalf("finalize settlement failed: %v", err)
+	}
+	if len(store.settlementUpdate) != 1 {
+		t.Fatalf("expected one settlement update, got %d", len(store.settlementUpdate))
+	}
+	got := store.settlementUpdate[0]
+	if got.settlementID != "set_domain_reg_123" {
+		t.Fatalf("unexpected settlement id: %q", got.settlementID)
+	}
+	if got.status != "settled" {
+		t.Fatalf("unexpected status: %q", got.status)
+	}
+	if got.targetType != "chain_tx" {
+		t.Fatalf("unexpected target type: %q", got.targetType)
+	}
+	if got.targetID != "tx123" {
+		t.Fatalf("unexpected target id: %q", got.targetID)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	sighash "github.com/bsv-blockchain/go-sdk/transaction/sighash"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	ncall "github.com/bsv8/BitFS/pkg/clientapp/infra/ncall"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp/payflow"
 	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
 	oldproto "github.com/golang/protobuf/proto"
@@ -25,6 +26,11 @@ import (
 type service struct {
 	host  moduleapi.Host
 	store Store
+}
+
+// 本地投影是支付成功后的后置动作，用来让后续选币立刻看见已花输入。
+type localBroadcastWalletTxApplier interface {
+	ApplyLocalBroadcastWalletTxBytes(ctx context.Context, rawTx []byte, trigger string) error
 }
 
 func newService(host moduleapi.Host, store Store) *service {
@@ -95,13 +101,19 @@ func (s *service) PayQuotedService(ctx context.Context, scheme string, quote []b
 	}
 
 	paidReq := ncall.CallReq{
-		To:            targetPeer,
-		Route:         request.Route,
-		ContentType:   request.ContentType,
-		Body:          request.Body,
-		PaymentScheme: ncall.PaymentSchemeChainTxV1,
+		To:             targetPeer,
+		Route:          request.Route,
+		ContentType:    request.ContentType,
+		Body:           request.Body,
+		PaymentScheme:  ncall.PaymentSchemeChainTxV1,
 		PaymentPayload: paymentPayload,
 	}
+	obs.Info("bitfs-client", "chain_tx_paid_request", map[string]any{
+		"payment_scheme":      paidReq.PaymentScheme,
+		"payment_payload_len": len(paidReq.PaymentPayload),
+		"route":               paidReq.Route,
+		"target_peer":         targetPeer,
+	})
 	var paidResp ncall.CallResp
 	gatewayPubHex := pubKeyToHex(gatewayPub)
 	if err := paymentHost.SendProto(ctx, targetPeer, request.Route, paidReq, &paidResp); err != nil {
@@ -112,6 +124,12 @@ func (s *service) PayQuotedService(ctx context.Context, scheme string, quote []b
 	}
 
 	if strings.TrimSpace(paidResp.PaymentReceiptScheme) != ncall.PaymentSchemeChainTxV1 || len(paidResp.PaymentReceipt) == 0 {
+		obs.Info("bitfs-client", "chain_tx_paid_response_missing_receipt", map[string]any{
+			"payment_receipt_scheme": strings.TrimSpace(paidResp.PaymentReceiptScheme),
+			"payment_receipt_len":    len(paidResp.PaymentReceipt),
+			"route":                  request.Route,
+			"target_peer":            targetPeer,
+		})
 		if factErr := s.recordPaymentFact(ctx, built, quoteInfo, "", request.Route, gatewayPubHex, "failed", "receipt missing"); factErr != nil {
 			return moduleapi.ServiceCallResponse{
 				OK:          false,
@@ -143,6 +161,10 @@ func (s *service) PayQuotedService(ctx context.Context, scheme string, quote []b
 		return moduleapi.ServiceCallResponse{}, nil, fmt.Errorf("payment receipt txid mismatch: expected %s, got %s", built.TxID, txid)
 	}
 
+	// 广播成功后立刻把这笔 tx 写回本地钱包投影。
+	// 这样后续连续支付不会继续拿旧 UTXO 组新 tx。
+	s.applyLocalBroadcastWalletTx(ctx, paymentHost, built.TxID, built.RawTx, request.Route)
+
 	receiptHash := computeReceiptHash(paidResp.PaymentReceipt)
 	if err := s.recordPaymentFact(ctx, built, quoteInfo, receiptHash, request.Route, gatewayPubHex, "submitted", ""); err != nil {
 		return moduleapi.ServiceCallResponse{}, nil, fmt.Errorf("record payment fact failed: %w", err)
@@ -157,6 +179,24 @@ func (s *service) PayQuotedService(ctx context.Context, scheme string, quote []b
 	}, paidResp.PaymentReceipt, nil
 }
 
+func (s *service) applyLocalBroadcastWalletTx(ctx context.Context, paymentHost moduleapi.PaymentHost, txID string, rawTx []byte, trigger string) {
+	if paymentHost == nil || len(rawTx) == 0 {
+		return
+	}
+	applier, ok := paymentHost.(localBroadcastWalletTxApplier)
+	if !ok {
+		return
+	}
+	if err := applier.ApplyLocalBroadcastWalletTxBytes(ctx, rawTx, trigger); err != nil {
+		obs.Error("bitfs-client", "chain_tx_local_projection_failed", map[string]any{
+			"route":  strings.TrimSpace(trigger),
+			"txid":   strings.ToLower(strings.TrimSpace(txID)),
+			"error":  err.Error(),
+			"reason": "local wallet projection is best-effort after successful broadcast",
+		})
+	}
+}
+
 func (s *service) recordPaymentFact(ctx context.Context, built builtChainTx, quoteInfo payflow.ServiceQuote, receiptHash string, route string, gatewayPubHex string, state, errMsg string) error {
 	if s.store == nil {
 		return fmt.Errorf("store not available")
@@ -168,7 +208,7 @@ func (s *service) recordPaymentFact(ctx context.Context, built builtChainTx, quo
 	now := time.Now().Unix()
 	refID := fmt.Sprintf("ctp_%d", now)
 	payment := PaymentRow{
-		PaymentRefID:   refID,
+		PaymentRefID:  refID,
 		TargetPeerHex: gatewayPubHex,
 		AmountSatoshi: quoteInfo.ChargeAmountSatoshi,
 		State:         state,
@@ -196,7 +236,9 @@ type builtChainTx struct {
 }
 
 func (s *service) getGatewayPubkey(ctx context.Context, peerID peer.ID) (*ec.PublicKey, error) {
-	peerHost, ok := s.host.(interface{ GetGatewayPubkey(peer.ID) (*ec.PublicKey, error) })
+	peerHost, ok := s.host.(interface {
+		GetGatewayPubkey(peer.ID) (*ec.PublicKey, error)
+	})
 	if !ok {
 		return nil, fmt.Errorf("host does not implement GetGatewayPubkey")
 	}

@@ -523,9 +523,9 @@ func dbAppendFinBusinessRowTx(ctx context.Context, tx EntWriteRoot, e finBusines
 		return fmt.Errorf("tx is nil")
 	}
 	obs.Info(ServiceName, "fin_business_row_compat_noop", map[string]any{
-		"order_id":       strings.TrimSpace(e.OrderID),
-		"settlement_id":  strings.TrimSpace(e.SettlementID),
-		"note":           "order_settlements schema removed; compatibility layer is now a no-op",
+		"order_id":      strings.TrimSpace(e.OrderID),
+		"settlement_id": strings.TrimSpace(e.SettlementID),
+		"note":          "order_settlements schema removed; compatibility layer is now a no-op",
 	})
 	return nil
 }
@@ -692,11 +692,6 @@ func dbRecordAccounting(ctx context.Context, store *clientDB, fn func(EntWriteRo
 // recordChainPaymentAccountingAfterBroadcast Group 8: 旧 chain payment 账务记录已删除，新支付走 MultisigPool 模块
 func recordChainPaymentAccountingAfterBroadcast(ctx context.Context, store any, rt *Runtime, txHex string, txID string, accountingScene string, accountingSubType string, fromPartyID string, toPartyID string) error {
 	return nil
-}
-
-// dbGetChainPaymentByTxID Group 8: fact_settlement_channel_chain_* schema 已删除，返回0
-func dbGetChainPaymentByTxID(ctx context.Context, store *clientDB, txID string) (int64, error) {
-	return 0, fmt.Errorf("chain payment lookup not available after Group 8 cleanup")
 }
 
 // dbUpsertBusinessSettlementEntTx Group 8: order_settlements schema 已删除

@@ -422,10 +422,29 @@ func (b domainClientBackend) AppendBusinessTrigger(ctx context.Context, entry do
 	})
 }
 
-func (b domainClientBackend) GetChainPaymentByTxID(ctx context.Context, txID string) (int64, error) {
-	return dbGetChainPaymentByTxID(ctx, b.store, txID)
+func (b domainClientBackend) UpdateOrderSettlement(ctx context.Context, settlementID, status, targetType, targetID, errMsg string, updatedAtUnix int64) error {
+	frontOrderID, _, err := domainRegisterOrderIDsFromSettlementID(settlementID)
+	if err != nil {
+		return err
+	}
+	if err := dbUpdateFrontOrderSettlement(ctx, b.store, frontOrderID, status, targetType, targetID, errMsg, updatedAtUnix); err != nil {
+		return err
+	}
+	return nil
 }
 
-func (b domainClientBackend) UpdateOrderSettlement(ctx context.Context, settlementID, status, targetType, targetID, errMsg string, updatedAtUnix int64) error {
-	return nil
+func domainRegisterOrderIDsFromSettlementID(settlementID string) (string, string, error) {
+	settlementID = strings.TrimSpace(settlementID)
+	if settlementID == "" {
+		return "", "", fmt.Errorf("settlement_id is required")
+	}
+	const settlementPrefix = "set_domain_reg_"
+	if !strings.HasPrefix(settlementID, settlementPrefix) {
+		return "", "", fmt.Errorf("unsupported settlement_id: %s", settlementID)
+	}
+	suffix := strings.TrimPrefix(settlementID, settlementPrefix)
+	if strings.TrimSpace(suffix) == "" {
+		return "", "", fmt.Errorf("unsupported settlement_id: %s", settlementID)
+	}
+	return "fo_domain_reg_" + suffix, "biz_domain_reg_" + suffix, nil
 }

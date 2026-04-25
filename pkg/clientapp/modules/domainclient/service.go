@@ -501,7 +501,7 @@ func CreateDomainRegisterBusinessChain(ctx context.Context, store BusinessStore,
 		},
 		SettlementID:         settlementID,
 		SettlementMethod:     string(SettlementMethodChain),
-		SettlementTargetType: "chain_quote_pay",
+		SettlementTargetType: "chain_tx",
 		SettlementTargetID:   "",
 		SettlementPayload: map[string]any{
 			"name":                name,
@@ -523,19 +523,16 @@ func FinalizeDomainRegisterSettlement(ctx context.Context, store BusinessStore, 
 		return moduleDisabledErr()
 	}
 	status := "settled"
+	targetType := "chain_tx"
 	targetID := ""
 	if success {
 		txID = strings.ToLower(strings.TrimSpace(txID))
 		if txID == "" {
 			return NewError(CodeBadRequest, "txid is required for successful settlement")
 		}
-		chainPaymentID, err := store.GetChainPaymentByTxID(ctx, txID)
-		if err != nil {
-			return fmt.Errorf("find fact_settlement_channel_chain_quote_pay.id for txid=%s: %w", txID, err)
-		}
-		targetID = fmt.Sprintf("%d", chainPaymentID)
+		targetID = txID
 	} else {
 		status = "failed"
 	}
-	return store.UpdateOrderSettlement(ctx, settlementID, status, "chain_quote_pay", targetID, strings.TrimSpace(errMsg), time.Now().Unix())
+	return store.UpdateOrderSettlement(ctx, settlementID, status, targetType, targetID, strings.TrimSpace(errMsg), time.Now().Unix())
 }

@@ -13,13 +13,13 @@ import (
 	tx "github.com/bsv-blockchain/go-sdk/transaction"
 	sighash "github.com/bsv-blockchain/go-sdk/transaction/sighash"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
-	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
 	ncall "github.com/bsv8/BitFS/pkg/clientapp/infra/ncall"
-	"github.com/bsv8/BitFS/pkg/clientapp/modules/gatewayclient"
-	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
 	"github.com/bsv8/BitFS/pkg/clientapp/infra/pproto"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
+	"github.com/bsv8/BitFS/pkg/clientapp/modules/gatewayclient"
 	"github.com/bsv8/BitFS/pkg/clientapp/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
 	kmlibs "github.com/bsv8/MultisigPool/pkg/libs"
 	te "github.com/bsv8/MultisigPool/pkg/triple_endpoint"
 	crypto "github.com/libp2p/go-libp2p/core/crypto"
@@ -127,7 +127,7 @@ func TriggerBizOrderPayBSV(ctx context.Context, store *clientDB, rt *Runtime, re
 
 			SettlementID:         settlementID,
 			SettlementMethod:     SettlementMethodChain,
-			SettlementTargetType: "chain_quote_pay",
+			SettlementTargetType: "chain_tx",
 			SettlementTargetID:   "",
 			SettlementPayload:    payload,
 		}); err != nil {
@@ -189,13 +189,13 @@ type LivePlanResult struct {
 }
 
 type livePlanDispatchResult struct {
-	Accepted    bool
-	Status      string
-	ErrorCode   string
+	Accepted     bool
+	Status       string
+	ErrorCode    string
 	ErrorMessage string
-	StateBefore string
-	StateAfter  string
-	Data        map[string]any
+	StateBefore  string
+	StateAfter   string
+	Data         map[string]any
 }
 
 // TriggerLivePlan 触发直播价速策略命令。
@@ -1485,8 +1485,6 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer tr
 		obs.Error(ServiceName, "evt_trigger_direct_transfer_pool_pay_accounting_failed", map[string]any{"error": err.Error(), "session_id": session.SessionID})
 		return directTransferPoolPayResult{}, err
 	}
-
-
 
 	obs.Business(ServiceName, "evt_trigger_direct_transfer_pool_pay_end", map[string]any{
 		"job_id":         strings.TrimSpace(session.JobID),

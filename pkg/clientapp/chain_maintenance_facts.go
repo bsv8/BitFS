@@ -56,6 +56,8 @@ func getWalletBalanceFromDB(ctx context.Context, store *clientDB, rt *Runtime) (
 	walletID := walletIDByAddress(addr)
 
 	// Step 5：fact 优先读余额（严格口径：查询成功就返回，含 0 值）
+	// 这里读的是 fact 口径，所以 wallet_fact_orchestrator 和 dbUpsertBSVUTXODB
+	// 必须保证状态单调一致，不能让旧链视图把 spent 回刷成 unspent。
 	bal, err := dbLoadWalletAssetBalanceFact(ctx, store, walletID, "BSV", "")
 	if err == nil {
 		return addr, uint64(bal.Remaining), nil

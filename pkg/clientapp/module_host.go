@@ -14,9 +14,9 @@ import (
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv8/BitFS/pkg/clientapp/infra/ncall"
 	contractmessage "github.com/bsv8/BitFS/pkg/clientapp/infra/ncall"
-	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
 	"github.com/bsv8/BitFS/pkg/clientapp/infra/pproto"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
+	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
 	"github.com/bsv8/BitFS/pkg/clientapp/seedstorage"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -577,11 +577,43 @@ func (h *moduleHost) SendProto(ctx context.Context, peerStr string, protocolID s
 	if err != nil {
 		return fmt.Errorf("decode peer id failed: %w", err)
 	}
-	sec := gwSec(h.rt.TransferRPCTrace())
+	// 这里不是固定“发给 gateway”，而是把已付费的业务请求发给对应服务端。
+	// domain 路由要用 domain 壳，broadcast 路由要用 gateway 壳，避免 envelope 域名写错。
+	sec := paidProtoSecurityForRoute(h.rt, protocolID)
 	if err := pproto.CallProto[ncall.CallReq, ncall.CallResp](ctx, h.rt.Host, peerID, protocol.ID(protocolID), sec, in.(ncall.CallReq), out.(*ncall.CallResp)); err != nil {
 		return fmt.Errorf("send proto failed: %w", err)
 	}
 	return nil
+}
+
+// ApplyLocalBroadcastWalletTxBytes 把已成功广播的钱包交易写回本地投影。
+// 这是支付层的后置动作，只负责把“已花/新找零”同步进本地钱包视图。
+func (h *moduleHost) ApplyLocalBroadcastWalletTxBytes(ctx context.Context, rawTx []byte, trigger string) error {
+	if h == nil || h.rt == nil {
+		return fmt.Errorf("runtime not initialized")
+	}
+	store, ok := h.store.(*clientDB)
+	if !ok || store == nil {
+		return fmt.Errorf("client store not available")
+	}
+	return applyLocalBroadcastWalletTxBytes(ctx, store, h.rt, rawTx, trigger)
+}
+
+func paidProtoSecurityForRoute(rt *Runtime, protocolID string) pproto.SecurityConfig {
+	trace := pproto.TraceSink(nil)
+	if rt != nil {
+		trace = rt.TransferRPCTrace()
+	}
+	switch {
+	case strings.Contains(protocolID, "/domain/"):
+		return domainSec(trace)
+	case strings.Contains(protocolID, "/arbiter/"):
+		return arbSec(trace)
+	case strings.Contains(protocolID, "/broadcast/"):
+		fallthrough
+	default:
+		return gwSec(trace)
+	}
 }
 
 func (h *moduleHost) WalletUTXOs(ctx context.Context) ([]poolcore.UTXO, error) {
@@ -968,10 +1000,10 @@ func moduleHTTPHandlerForGate(handler moduleapi.HTTPHandler, gate *moduleRuntime
 	}
 }
 
-//窄能力方法：获取 module 专属的 store。
-//设计说明：
-//- 不通过 Host 接口暴露，避免所有 module 都看到所有 store；
-//- 只给需要专属 store 的 module 用类型断言获取。
+// 窄能力方法：获取 module 专属的 store。
+// 设计说明：
+// - 不通过 Host 接口暴露，避免所有 module 都看到所有 store；
+// - 只给需要专属 store 的 module 用类型断言获取。
 func (h *moduleHost) GetModuleStore(name string) any {
 	if h == nil || h.rt == nil {
 		return nil

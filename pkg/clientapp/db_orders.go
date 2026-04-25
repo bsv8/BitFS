@@ -174,3 +174,63 @@ func dbUpdateFrontOrderStatus(ctx context.Context, store *clientDB, frontOrderID
 		return nil
 	})
 }
+
+// dbUpdateFrontOrderSettlement 回写前台业务单的结算结果。
+// 设计说明：
+// - 这里不再追旧 payment id，直接把链上 txid 当成最终事实；
+// - 结算信息写回 payload，方便后续排查时直接看单条记录；
+// - 如果前台单不存在，直接报错，避免默默吞掉结算结果。
+func dbUpdateFrontOrderSettlement(ctx context.Context, store *clientDB, frontOrderID string, status string, targetType string, targetID string, errMsg string, updatedAtUnix int64) error {
+	if store == nil {
+		return fmt.Errorf("client db is nil")
+	}
+	frontOrderID = strings.TrimSpace(frontOrderID)
+	if frontOrderID == "" {
+		return fmt.Errorf("order_id is required")
+	}
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return fmt.Errorf("status is required")
+	}
+	targetType = strings.ToLower(strings.TrimSpace(targetType))
+	targetID = strings.TrimSpace(targetID)
+	errMsg = strings.TrimSpace(errMsg)
+	if updatedAtUnix <= 0 {
+		updatedAtUnix = time.Now().Unix()
+	}
+	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
+		existing, err := tx.Orders.Query().
+			Where(orders.OrderIDEQ(frontOrderID)).
+			Only(ctx)
+		if err != nil {
+			return err
+		}
+		payload := map[string]any{}
+		if raw := strings.TrimSpace(existing.PayloadJSON); raw != "" {
+			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+				payload = map[string]any{
+					"raw_payload_json": raw,
+				}
+			}
+		}
+		payload["settlement_status"] = status
+		payload["settlement_target_type"] = targetType
+		payload["settlement_target_id"] = targetID
+		payload["settlement_error_message"] = errMsg
+		payload["settlement_updated_at_unix"] = updatedAtUnix
+		note := existing.Note
+		if errMsg != "" {
+			if strings.TrimSpace(note) != "" {
+				note = strings.TrimSpace(note) + " | "
+			}
+			note += "settlement_error=" + errMsg
+		}
+		_, err = existing.Update().
+			SetStatus(status).
+			SetUpdatedAtUnix(updatedAtUnix).
+			SetNote(note).
+			SetPayloadJSON(mustJSONString(payload)).
+			Save(ctx)
+		return err
+	})
+}

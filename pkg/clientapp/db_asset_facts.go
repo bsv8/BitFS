@@ -9,12 +9,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factbsvutxos"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/factsettlementrecords"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/facttokencarrierlinks"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/facttokenlots"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 )
 
 // ============================================================
@@ -464,6 +464,8 @@ func dbUpsertBSVUTXODB(ctx context.Context, db interface {
 		currentUTXOState      string
 		currentCarrierType    string
 		currentSpentByTxid    string
+		currentCreatedAt      int64
+		currentUpdatedAt      int64
 		currentSpentAt        int64
 		currentNote           string
 		currentPayloadJSON    string
@@ -477,12 +479,16 @@ func dbUpsertBSVUTXODB(ctx context.Context, db interface {
 		&currentUTXOState,
 		&currentCarrierType,
 		&currentSpentByTxid,
-		new(int64),
-		new(int64),
+		&currentCreatedAt,
+		&currentUpdatedAt,
 		&currentSpentAt,
 		&currentNote,
 		&currentPayloadJSON,
 	); err == nil {
+		// 状态只能单调前进，不能让旧链视图把本地已经确认的 spent 再冲回 unspent。
+		if currentUTXOState == "spent" && utxoState == "unspent" {
+			return nil
+		}
 		if currentOwnerPubkeyHex == ownerPubkey &&
 			strings.TrimSpace(currentAddress) == strings.TrimSpace(e.Address) &&
 			currentTxid == txid &&
@@ -496,6 +502,57 @@ func dbUpsertBSVUTXODB(ctx context.Context, db interface {
 			currentPayloadJSON == mustJSONString(e.Payload) {
 			return nil
 		}
+		nextSpentBy := spentByTxid
+		if strings.TrimSpace(nextSpentBy) == "" {
+			nextSpentBy = strings.TrimSpace(currentSpentByTxid)
+		}
+		nextSpentAt := spentAt
+		if nextSpentAt <= 0 {
+			nextSpentAt = currentSpentAt
+		}
+		nextUpdatedAt := updatedAt
+		if currentUpdatedAt > nextUpdatedAt {
+			nextUpdatedAt = currentUpdatedAt
+		}
+		nextUTXOState := utxoState
+		if currentUTXOState == "spent" {
+			nextUTXOState = "spent"
+		}
+		_, err = ExecContext(ctx, db,
+			`UPDATE fact_bsv_utxos
+				SET owner_pubkey_hex=?,
+				    address=?,
+				    txid=?,
+				    vout=?,
+				    value_satoshi=?,
+				    utxo_state=?,
+				    carrier_type=?,
+				    spent_by_txid=?,
+				    created_at_unix=?,
+				    updated_at_unix=?,
+				    spent_at_unix=?,
+				    note=?,
+				    payload_json=?
+			  WHERE utxo_id=?`,
+			ownerPubkey,
+			strings.TrimSpace(e.Address),
+			txid,
+			e.Vout,
+			e.ValueSatoshi,
+			nextUTXOState,
+			carrierType,
+			nextSpentBy,
+			currentCreatedAt,
+			nextUpdatedAt,
+			nextSpentAt,
+			strings.TrimSpace(e.Note),
+			mustJSONString(e.Payload),
+			utxoID,
+		)
+		if err == nil && nextUTXOState == "spent" && strings.TrimSpace(nextSpentBy) != "" {
+			emitFactBSVSpentAppliedEventConn(ctx, db, strings.TrimSpace(e.Address), spentByTxid)
+		}
+		return err
 	}
 	_, err := ExecContext(ctx, db,
 		`INSERT INTO fact_bsv_utxos(
