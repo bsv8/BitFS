@@ -3,15 +3,33 @@ package clientapp
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
+	"strings"
 	"sync"
 
+	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	"github.com/bsv8/BitFS/pkg/clientapp/infra/ncall"
+	domainwire "github.com/bsv8/BitFS/pkg/clientapp/modules/domain/domainwire"
 	domainclient "github.com/bsv8/BitFS/pkg/clientapp/modules/domainclient"
+	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
 type domainClientBackend struct {
 	rt    *Runtime
 	store *clientDB
+}
+
+// NewDomainClientBackend 组装 domainclient 需要的最小后端能力。
+// 设计说明：
+// - 只把已经准备好的 runtime 和 store 绑成能力，不额外暴露 db 或聚合结构体；
+// - 受管控制面只在这里拿能力，避免重复拼装业务后端。
+func NewDomainClientBackend(rt *Runtime, store *clientDB) domainclient.Backend {
+	if rt == nil || store == nil {
+		return nil
+	}
+	return domainClientBackend{rt: rt, store: store}
 }
 
 func (h *moduleHost) DomainClientBackend() domainclient.Backend {
@@ -169,8 +187,8 @@ func (b domainClientBackend) WalletAllocMutex() sync.Locker {
 	return b.rt.walletAllocMutex()
 }
 
-func (b domainClientBackend) ResolveDomainToPubkey(ctx context.Context, domain string) (string, error) {
-	return ResolveDomainToPubkey(ctx, b.rt, domain)
+func (b domainClientBackend) ResolveDomainToPubkeyDirect(ctx context.Context, domain string) (string, error) {
+	return resolveDomainToPubkeyByCandidates(ctx, b.store, b.rt, domain)
 }
 
 func (b domainClientBackend) GetFrontOrderSettlementSummary(ctx context.Context, frontOrderID string) (domainclient.FrontOrderSettlementSummary, error) {
@@ -232,6 +250,113 @@ func (b domainClientBackend) CreateBusinessWithFrontTriggerAndPendingSettlement(
 		SettlementTargetID:   input.SettlementTargetID,
 		SettlementPayload:    input.SettlementPayload,
 	})
+}
+
+// resolveDomainToPubkeyByCandidates 直接向候选 resolver peer 询问域名解析结果。
+//
+// 设计说明：
+// - 这条链不再回到 root 的 provider 调度，避免 provider 自调环；
+// - 候选 peer 来自运行配置里的 domain resolver 列表，按顺序逐个尝试；
+// - 只要有一个 peer 真正返回解析结果，就直接结束。
+func resolveDomainToPubkeyByCandidates(ctx context.Context, store *clientDB, rt *Runtime, rawDomain string) (string, error) {
+	if ctx == nil {
+		return "", domainclient.NewError(domainclient.CodeBadRequest, "ctx is required")
+	}
+	if ctx.Err() != nil {
+		return "", domainclient.NewError(domainclient.CodeRequestCanceled, ctx.Err().Error())
+	}
+	if rt == nil || rt.Host == nil {
+		return "", domainclient.NewError(domainclient.CodeDomainResolverUnavailable, "domain resolver is unavailable")
+	}
+
+	domain, err := domainwire.NormalizeName(rawDomain)
+	if err != nil {
+		return "", domainclient.NewError(domainclient.CodeBadRequest, err.Error())
+	}
+
+	candidates := domainResolveCandidatePubkeys(rt)
+	if len(candidates) == 0 {
+		return "", domainclient.NewError(domainclient.CodeDomainResolverUnavailable, "domain resolver is unavailable")
+	}
+
+	for _, resolverPubkeyHex := range candidates {
+		pubkeyHex, err := callDomainResolveCandidate(ctx, store, rt, resolverPubkeyHex, domain)
+		if err != nil {
+			if ctx.Err() != nil {
+				return "", domainclient.NewError(domainclient.CodeRequestCanceled, ctx.Err().Error())
+			}
+			continue
+		}
+		pubkeyHex = strings.ToLower(strings.TrimSpace(pubkeyHex))
+		if pubkeyHex == "" {
+			continue
+		}
+		if normalizedPubkeyHex, err := normalizeCompressedPubKeyHex(pubkeyHex); err == nil {
+			return normalizedPubkeyHex, nil
+		}
+	}
+
+	return "", domainclient.NewError(domainclient.CodeDomainNotResolved, "domain not resolved")
+}
+
+func domainResolveCandidatePubkeys(rt *Runtime) []string {
+	if rt == nil {
+		return nil
+	}
+	cfg := rt.ConfigSnapshot()
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(cfg.Domain.Resolvers))
+	appendCandidate := func(raw string, enabled bool) {
+		if !enabled {
+			return
+		}
+		pubkeyHex, err := normalizeCompressedPubKeyHex(strings.ToLower(strings.TrimSpace(raw)))
+		if err != nil || pubkeyHex == "" {
+			return
+		}
+		if _, ok := seen[pubkeyHex]; ok {
+			return
+		}
+		seen[pubkeyHex] = struct{}{}
+		out = append(out, pubkeyHex)
+	}
+	for _, node := range cfg.Domain.Resolvers {
+		appendCandidate(node.Pubkey, node.Enabled)
+	}
+	return out
+}
+
+func callDomainResolveCandidate(ctx context.Context, store *clientDB, rt *Runtime, resolverPubkeyHex string, domain string) (string, error) {
+	payload, err := oldproto.Marshal(&contractmessage.NameRouteReq{Name: domain})
+	if err != nil {
+		return "", err
+	}
+	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
+		To:          resolverPubkeyHex,
+		ProtocolID:  protocol.ID(ncall.ProtoDomainResolveNamePaid),
+		ContentType: contractmessage.ContentTypeProto,
+		Body:        payload,
+		Store:       store,
+		Security:    domainSec(rt.rpcTrace),
+	})
+	if err != nil {
+		return "", err
+	}
+	if !callResp.Ok {
+		return "", fmt.Errorf("domain resolve route failed: code=%s message=%s", strings.TrimSpace(callResp.Code), strings.TrimSpace(callResp.Message))
+	}
+	var resp contractmessage.ResolveNamePaidResp
+	if err := oldproto.Unmarshal(callResp.Body, &resp); err != nil {
+		return "", fmt.Errorf("decode domain resolve body failed: %w", err)
+	}
+	pubkeyHex := strings.ToLower(strings.TrimSpace(resp.TargetPubkeyHex))
+	if pubkeyHex == "" {
+		pubkeyHex = strings.ToLower(strings.TrimSpace(resp.OwnerPubkeyHex))
+	}
+	if pubkeyHex == "" {
+		return "", fmt.Errorf("domain resolve response missing pubkey")
+	}
+	return pubkeyHex, nil
 }
 
 func (b domainClientBackend) UpsertFrontOrder(ctx context.Context, entry domainclient.FrontOrderEntry) error {

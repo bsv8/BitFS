@@ -3,6 +3,7 @@ package domainwire
 import (
 	"encoding/json"
 
+	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
 	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
 )
 
@@ -13,7 +14,7 @@ const (
 	ServiceTypeSetTarget    = contractroute.RouteDomainV1SetTarget
 )
 
-func MarshalResolveNameServicePayload(resp ResolveNamePaidResp) ([]byte, error) {
+func MarshalResolveNameServicePayload(resp contractmessage.ResolveNamePaidResp) ([]byte, error) {
 	return json.Marshal([]any{
 		resp.Status,
 		resp.Name,
@@ -25,7 +26,7 @@ func MarshalResolveNameServicePayload(resp ResolveNamePaidResp) ([]byte, error) 
 	})
 }
 
-func MarshalQueryNameServicePayload(resp QueryNamePaidResp) ([]byte, error) {
+func MarshalQueryNameServicePayload(resp contractmessage.QueryNamePaidResp) ([]byte, error) {
 	return json.Marshal([]any{
 		resp.Status,
 		resp.Name,
@@ -47,7 +48,7 @@ func MarshalQueryNameServicePayload(resp QueryNamePaidResp) ([]byte, error) {
 	})
 }
 
-func MarshalRegisterLockServicePayload(resp RegisterLockPaidResp) ([]byte, error) {
+func MarshalRegisterLockServicePayload(resp contractmessage.RegisterLockPaidResp) ([]byte, error) {
 	return json.Marshal([]any{
 		resp.Status,
 		resp.Name,
@@ -58,7 +59,7 @@ func MarshalRegisterLockServicePayload(resp RegisterLockPaidResp) ([]byte, error
 	})
 }
 
-func MarshalSetTargetServicePayload(resp SetTargetPaidResp) ([]byte, error) {
+func MarshalSetTargetServicePayload(resp contractmessage.SetTargetPaidResp) ([]byte, error) {
 	return json.Marshal([]any{
 		resp.Status,
 		resp.Name,

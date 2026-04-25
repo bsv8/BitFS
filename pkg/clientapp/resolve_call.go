@@ -25,6 +25,7 @@ type TriggerPeerCallParams struct {
 	PaymentScheme        string
 	ServiceQuote         []byte
 	RequireActiveFeePool bool
+	Security             pproto.SecurityConfig
 }
 
 type peerCallPaymentDecision struct {
@@ -59,11 +60,15 @@ func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) 
 		ContentType: strings.TrimSpace(p.ContentType),
 		Body:        append([]byte(nil), p.Body...),
 	}
+	sec := p.Security
+	if strings.TrimSpace(sec.Domain) == "" {
+		sec = nodeSecForRuntime(rt)
+	}
 	paymentMode := normalizePeerCallPaymentMode(p.PaymentMode)
 	if paymentMode == "pay" && len(p.ServiceQuote) > 0 {
 		return payViaPaymentFacade(ctx, rt, peerID, req, p.ServiceQuote, p.PaymentScheme, p.ProtocolID)
 	}
-	out, err = callProto(ctx, rt, peerID, p.ProtocolID, req)
+	out, err = callProto(ctx, rt, peerID, p.ProtocolID, req, sec)
 	if err != nil {
 		return out, err
 	}
@@ -114,9 +119,9 @@ func payViaPaymentFacade(ctx context.Context, rt *Runtime, peerID peer.ID, req n
 	}, nil
 }
 
-func callProto(ctx context.Context, rt *Runtime, peerID peer.ID, protoID protocol.ID, req ncall.CallReq) (ncall.CallResp, error) {
+func callProto(ctx context.Context, rt *Runtime, peerID peer.ID, protoID protocol.ID, req ncall.CallReq, sec pproto.SecurityConfig) (ncall.CallResp, error) {
 	var out ncall.CallResp
-	if err := pproto.CallProto(ctx, rt.Host, peerID, protoID, nodeSecForRuntime(rt), req, &out); err != nil {
+	if err := pproto.CallProto(ctx, rt.Host, peerID, protoID, sec, req, &out); err != nil {
 		return ncall.CallResp{}, err
 	}
 	return out, nil

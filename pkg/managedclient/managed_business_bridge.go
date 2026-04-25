@@ -11,6 +11,7 @@ import (
 
 	"github.com/bsv8/BitFS/pkg/clientapp/infra/ncall"
 	"github.com/bsv8/BitFS/pkg/clientapp"
+	domainclientmod "github.com/bsv8/BitFS/pkg/clientapp/modules/domainclient"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	multiaddr "github.com/multiformats/go-multiaddr"
@@ -270,7 +271,11 @@ func (d *managedDaemon) executeManagedBusinessControlCommand(req controlCommandR
 		if resolverPubkeyHex == "" || name == "" || targetPubkeyHex == "" {
 			return businessActionFailure(req, d, "resolver_pubkey_hex, name and target_pubkey_hex are required", nil), nil
 		}
-		result, err := clientapp.TriggerDomainRegisterName(ctx, store, rt, clientapp.TriggerDomainRegisterNameParams{
+		backend := clientapp.NewDomainClientBackend(rt, store)
+		if backend == nil {
+			return businessActionFailure(req, d, "domainclient backend is not ready", nil), nil
+		}
+		result, err := domainclientmod.TriggerDomainRegisterName(ctx, backend, backend, domainclientmod.TriggerDomainRegisterNameParams{
 			ResolverPubkeyHex: resolverPubkeyHex,
 			ResolverAddr:      strings.TrimSpace(controlCommandPayloadString(req.Payload, "resolver_addr")),
 			Name:              name,
@@ -298,7 +303,11 @@ func (d *managedDaemon) executeManagedBusinessControlCommand(req controlCommandR
 		if resolverPubkeyHex == "" || name == "" || targetPubkeyHex == "" {
 			return businessActionFailure(req, d, "resolver_pubkey_hex, name and target_pubkey_hex are required", nil), nil
 		}
-		result, err := clientapp.TriggerDomainSetTarget(ctx, store, rt, clientapp.TriggerDomainSetTargetParams{
+		backend := clientapp.NewDomainClientBackend(rt, store)
+		if backend == nil {
+			return businessActionFailure(req, d, "domainclient backend is not ready", nil), nil
+		}
+		result, err := domainclientmod.TriggerDomainSetTarget(ctx, backend, backend, domainclientmod.TriggerDomainSetTargetParams{
 			ResolverPubkeyHex: resolverPubkeyHex,
 			ResolverAddr:      strings.TrimSpace(controlCommandPayloadString(req.Payload, "resolver_addr")),
 			Name:              name,

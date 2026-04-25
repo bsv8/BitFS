@@ -28,7 +28,7 @@ func BizResolve(ctx context.Context, resolver Resolver, rawDomain string) (Resol
 	if err != nil {
 		return ResolveResult{}, NewError(CodeBadRequest, err.Error())
 	}
-	pubkeyHex, err := resolver.ResolveDomainToPubkey(ctx, domainName)
+	pubkeyHex, err := resolver.ResolveDomainToPubkeyDirect(ctx, domainName)
 	if err != nil {
 		if CodeOf(err) == "" {
 			return ResolveResult{}, err

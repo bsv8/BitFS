@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
+	"github.com/bsv8/BitFS/pkg/clientapp/modules/modulekit"
 )
 
 func (s *service) httpRoutes() []moduleapi.HTTPRoute {
@@ -58,54 +59,62 @@ func (s *service) settingsActions() []moduleapi.SettingsAction {
 
 func (s *service) handleDomainRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		modulekit.WriteError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
 	var req TriggerDomainRegisterNameParams
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		modulekit.WriteError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json")
 		return
 	}
 	resp, err := TriggerDomainRegisterName(r.Context(), s.backend, s.backend, req)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		modulekit.WriteError(w, http.StatusBadRequest, httpErrorCode(err), MessageOf(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, resp)
+	modulekit.WriteOK(w, resp)
 }
 
 func (s *service) handleDomainSetTarget(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		modulekit.WriteError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
 	var req TriggerDomainSetTargetParams
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		modulekit.WriteError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json")
 		return
 	}
 	resp, err := TriggerDomainSetTarget(r.Context(), s.backend, s.backend, req)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		modulekit.WriteError(w, http.StatusBadRequest, httpErrorCode(err), MessageOf(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, resp)
+	modulekit.WriteOK(w, resp)
 }
 
 func (s *service) handleDomainSettlementStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		modulekit.WriteError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
 	frontOrderID := strings.TrimSpace(r.URL.Query().Get("front_order_id"))
 	if frontOrderID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "front_order_id is required"})
+		modulekit.WriteError(w, http.StatusBadRequest, "BAD_REQUEST", "front_order_id is required")
 		return
 	}
 	summary, err := s.backend.GetFrontOrderSettlementSummary(r.Context(), frontOrderID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		modulekit.WriteError(w, http.StatusInternalServerError, httpErrorCode(err), MessageOf(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, summary)
+	modulekit.WriteOK(w, summary)
+}
+
+func httpErrorCode(err error) string {
+	code := CodeOf(err)
+	if strings.TrimSpace(code) == "" {
+		return "INTERNAL_ERROR"
+	}
+	return code
 }

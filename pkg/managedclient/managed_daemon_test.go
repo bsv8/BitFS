@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bsv8/BitFS/pkg/clientapp/chainbridge"
-	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp"
+	"github.com/bsv8/BitFS/pkg/clientapp/chainbridge"
 	"github.com/bsv8/BitFS/pkg/clientapp/modulelock"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 	"github.com/bsv8/WOCProxy/pkg/wocproxy"
 	libp2p "github.com/libp2p/go-libp2p"
@@ -206,6 +206,128 @@ func TestHandleNonAPIRequest_ReturnsNotFound(t *testing.T) {
 	}
 	if payload.Error != "not found" {
 		t.Fatalf("error=%q, want %q", payload.Error, "not found")
+	}
+}
+
+func TestHandleManagedInfoLocked(t *testing.T) {
+	t.Parallel()
+
+	d := &managedDaemon{}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/info", nil)
+	rec := httptest.NewRecorder()
+	d.handleManagedInfo(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("info code mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var body struct {
+		Ready   bool   `json:"ready"`
+		Phase   string `json:"phase"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode info failed: %v", err)
+	}
+	if body.Ready {
+		t.Fatal("locked info should not be ready")
+	}
+	if body.Phase != "locked" {
+		t.Fatalf("phase=%q, want locked", body.Phase)
+	}
+}
+
+func TestHandleManagedInfoStarting(t *testing.T) {
+	t.Parallel()
+
+	d := &managedDaemon{
+		runtimePhase:        managedRuntimePhaseStarting,
+		unlockedPrivHex:     "11",
+		runtimeErrorMessage: "",
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/info", nil)
+	rec := httptest.NewRecorder()
+	d.handleManagedInfo(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("info code mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var body struct {
+		Ready   bool   `json:"ready"`
+		Phase   string `json:"phase"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode info failed: %v", err)
+	}
+	if body.Ready {
+		t.Fatal("starting info should not be ready")
+	}
+	if body.Phase != "starting" {
+		t.Fatalf("phase=%q, want starting", body.Phase)
+	}
+}
+
+func TestHandleManagedInfoReady(t *testing.T) {
+	t.Parallel()
+
+	d := &managedDaemon{
+		runtimePhase:    managedRuntimePhaseReady,
+		unlockedPrivHex: "11",
+		rt:              &clientapp.Runtime{},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/info", nil)
+	rec := httptest.NewRecorder()
+	d.handleManagedInfo(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("info code mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var body struct {
+		Ready   bool   `json:"ready"`
+		Phase   string `json:"phase"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode info failed: %v", err)
+	}
+	if !body.Ready {
+		t.Fatal("ready info should be ready")
+	}
+	if body.Phase != "ready" {
+		t.Fatalf("phase=%q, want ready", body.Phase)
+	}
+}
+
+func TestHandleManagedInfoFailed(t *testing.T) {
+	t.Parallel()
+
+	d := &managedDaemon{
+		runtimePhase:        managedRuntimePhaseError,
+		runtimeErrorMessage: "boom",
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/info", nil)
+	rec := httptest.NewRecorder()
+	d.handleManagedInfo(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("info code mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var body struct {
+		Ready   bool   `json:"ready"`
+		Phase   string `json:"phase"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode info failed: %v", err)
+	}
+	if body.Ready {
+		t.Fatal("failed info should not be ready")
+	}
+	if body.Phase != "failed" {
+		t.Fatalf("phase=%q, want failed", body.Phase)
+	}
+	if body.Message != "boom" {
+		t.Fatalf("message=%q, want boom", body.Message)
 	}
 }
 

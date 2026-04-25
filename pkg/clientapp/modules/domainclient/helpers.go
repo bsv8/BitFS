@@ -3,10 +3,9 @@ package domainclient
 import (
 	"context"
 	"encoding/json"
-	"net/http"
 
-	domainwire "github.com/bsv8/BitFS/pkg/clientapp/modules/domain/domainwire"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
+	domainwire "github.com/bsv8/BitFS/pkg/clientapp/modules/domain/domainwire"
 )
 
 type service struct {
@@ -28,8 +27,8 @@ func (s *service) resolveDomainRemote(ctx context.Context, rawDomain string) (st
 	if err != nil {
 		return "", NewError(CodeBadRequest, err.Error())
 	}
-	// 这里先沿用 provider 注册协议，不把上层调度逻辑再拆成两层。
-	return s.backend.ResolveDomainToPubkey(ctx, domainName)
+	// provider 只做直连解析，不再绕回 root 调度器。
+	return s.backend.ResolveDomainToPubkeyDirect(ctx, domainName)
 }
 
 func decodeMapInto(in map[string]any, out any) error {
@@ -63,10 +62,4 @@ func toModuleAPIError(err error) error {
 		return moduleapi.NewError(code, MessageOf(err))
 	}
 	return err
-}
-
-func writeJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
 }

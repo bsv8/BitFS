@@ -18,13 +18,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bsv8/BitFS/pkg/clientapp"
 	"github.com/bsv8/BitFS/pkg/clientapp/chainbridge"
 	"github.com/bsv8/BitFS/pkg/clientapp/infra/caps"
 	"github.com/bsv8/BitFS/pkg/clientapp/infra/lhttp"
-	"github.com/bsv8/BitFS/pkg/clientapp/storeactor"
-	"github.com/bsv8/BitFS/pkg/clientapp/obs"
-	"github.com/bsv8/BitFS/pkg/clientapp"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/storeactor"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 	"github.com/bsv8/WOCProxy/pkg/wocproxy"
 	crypto "github.com/libp2p/go-libp2p/core/crypto"
@@ -63,6 +63,7 @@ const (
 	managedWOCUpstreamRootURL = wocproxy.DefaultUpstreamRootURL
 
 	bitfsManagedHTTPKeyAbility      = "bitfs.managed_http.key@1"
+	bitfsManagedHTTPInfoAbility     = "bitfs.managed_http.info@1"
 	bitfsManagedHTTPProxyAbility    = "bitfs.managed_http.proxy@1"
 	bitfsManagedHTTPFallbackAbility = "bitfs.managed_http.fallback@1"
 
@@ -126,6 +127,12 @@ type startupErrorState struct {
 	Service    string
 	ListenAddr string
 	Message    string
+}
+
+type managedInfoState struct {
+	Ready   bool
+	Phase   string
+	Message string
 }
 
 type chainAccessState struct {
@@ -407,6 +414,12 @@ func (d *managedDaemon) httpRouteDecls() []lhttp.RouteDecl {
 			},
 		},
 		{
+			InternalAbility: bitfsManagedHTTPInfoAbility,
+			Routes: []lhttp.Route{
+				{Path: "/api/v1/info", Handler: d.handleManagedInfo},
+			},
+		},
+		{
 			InternalAbility: bitfsManagedHTTPProxyAbility,
 			Routes: []lhttp.Route{
 				{Path: "/api", Handler: d.handleAPIProxyOrLocked},
@@ -442,6 +455,70 @@ func (d *managedDaemon) handleAPIProxyOrLocked(w http.ResponseWriter, r *http.Re
 		return
 	}
 	api.ServeHTTP(w, r)
+}
+
+func (d *managedDaemon) handleManagedInfo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, d.buildManagedInfoPayload())
+}
+
+func (d *managedDaemon) buildManagedInfoPayload() map[string]any {
+	info := d.currentManagedInfoState()
+	payload := map[string]any{
+		"ready":   info.Ready,
+		"phase":   info.Phase,
+		"message": info.Message,
+	}
+	if rt := d.currentRuntime(); rt != nil {
+		cfg := rt.ConfigSnapshot()
+		payload["client_pubkey_hex"] = cfg.ClientID
+		if rt.Host != nil {
+			payload["transport_peer_id"] = rt.Host.ID().String()
+		}
+		payload["pubkey_hex"] = cfg.ClientID
+		payload["seller_enabled"] = cfg.Seller.Enabled
+		payload["data_dir"] = cfg.Storage.DataDir
+		payload["gateway_count"] = len(cfg.Network.Gateways)
+		payload["arbiter_count"] = len(cfg.Network.Arbiters)
+		payload["rescan_interval_sec"] = cfg.Scan.RescanIntervalSeconds
+		payload["started_at_unix"] = rt.StartedAtUnix
+	}
+	return payload
+}
+
+func (d *managedDaemon) currentManagedInfoState() managedInfoState {
+	switch {
+	case d == nil:
+		return managedInfoState{Phase: "failed", Message: "managed daemon is nil"}
+	case d.currentBackendPhase() == managedBackendPhaseStartupError:
+		se := d.currentStartupError()
+		msg := strings.TrimSpace(se.Message)
+		if msg == "" {
+			msg = "startup failed"
+		}
+		return managedInfoState{Phase: "failed", Message: msg}
+	case d.currentRuntimePhase() == managedRuntimePhaseError:
+		msg := strings.TrimSpace(d.currentRuntimeErrorMessage())
+		if msg == "" {
+			msg = "runtime failed"
+		}
+		return managedInfoState{Phase: "failed", Message: msg}
+	case d.currentRuntimePhase() == managedRuntimePhaseStarting:
+		return managedInfoState{Phase: "starting", Message: "runtime is starting"}
+	case d.currentKeyState() == managedKeyStateUnlocked || d.currentRuntime() != nil:
+		return managedInfoState{Ready: true, Phase: "ready", Message: "runtime is ready"}
+	default:
+		return managedInfoState{Phase: "locked", Message: "key is locked"}
+	}
+}
+
+func (d *managedDaemon) currentRuntimeErrorMessage() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.runtimeErrorMessage
 }
 
 func writeKeyAPISuccess(w http.ResponseWriter, data any) {

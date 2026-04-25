@@ -18,15 +18,15 @@ import (
 	"sync/atomic"
 	"time"
 
-		bftpv1 "github.com/bsv8/BFTP-contract/gen/go/v1"
+	bftpv1 "github.com/bsv8/BFTP-contract/gen/go/v1"
 	contractprotoid "github.com/bsv8/BFTP-contract/pkg/v1/protoid"
 	"github.com/bsv8/BitFS/pkg/clientapp/dealprod"
-	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
 	"github.com/bsv8/BitFS/pkg/clientapp/infra/pproto"
-	"github.com/bsv8/BitFS/pkg/clientapp/storeactor"
-	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
+	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
 	"github.com/bsv8/BitFS/pkg/clientapp/seedcore"
+	"github.com/bsv8/BitFS/pkg/clientapp/storeactor"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -36,8 +36,8 @@ import (
 )
 
 var (
-	BBroadcastSuiteVersion             = "BBroadcast/1.0"
-	BBroadcastProtocolName             = "Bitcast Broadcast Protocol"
+	BBroadcastSuiteVersion = "BBroadcast/1.0"
+	BBroadcastProtocolName = "Bitcast Broadcast Protocol"
 	ProtoGatewayHealth     = protocol.ID(contractprotoid.ProtoGatewayHealth)
 	ProtoArbiterHealth     = protocol.ID(contractprotoid.ProtoArbiterHealth)
 	ProtoSeedGet           = protocol.ID(contractprotoid.ProtoSeedGet)
@@ -155,7 +155,8 @@ type Config struct {
 		PreferredScheme string `yaml:"preferred_scheme" toml:"preferred_scheme"`
 	} `yaml:"payment" toml:"payment"`
 	Domain struct {
-		ResolveOrder []string `yaml:"resolve_order" toml:"resolve_order"`
+		ResolveOrder []string   `yaml:"resolve_order" toml:"resolve_order"`
+		Resolvers    []PeerNode `yaml:"resolvers" toml:"resolvers"`
 	} `yaml:"domain" toml:"domain"`
 	Reachability struct {
 		// AutoAnnounceEnabled 控制“客户端自动把自己当前可达地址发布到 gateway 目录”。
@@ -1764,6 +1765,11 @@ func contiguousChunkIndexes(chunkCount uint32) []uint32 {
 
 func gwSec(trace pproto.TraceSink) pproto.SecurityConfig {
 	return pproto.SecurityConfig{Domain: "bitcast-gateway", Network: "test", TTL: 30 * time.Second, Trace: trace}
+}
+
+// domainSec 是域名服务专用的 p2p 安全壳，和节点壳分开，避免 envelope 域名不一致。
+func domainSec(trace pproto.TraceSink) pproto.SecurityConfig {
+	return pproto.SecurityConfig{Domain: "bitcast-domain", Network: "test", TTL: 30 * time.Second, Trace: trace}
 }
 func arbSec(trace pproto.TraceSink) pproto.SecurityConfig {
 	return pproto.SecurityConfig{Domain: "arbiter-mr", Network: "test", TTL: 30 * time.Second, Trace: trace}

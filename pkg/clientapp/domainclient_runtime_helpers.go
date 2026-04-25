@@ -106,6 +106,7 @@ func triggerDomainQueryName(ctx context.Context, store *clientDB, rt *Runtime, r
 		ContentType: contractmessage.ContentTypeProto,
 		Body:        payload,
 		Store:       store,
+		Security:    domainSec(rt.rpcTrace),
 	})
 	if err != nil {
 		return domainQueryResult{}, err
@@ -134,6 +135,7 @@ func triggerDomainRegisterLock(ctx context.Context, store *clientDB, rt *Runtime
 		ContentType: contractmessage.ContentTypeProto,
 		Body:        payload,
 		Store:       store,
+		Security:    domainSec(rt.rpcTrace),
 	})
 	if err != nil {
 		return contractmessage.RegisterLockPaidResp{}, err
@@ -159,6 +161,7 @@ func triggerDomainRegisterSubmit(ctx context.Context, rt *Runtime, store *client
 		ContentType: contractmessage.ContentTypeProto,
 		Body:        payload,
 		Store:       store,
+		Security:    domainSec(rt.rpcTrace),
 	})
 	if err != nil {
 		return contractmessage.RegisterSubmitResp{}, err
@@ -187,6 +190,7 @@ func triggerDomainSetTarget(ctx context.Context, store *clientDB, rt *Runtime, r
 		ContentType: contractmessage.ContentTypeProto,
 		Body:        payload,
 		Store:       store,
+		Security:    domainSec(rt.rpcTrace),
 	})
 	if err != nil {
 		return contractmessage.SetTargetPaidResp{}, err

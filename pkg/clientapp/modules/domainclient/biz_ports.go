@@ -31,6 +31,6 @@ type RuntimePorts interface {
 	ApplyLocalBroadcastWalletTxBytes(ctx context.Context, rawTx []byte, trigger string) error
 	RecordChainPaymentAccountingAfterBroadcast(ctx context.Context, rawTx []byte, txID string, accountingScene string, accountingSubType string, fromPartyID string, toPartyID string) error
 	WalletAllocMutex() sync.Locker
-	ResolveDomainToPubkey(ctx context.Context, domain string) (string, error)
+	ResolveDomainToPubkeyDirect(ctx context.Context, domain string) (string, error)
 	GetFrontOrderSettlementSummary(ctx context.Context, frontOrderID string) (FrontOrderSettlementSummary, error)
 }

@@ -62,30 +62,9 @@ func secp256k1CompressedToLibP2PPubkey(compressed []byte) ([]byte, error) {
 }
 
 func verifyRemotePeerBytes(remote peer.ID, senderPub []byte) error {
-	if len(senderPub) == 33 && (senderPub[0] == 0x02 || senderPub[0] == 0x03) {
-		pk, err := secp256k1.ParsePubKey(senderPub)
-		if err != nil {
-			return fmt.Errorf("parse secp256k1 pubkey: %w", err)
-		}
-
-		var libp2pPub crypto.PubKey = (*crypto.Secp256k1PublicKey)(pk)
-		expected, err := peer.IDFromPublicKey(libp2pPub)
-		if err != nil {
-			return fmt.Errorf("id from pubkey: %w", err)
-		}
-		if expected != remote {
-			return fmt.Errorf("remote peer mismatch")
-		}
-		return nil
-	}
-
-	pub, err := crypto.UnmarshalPublicKey(senderPub)
+	expected, err := peerIDFromSenderPubkey(senderPub)
 	if err != nil {
 		return fmt.Errorf("invalid sender pubkey: %w", err)
-	}
-	expected, err := peer.IDFromPublicKey(pub)
-	if err != nil {
-		return err
 	}
 	if expected != remote {
 		return fmt.Errorf("remote peer mismatch")
@@ -93,7 +72,41 @@ func verifyRemotePeerBytes(remote peer.ID, senderPub []byte) error {
 	return nil
 }
 
+func peerIDFromSenderPubkey(senderPub []byte) (peer.ID, error) {
+	if len(senderPub) == 32 {
+		priv := secp256k1.PrivKeyFromBytes(senderPub)
+		pub := priv.PubKey()
+		var libp2pPub crypto.PubKey = (*crypto.Secp256k1PublicKey)(pub)
+		return peer.IDFromPublicKey(libp2pPub)
+	}
+	if len(senderPub) == 33 && (senderPub[0] == 0x02 || senderPub[0] == 0x03) {
+		pk, err := secp256k1.ParsePubKey(senderPub)
+		if err == nil {
+			var libp2pPub crypto.PubKey = (*crypto.Secp256k1PublicKey)(pk)
+			return peer.IDFromPublicKey(libp2pPub)
+		}
+	}
+	pub, err := crypto.UnmarshalPublicKey(senderPub)
+	if err != nil {
+		if len(senderPub) == 33 && senderPub[0] == secp256k1PubKeyType {
+			return peer.ID(""), fmt.Errorf("unmarshal sender pubkey: %w", err)
+		}
+		if len(senderPub) == 65 && senderPub[0] == 0x04 {
+			if pk, parseErr := secp256k1.ParsePubKey(senderPub); parseErr == nil {
+				var libp2pPub crypto.PubKey = (*crypto.Secp256k1PublicKey)(pk)
+				return peer.IDFromPublicKey(libp2pPub)
+			}
+		}
+		return peer.ID(""), fmt.Errorf("unmarshal sender pubkey: %w", err)
+	}
+	return peer.IDFromPublicKey(pub)
+}
+
 func senderPubkeyHex(senderPub []byte) string {
+	if len(senderPub) == 32 {
+		priv := secp256k1.PrivKeyFromBytes(senderPub)
+		return strings.ToLower(hex.EncodeToString(priv.PubKey().SerializeCompressed()))
+	}
 	if len(senderPub) == 33 && (senderPub[0] == 0x02 || senderPub[0] == 0x03) {
 		return strings.ToLower(hex.EncodeToString(senderPub))
 	}
@@ -104,6 +117,10 @@ func senderPubkeyHex(senderPub []byte) string {
 	raw, err := pub.Raw()
 	if err != nil {
 		return strings.ToLower(hex.EncodeToString(senderPub))
+	}
+	if len(raw) == 32 {
+		priv := secp256k1.PrivKeyFromBytes(raw)
+		return strings.ToLower(hex.EncodeToString(priv.PubKey().SerializeCompressed()))
 	}
 	return strings.ToLower(hex.EncodeToString(raw))
 }

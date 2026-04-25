@@ -255,6 +255,7 @@ func cloneConfig(in Config) Config {
 	out.Network.Gateways = append([]PeerNode(nil), in.Network.Gateways...)
 	out.Network.Arbiters = append([]PeerNode(nil), in.Network.Arbiters...)
 	out.Domain.ResolveOrder = append([]string(nil), in.Domain.ResolveOrder...)
+	out.Domain.Resolvers = append([]PeerNode(nil), in.Domain.Resolvers...)
 	if in.Listen.Enabled != nil {
 		v := *in.Listen.Enabled
 		out.Listen.Enabled = &v

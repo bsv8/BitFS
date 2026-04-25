@@ -165,11 +165,11 @@ type ResolveResult struct {
 }
 
 type Resolver interface {
-	ResolveDomainToPubkey(ctx context.Context, domain string) (string, error)
+	ResolveDomainToPubkeyDirect(ctx context.Context, domain string) (string, error)
 }
 
 type Provider interface {
-	ResolveDomainToPubkey(ctx context.Context, domain string) (string, error)
+	ResolveDomainToPubkeyDirect(ctx context.Context, domain string) (string, error)
 }
 
 type Hook func(context.Context, string) (string, error)
@@ -237,14 +237,14 @@ type BusinessTriggerEntry struct {
 }
 
 type BusinessSettlementEntry struct {
-	SettlementID      string
-	SettlementMethod  string
+	SettlementID         string
+	SettlementMethod     string
 	SettlementTargetType string
-	SettlementTargetID string
-	SettlementPayload any
-	CreatedAtUnix     int64
-	UpdatedAtUnix     int64
-	Status            string
+	SettlementTargetID   string
+	SettlementPayload    any
+	CreatedAtUnix        int64
+	UpdatedAtUnix        int64
+	Status               string
 }
 
 type CreateBusinessWithFrontTriggerAndPendingSettlementInput struct {

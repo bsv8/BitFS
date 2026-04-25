@@ -522,7 +522,12 @@ func dbAppendFinBusinessRowTx(ctx context.Context, tx EntWriteRoot, e finBusines
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
-	return fmt.Errorf("order_settlements schema removed (Group 8 cleanup): settlement_id=%s", e.SettlementID)
+	obs.Info(ServiceName, "fin_business_row_compat_noop", map[string]any{
+		"order_id":       strings.TrimSpace(e.OrderID),
+		"settlement_id":  strings.TrimSpace(e.SettlementID),
+		"note":           "order_settlements schema removed; compatibility layer is now a no-op",
+	})
+	return nil
 }
 
 // dbAppendFinBusinessTx 已下线（Group 8 cleanup）
@@ -530,7 +535,11 @@ func dbAppendFinBusinessTx(ctx context.Context, tx EntWriteRoot, e finBusinessEn
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
-	return fmt.Errorf("order_settlements schema removed (Group 8 cleanup): order_id=%s", e.OrderID)
+	obs.Info(ServiceName, "fin_business_compat_noop", map[string]any{
+		"order_id": strings.TrimSpace(e.OrderID),
+		"note":     "order_settlements schema removed; compatibility layer is now a no-op",
+	})
+	return nil
 }
 
 // dbAppendSettlementPaymentAttemptFinBusiness 已下线（Group 8 cleanup）
@@ -538,7 +547,12 @@ func dbAppendSettlementPaymentAttemptFinBusiness(ctx context.Context, tx EntWrit
 	if settlementPaymentAttemptID <= 0 {
 		return fmt.Errorf("settlement_payment_attempt_id must be positive")
 	}
-	return fmt.Errorf("order_settlements schema removed (Group 8 cleanup): settlement_payment_attempt_id=%d", settlementPaymentAttemptID)
+	obs.Info(ServiceName, "fin_business_payment_attempt_compat_noop", map[string]any{
+		"settlement_payment_attempt_id": settlementPaymentAttemptID,
+		"order_id":                      strings.TrimSpace(e.OrderID),
+		"note":                          "order_settlements schema removed; compatibility layer is now a no-op",
+	})
+	return nil
 }
 
 func dbAppendBusinessUTXOFactIfAbsent(_ any, txRole string) error {
