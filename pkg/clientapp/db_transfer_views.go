@@ -12,7 +12,7 @@ import (
 	bitfsbizdemandquotearbiters "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizdemandquotearbiters"
 	bitfsbizdemandquotes "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizdemandquotes"
 	bitfsbizpurchases "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/bizpurchases"
-	bitfsprocgatewayevents "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procgatewayevents"
+	"github.com/bsv8/BitFS/pkg/clientapp/modules/gatewayclient"
 )
 
 // 管理页和调试页的只读查询统一放在 db 内，handler 只负责参数和回包。
@@ -378,50 +378,73 @@ func dbListGatewayEvents(ctx context.Context, store *clientDB, f gatewayEventFil
 	if store == nil {
 		return gatewayEventPage{}, fmt.Errorf("client db is nil")
 	}
-	return readEntValue(ctx, store, func(root EntReadRoot) (gatewayEventPage, error) {
-		q := root.ProcGatewayEvents.Query()
-		if f.GatewayPeerID != "" {
-			q = q.Where(bitfsprocgatewayevents.GatewayPubkeyHexEQ(f.GatewayPeerID))
+	gw, err := gatewayClientStoreFromDB(store)
+	if err != nil {
+		return gatewayEventPage{}, err
+	}
+	events, err := gw.ListGatewayEvents(ctx, 0)
+	if err != nil {
+		return gatewayEventPage{}, err
+	}
+	filtered := make([]gatewayEventItem, 0, len(events))
+	for _, event := range events {
+		if f.GatewayPeerID != "" && !strings.EqualFold(strings.TrimSpace(event.GatewayPubkeyHex), strings.TrimSpace(f.GatewayPeerID)) {
+			continue
 		}
-		if f.CommandID != "" {
-			q = q.Where(bitfsprocgatewayevents.CommandIDEQ(f.CommandID))
+		if f.CommandID != "" && !strings.EqualFold(strings.TrimSpace(event.CommandID), strings.TrimSpace(f.CommandID)) {
+			continue
 		}
-		if f.Action != "" {
-			q = q.Where(bitfsprocgatewayevents.ActionEQ(f.Action))
+		if f.Action != "" && !strings.EqualFold(strings.TrimSpace(event.Action), strings.TrimSpace(f.Action)) {
+			continue
 		}
-		total, err := q.Clone().Count(ctx)
-		if err != nil {
-			return gatewayEventPage{}, err
-		}
-		nodes, err := q.Order(bitfsprocgatewayevents.ByID(entsql.OrderDesc())).Limit(f.Limit).Offset(f.Offset).All(ctx)
-		if err != nil {
-			return gatewayEventPage{}, err
-		}
-		out := gatewayEventPage{
-			Total: total,
-			Items: make([]gatewayEventItem, 0, len(nodes)),
-		}
-		for _, node := range nodes {
-			out.Items = append(out.Items, gatewayEventItemFromEnt(node))
-		}
-		return out, nil
-	})
+		filtered = append(filtered, gatewayEventItemFromGatewayEvent(event))
+	}
+	total := len(filtered)
+	start := f.Offset
+	if start < 0 {
+		start = 0
+	}
+	if start > total {
+		start = total
+	}
+	end := total
+	if f.Limit > 0 && start+f.Limit < end {
+		end = start + f.Limit
+	}
+	return gatewayEventPage{Total: total, Items: filtered[start:end]}, nil
 }
 
 func dbGetGatewayEventItem(ctx context.Context, store *clientDB, id int64) (gatewayEventItem, error) {
 	if store == nil {
 		return gatewayEventItem{}, fmt.Errorf("client db is nil")
 	}
-	return readEntValue(ctx, store, func(root EntReadRoot) (gatewayEventItem, error) {
-		node, err := root.ProcGatewayEvents.Query().Where(bitfsprocgatewayevents.IDEQ(int(id))).Only(ctx)
-		if err != nil {
-			if gen.IsNotFound(err) {
-				return gatewayEventItem{}, sql.ErrNoRows
-			}
-			return gatewayEventItem{}, err
-		}
-		return gatewayEventItemFromEnt(node), nil
-	})
+	gw, err := gatewayClientStoreFromDB(store)
+	if err != nil {
+		return gatewayEventItem{}, err
+	}
+	event, found, err := gw.GetGatewayEvent(ctx, fmt.Sprint(id))
+	if err != nil {
+		return gatewayEventItem{}, err
+	}
+	if !found {
+		return gatewayEventItem{}, sql.ErrNoRows
+	}
+	return gatewayEventItemFromGatewayEvent(event), nil
+}
+
+func gatewayEventItemFromGatewayEvent(ev gatewayclient.GatewayEvent) gatewayEventItem {
+	return gatewayEventItem{
+		ID:            ev.ID,
+		CreatedAtUnix: ev.CreatedAtUnix,
+		GatewayPeerID: ev.GatewayPubkeyHex,
+		CommandID:     ev.CommandID,
+		Action:        ev.Action,
+		MsgID:         ev.MsgID,
+		SequenceNum:   ev.SequenceNum,
+		PoolID:        ev.PoolID,
+		AmountSatoshi: ev.AmountSatoshi,
+		Payload:       append(json.RawMessage(nil), ev.Payload...),
+	}
 }
 
 func demandQuoteItemFromEnt(node *gen.BizDemandQuotes) demandQuoteItem {
@@ -477,24 +500,24 @@ type scanGatewayEvent interface {
 
 // FrontOrderSettlementSummary 前置订单结算汇总（Group 8: 用 fact_settlement_records 重构）
 type FrontOrderSettlementSummary struct {
-	FrontOrderID          string                     `json:"front_order_id"`
-	Businesses            []BusinessSettlementSummary `json:"businesses"`
-	Summary               SettlementTotalSummary     `json:"summary"`
+	FrontOrderID string                      `json:"front_order_id"`
+	Businesses   []BusinessSettlementSummary `json:"businesses"`
+	Summary      SettlementTotalSummary      `json:"summary"`
 }
 
 type BusinessSettlementSummary struct {
 	BusinessID           string `json:"business_id"`
-	SellerPubHex          string `json:"seller_pub_hex"`
-	TotalTargetSatoshi    uint64 `json:"total_target_satoshi"`
-	SettledAmountSatoshi  uint64 `json:"settled_amount_satoshi"`
-	PendingAmountSatoshi  uint64 `json:"pending_amount_satoshi"`
+	SellerPubHex         string `json:"seller_pub_hex"`
+	TotalTargetSatoshi   uint64 `json:"total_target_satoshi"`
+	SettledAmountSatoshi uint64 `json:"settled_amount_satoshi"`
+	PendingAmountSatoshi uint64 `json:"pending_amount_satoshi"`
 }
 
 type SettlementTotalSummary struct {
 	OverallStatus        string `json:"overall_status"`
-	TotalTargetSatoshi    uint64 `json:"total_target_satoshi"`
-	SettledAmountSatoshi  uint64 `json:"settled_amount_satoshi"`
-	PendingAmountSatoshi   uint64 `json:"pending_amount_satoshi"`
+	TotalTargetSatoshi   uint64 `json:"total_target_satoshi"`
+	SettledAmountSatoshi uint64 `json:"settled_amount_satoshi"`
+	PendingAmountSatoshi uint64 `json:"pending_amount_satoshi"`
 }
 
 // GetFrontOrderSettlementSummary 前置订单结算汇总查询（Group 8: 用 fact_settlement_records 重构）

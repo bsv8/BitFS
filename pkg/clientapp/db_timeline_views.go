@@ -3,7 +3,6 @@ package clientapp
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -12,7 +11,6 @@ import (
 	bitfsproccommandjournal "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/proccommandjournal"
 	bitfsprocdomainevents "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procdomainevents"
 	bitfsproceffectlogs "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/proceffectlogs"
-	bitfsprocgatewayevents "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procgatewayevents"
 	bitfsprocstatesnapshots "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procstatesnapshots"
 )
 
@@ -136,22 +134,20 @@ func loadGatewayEventsByCommandIDEnt(ctx context.Context, store *clientDB, comma
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	items, err := readEntValue(ctx, store, func(root EntReadRoot) ([]gatewayEventItem, error) {
-		nodes, err := root.ProcGatewayEvents.Query().
-			Where(bitfsprocgatewayevents.CommandIDEQ(commandID)).
-			Order(bitfsprocgatewayevents.ByID(entsql.OrderAsc())).
-			All(ctx)
-		if err != nil {
-			return nil, err
-		}
-		items := make([]gatewayEventItem, 0, len(nodes))
-		for _, node := range nodes {
-			items = append(items, gatewayEventItemFromEnt(node))
-		}
-		return items, nil
-	})
+	gw, err := gatewayClientStoreFromDB(store)
 	if err != nil {
 		return err
+	}
+	events, err := gw.ListGatewayEvents(ctx, 0)
+	if err != nil {
+		return err
+	}
+	items := make([]gatewayEventItem, 0, len(events))
+	for _, event := range events {
+		if !strings.EqualFold(strings.TrimSpace(event.CommandID), strings.TrimSpace(commandID)) {
+			continue
+		}
+		items = append(items, gatewayEventItemFromGatewayEvent(event))
 	}
 	*out = items
 	return nil
@@ -252,24 +248,6 @@ func dbListObservedGatewayTimeline(ctx context.Context, store *clientDB, f obser
 		out.Items = append(out.Items, observedGatewayTimelineItem{observedGatewayStateItem: item})
 	}
 	return out, nil
-}
-
-func gatewayEventItemFromEnt(node *gen.ProcGatewayEvents) gatewayEventItem {
-	if node == nil {
-		return gatewayEventItem{}
-	}
-	return gatewayEventItem{
-		ID:            int64(node.ID),
-		CreatedAtUnix: node.CreatedAtUnix,
-		GatewayPeerID: node.GatewayPubkeyHex,
-		CommandID:     node.CommandID,
-		Action:        node.Action,
-		MsgID:         node.MsgID,
-		SequenceNum:   uint32(node.SequenceNum),
-		PoolID:        node.PoolID,
-		AmountSatoshi: node.AmountSatoshi,
-		Payload:       json.RawMessage(node.PayloadJSON),
-	}
 }
 
 func dbGetObservedGatewayTimelineItem(ctx context.Context, store *clientDB, id int64) (observedGatewayTimelineItem, error) {

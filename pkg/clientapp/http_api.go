@@ -209,11 +209,7 @@ func newHTTPAPIServer(rt *Runtime, cfgSource configSnapshotter, db *sql.DB, stor
 		rpcTrace:    trace,
 	}
 	if store != nil {
-		var demandEnv gatewayDemandPublishChainTxEnv
-		if rt != nil {
-			demandEnv = rt
-		}
-		caps := newDownloadFileCaps(rt, store, demandEnv, s.cfgSource)
+		caps := newDownloadFileCaps(rt, store, s.cfgSource)
 		s.downloadFileHandler = caps.HTTPHandler()
 	}
 	return s

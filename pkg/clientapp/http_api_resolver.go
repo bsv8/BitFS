@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	domainbiz "github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
+	domainbiz "github.com/bsv8/BitFS/pkg/clientapp/modules/domainclient"
 )
 
 func (s *httpAPIServer) handleResolverResolve(w http.ResponseWriter, r *http.Request) {

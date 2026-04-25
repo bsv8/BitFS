@@ -9,6 +9,7 @@ import (
 )
 
 // ProcPublishedRouteIndexes 对齐表 proc_published_route_indexes。
+// 2026-04 标注：兼容残留候选，本轮不动 schema。
 type ProcPublishedRouteIndexes struct {
 	ent.Schema
 }

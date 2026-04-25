@@ -5,14 +5,15 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	entsql "entgo.io/ent/dialect/sql"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen"
 	bitfsproccommandjournal "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/proccommandjournal"
 	bitfsprocdomainevents "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procdomainevents"
 	bitfsproceffectlogs "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/proceffectlogs"
-	bitfsprocobservedgatewaystates "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procobservedgatewaystates"
 	bitfsprocstatesnapshots "github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procstatesnapshots"
+	"github.com/bsv8/BitFS/pkg/clientapp/modules/gatewayclient"
 )
 
 type commandJournalFilter struct {
@@ -333,53 +334,63 @@ func dbListObservedGatewayStates(ctx context.Context, store *clientDB, f observe
 	if store == nil {
 		return observedGatewayStatePage{}, fmt.Errorf("client db is nil")
 	}
-	return readEntValue(ctx, store, func(root EntReadRoot) (observedGatewayStatePage, error) {
-		q := root.ProcObservedGatewayStates.Query()
-		if f.GatewayPeerID != "" {
-			q = q.Where(bitfsprocobservedgatewaystates.GatewayPubkeyHexEQ(f.GatewayPeerID))
+	gw, err := gatewayClientStoreFromDB(store)
+	if err != nil {
+		return observedGatewayStatePage{}, err
+	}
+	states, err := gw.ListObservedGatewayStates(ctx, 0)
+	if err != nil {
+		return observedGatewayStatePage{}, err
+	}
+	filtered := make([]observedGatewayStateItem, 0, len(states))
+	for _, state := range states {
+		if f.GatewayPeerID != "" && !strings.EqualFold(strings.TrimSpace(state.GatewayPubkeyHex), strings.TrimSpace(f.GatewayPeerID)) {
+			continue
 		}
-		if f.SourceRef != "" {
-			q = q.Where(bitfsprocobservedgatewaystates.SourceRefEQ(f.SourceRef))
+		if f.SourceRef != "" && !strings.EqualFold(strings.TrimSpace(state.SourceRef), strings.TrimSpace(f.SourceRef)) {
+			continue
 		}
-		if f.EventName != "" {
-			q = q.Where(bitfsprocobservedgatewaystates.EventNameEQ(f.EventName))
+		if f.EventName != "" && !strings.EqualFold(strings.TrimSpace(state.EventName), strings.TrimSpace(f.EventName)) {
+			continue
 		}
-		if f.State != "" {
-			q = q.Where(bitfsprocobservedgatewaystates.StateAfterEQ(f.State))
+		if f.State != "" && !strings.EqualFold(strings.TrimSpace(state.StateAfter), strings.TrimSpace(f.State)) {
+			continue
 		}
-		total, err := q.Clone().Count(ctx)
-		if err != nil {
-			return observedGatewayStatePage{}, err
-		}
-		nodes, err := q.Order(bitfsprocobservedgatewaystates.ByID(entsql.OrderDesc())).Limit(f.Limit).Offset(f.Offset).All(ctx)
-		if err != nil {
-			return observedGatewayStatePage{}, err
-		}
-		out := observedGatewayStatePage{
-			Total: total,
-			Items: make([]observedGatewayStateItem, 0, len(nodes)),
-		}
-		for _, node := range nodes {
-			out.Items = append(out.Items, observedGatewayStateItemFromEnt(node))
-		}
-		return out, nil
-	})
+		filtered = append(filtered, observedGatewayStateItemFromGatewayState(state))
+	}
+	total := len(filtered)
+	start := f.Offset
+	if start < 0 {
+		start = 0
+	}
+	if start > total {
+		start = total
+	}
+	end := total
+	if f.Limit > 0 && start+f.Limit < end {
+		end = start + f.Limit
+	}
+	return observedGatewayStatePage{Total: total, Items: filtered[start:end]}, nil
 }
 
 func dbGetObservedGatewayStateItem(ctx context.Context, store *clientDB, id int64) (observedGatewayStateItem, error) {
 	if store == nil {
 		return observedGatewayStateItem{}, fmt.Errorf("client db is nil")
 	}
-	return readEntValue(ctx, store, func(root EntReadRoot) (observedGatewayStateItem, error) {
-		node, err := root.ProcObservedGatewayStates.Query().Where(bitfsprocobservedgatewaystates.IDEQ(int(id))).Only(ctx)
-		if err != nil {
-			if gen.IsNotFound(err) {
-				return observedGatewayStateItem{}, sql.ErrNoRows
-			}
-			return observedGatewayStateItem{}, err
+	gw, err := gatewayClientStoreFromDB(store)
+	if err != nil {
+		return observedGatewayStateItem{}, err
+	}
+	states, err := gw.ListObservedGatewayStates(ctx, 0)
+	if err != nil {
+		return observedGatewayStateItem{}, err
+	}
+	for _, state := range states {
+		if state.ID == id {
+			return observedGatewayStateItemFromGatewayState(state), nil
 		}
-		return observedGatewayStateItemFromEnt(node), nil
-	})
+	}
+	return observedGatewayStateItem{}, sql.ErrNoRows
 }
 
 func dbListEffectLogs(ctx context.Context, store *clientDB, f effectLogFilter) (effectLogPage, error) {
@@ -498,24 +509,21 @@ func stateSnapshotItemFromEnt(node *gen.ProcStateSnapshots) stateSnapshotItem {
 	}
 }
 
-func observedGatewayStateItemFromEnt(node *gen.ProcObservedGatewayStates) observedGatewayStateItem {
-	if node == nil {
-		return observedGatewayStateItem{}
-	}
+func observedGatewayStateItemFromGatewayState(state gatewayclient.ObservedGatewayState) observedGatewayStateItem {
 	return observedGatewayStateItem{
-		ID:             int64(node.ID),
-		CreatedAtUnix:  node.CreatedAtUnix,
-		GatewayPeerID:  node.GatewayPubkeyHex,
-		SourceRef:      node.SourceRef,
-		ObservedAtUnix: node.ObservedAtUnix,
-		EventName:      node.EventName,
-		StateBefore:    node.StateBefore,
-		StateAfter:     node.StateAfter,
-		PauseReason:    node.PauseReason,
-		PauseNeedSat:   uint64(node.PauseNeedSatoshi),
-		PauseHaveSat:   uint64(node.PauseHaveSatoshi),
-		LastError:      node.LastError,
-		Payload:        json.RawMessage(node.PayloadJSON),
+		ID:             state.ID,
+		CreatedAtUnix:  state.CreatedAtUnix,
+		GatewayPeerID:  state.GatewayPubkeyHex,
+		SourceRef:      state.SourceRef,
+		ObservedAtUnix: state.ObservedAtUnix,
+		EventName:      state.EventName,
+		StateBefore:    state.StateBefore,
+		StateAfter:     state.StateAfter,
+		PauseReason:    state.PauseReason,
+		PauseNeedSat:   uint64(state.PauseNeedSatoshi),
+		PauseHaveSat:   uint64(state.PauseHaveSatoshi),
+		LastError:      state.LastError,
+		Payload:        append(json.RawMessage(nil), state.Payload...),
 	}
 }
 

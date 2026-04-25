@@ -28,7 +28,7 @@ type DownloadFileCaps struct {
 	transferRunner  filedownload.StrategyTransferRunner
 }
 
-func newDownloadFileCaps(rt *Runtime, store *clientDB, demandEnv gatewayDemandPublishChainTxEnv, cfgSource configSnapshotter) *DownloadFileCaps {
+func newDownloadFileCaps(rt *Runtime, store *clientDB, cfgSource configSnapshotter) *DownloadFileCaps {
 	if store == nil {
 		return nil
 	}
@@ -41,7 +41,7 @@ func newDownloadFileCaps(rt *Runtime, store *clientDB, demandEnv gatewayDemandPu
 		seedStore:       newDownloadFileSeedAdapter(store, rt, cfgSource, rt.SeedStorage),
 		seedResolver:    newDownloadFileSeedAdapter(store, rt, cfgSource, rt.SeedStorage),
 		fileStore:       newDownloadFileWorkspaceAdapter(store),
-		demandPublisher: newDownloadFileDemandAdapter(store, demandEnv),
+		demandPublisher: newDownloadFileDemandAdapter(store, rt),
 		quoteReader:     newDownloadFileQuoteAdapter(store),
 		quoteWaiter:     newDownloadFileQuoteAdapter(store),
 		policy:          newDownloadFilePolicyAdapter(),

@@ -16,6 +16,7 @@ import (
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
 	ncall "github.com/bsv8/BitFS/pkg/clientapp/infra/ncall"
+	"github.com/bsv8/BitFS/pkg/clientapp/modules/gatewayclient"
 	"github.com/bsv8/BitFS/pkg/clientapp/poolcore"
 	"github.com/bsv8/BitFS/pkg/clientapp/infra/pproto"
 	"github.com/bsv8/BitFS/pkg/clientapp/obs"
@@ -147,6 +148,16 @@ type PublishDemandParams struct {
 	SeedHash      string `json:"seed_hash"`
 	ChunkCount    uint32 `json:"chunk_count"`
 	GatewayPeerID string `json:"gateway_pubkey_hex,omitempty"`
+}
+
+type AnnounceNodeReachabilityParams struct {
+	TTLSeconds    uint32 `json:"ttl_seconds"`
+	GatewayPeerID string `json:"gateway_pubkey_hex,omitempty"`
+}
+
+type QueryNodeReachabilityParams struct {
+	TargetNodePubkeyHex string `json:"target_node_pubkey_hex"`
+	GatewayPeerID       string `json:"gateway_pubkey_hex,omitempty"`
 }
 
 type PublishDemandBatchItem struct {
@@ -1930,4 +1941,62 @@ func peerIDFromClientID(clientID string) (peer.ID, error) {
 		return "", fmt.Errorf("derive peer id: %w", err)
 	}
 	return pid, nil
+}
+
+// TriggerGatewayDemandPublishChainTxQuotePay 通过 gatewayclient 模块发布需求。
+func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store *clientDB, rt *Runtime, p PublishDemandParams) (gatewayclient.DemandPublishResult, error) {
+	if rt == nil {
+		return gatewayclient.DemandPublishResult{}, fmt.Errorf("runtime not initialized")
+	}
+	gwStore := rt.GetModuleStore(gatewayclient.ModuleIdentity)
+	if gwStore == nil {
+		return gatewayclient.DemandPublishResult{}, fmt.Errorf("gatewayclient module not available")
+	}
+	gw, ok := gwStore.(gatewayclient.Store)
+	if !ok || gw == nil {
+		return gatewayclient.DemandPublishResult{}, fmt.Errorf("gatewayclient store not available")
+	}
+	host := newModuleHost(rt, store)
+	svc := gatewayclient.NewService(host, gw)
+	return svc.PublishDemand(ctx, gatewayclient.DemandPublishParams{
+		SeedHash:      strings.ToLower(strings.TrimSpace(p.SeedHash)),
+		ChunkCount:    p.ChunkCount,
+		GatewayPeerID: strings.TrimSpace(p.GatewayPeerID),
+	})
+}
+
+// TriggerGatewayAnnounceNodeReachability 通过 gatewayclient 模块宣告节点可达性。
+func TriggerGatewayAnnounceNodeReachability(ctx context.Context, store *clientDB, rt *Runtime, p AnnounceNodeReachabilityParams) (contractmessage.NodeReachabilityAnnouncePaidResp, error) {
+	if rt == nil {
+		return contractmessage.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("runtime not initialized")
+	}
+	gwStore := rt.GetModuleStore(gatewayclient.ModuleIdentity)
+	if gwStore == nil {
+		return contractmessage.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("gatewayclient module not available")
+	}
+	gw, ok := gwStore.(gatewayclient.Store)
+	if !ok || gw == nil {
+		return contractmessage.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("gatewayclient store not available")
+	}
+	host := newModuleHost(rt, store)
+	svc := gatewayclient.NewService(host, gw)
+	return svc.AnnounceNodeReachability(ctx, p.TTLSeconds)
+}
+
+// TriggerGatewayQueryNodeReachability 通过 gatewayclient 模块查询节点可达性。
+func TriggerGatewayQueryNodeReachability(ctx context.Context, store *clientDB, rt *Runtime, p QueryNodeReachabilityParams) (contractmessage.NodeReachabilityQueryPaidResp, error) {
+	if rt == nil {
+		return contractmessage.NodeReachabilityQueryPaidResp{}, fmt.Errorf("runtime not initialized")
+	}
+	gwStore := rt.GetModuleStore(gatewayclient.ModuleIdentity)
+	if gwStore == nil {
+		return contractmessage.NodeReachabilityQueryPaidResp{}, fmt.Errorf("gatewayclient module not available")
+	}
+	gw, ok := gwStore.(gatewayclient.Store)
+	if !ok || gw == nil {
+		return contractmessage.NodeReachabilityQueryPaidResp{}, fmt.Errorf("gatewayclient store not available")
+	}
+	host := newModuleHost(rt, store)
+	svc := gatewayclient.NewService(host, gw)
+	return svc.QueryNodeReachability(ctx, strings.TrimSpace(p.TargetNodePubkeyHex))
 }

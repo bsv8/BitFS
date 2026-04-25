@@ -293,6 +293,19 @@ type Host interface {
 	PeerCall(context.Context, PeerCallRequest) (PeerCallResponse, error)
 	GatewaySnapshot() []PeerNode
 
+	// PreferredGatewayPubkeyHex 返回当前主 gateway 的公钥 hex。
+	PreferredGatewayPubkeyHex() string
+	// HealthyGatewaySnapshot 返回当前健康 gateway 列表。
+	HealthyGatewaySnapshot() []PeerNode
+	// LocalAdvertiseAddrs 返回本节点可对外宣告的地址列表。
+	LocalAdvertiseAddrs() []string
+	// CurrentHeadHeight 返回当前链头高度。
+	CurrentHeadHeight(context.Context) (uint64, error)
+	// SignLocalNodePayload 使用本节点私钥对 payload 签名。
+	SignLocalNodePayload(context.Context, []byte) ([]byte, error)
+	// InjectPeerAddrs 向 peerstore 注入目标节点的多地址。
+	InjectPeerAddrs(context.Context, string, []string, int64) error
+
 	RegisterQuotedServicePayer(scheme string, payer QuotedServicePayer) (func(), error)
 	RegisterServiceCoverageSession(scheme string, session ServiceCoverageSession) (func(), error)
 	RegisterTradeSession(scheme string, session TradeSession) (func(), error)

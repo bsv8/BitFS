@@ -47,7 +47,7 @@ func TriggerOneShotDirectDownload(ctx context.Context, store *clientDB, rt *Runt
 	if seedHash == "" {
 		return OneShotDownloadResult{}, fmt.Errorf("seed_hash required")
 	}
-	caps := newDownloadFileCaps(rt, store, rt, rt)
+	caps := newDownloadFileCaps(rt, store, rt)
 	if caps == nil {
 		return OneShotDownloadResult{}, fmt.Errorf("download caps not available")
 	}

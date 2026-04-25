@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	domainbiz "github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
+	domainbiz "github.com/bsv8/BitFS/pkg/clientapp/modules/domainclient"
 )
 
 func TestResolveDomainToPubkeyHonorsProviderOrder(t *testing.T) {

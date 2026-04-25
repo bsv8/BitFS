@@ -25,8 +25,6 @@ func (s *httpAPIServer) registerHTTPRouteGateway(mux *http.ServeMux, prefix stri
 	mux.HandleFunc(prefix+"/v1/gateways", s.withAuth(s.handleGateways))
 	mux.HandleFunc(prefix+"/v1/gateways/master", s.withAuth(s.handleGatewayMaster))
 	mux.HandleFunc(prefix+"/v1/gateways/health", s.withAuth(s.handleGatewayHealth))
-	mux.HandleFunc(prefix+"/v1/gateways/reachability/announce", s.withAuth(s.handleGatewayReachabilityAnnounce))
-	mux.HandleFunc(prefix+"/v1/gateways/reachability/query", s.withAuth(s.handleGatewayReachabilityQuery))
 }
 
 func (s *httpAPIServer) registerHTTPRouteArbiter(mux *http.ServeMux, prefix string) {

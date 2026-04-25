@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv8/BitFS/pkg/clientapp/infra/ncall"
@@ -17,8 +18,10 @@ import (
 	"github.com/bsv8/BitFS/pkg/clientapp/infra/pproto"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	"github.com/bsv8/BitFS/pkg/clientapp/seedstorage"
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	ma "github.com/multiformats/go-multiaddr"
 )
 
 type moduleHost struct {
@@ -395,6 +398,107 @@ func (h *moduleHost) GatewaySnapshot() []moduleapi.PeerNode {
 		})
 	}
 	return out
+}
+
+func (h *moduleHost) PreferredGatewayPubkeyHex() string {
+	if h == nil || h.rt == nil {
+		return ""
+	}
+	masterPID := h.rt.MasterGateway()
+	if masterPID == "" {
+		return ""
+	}
+	return peerIDToPubkeyHex(masterPID, h.rt.Host)
+}
+
+func (h *moduleHost) HealthyGatewaySnapshot() []moduleapi.PeerNode {
+	if h == nil || h.rt == nil {
+		return nil
+	}
+	if len(h.rt.HealthyGWs) == 0 {
+		return nil
+	}
+	out := make([]moduleapi.PeerNode, 0, len(h.rt.HealthyGWs))
+	for _, ai := range h.rt.HealthyGWs {
+		pubkeyHex := peerIDToPubkeyHex(ai.ID, h.rt.Host)
+		addrs := make([]string, 0, len(ai.Addrs))
+		for _, a := range ai.Addrs {
+			addrs = append(addrs, a.String())
+		}
+		out = append(out, moduleapi.PeerNode{
+			Enabled: true,
+			Addr:    strings.Join(addrs, ","),
+			Pubkey:  pubkeyHex,
+		})
+	}
+	return out
+}
+
+func (h *moduleHost) LocalAdvertiseAddrs() []string {
+	if h == nil || h.rt == nil {
+		return nil
+	}
+	return localAdvertiseAddrs(h.rt)
+}
+
+func (h *moduleHost) CurrentHeadHeight(ctx context.Context) (uint64, error) {
+	if h == nil || h.rt == nil || h.rt.ActionChain == nil {
+		return 0, fmt.Errorf("runtime not initialized")
+	}
+	height, err := h.rt.ActionChain.GetTipHeight()
+	if err != nil {
+		return 0, err
+	}
+	return uint64(height), nil
+}
+
+func (h *moduleHost) SignLocalNodePayload(ctx context.Context, payload []byte) ([]byte, error) {
+	if h == nil || h.rt == nil || h.rt.Host == nil {
+		return nil, fmt.Errorf("runtime not initialized")
+	}
+	if len(payload) == 0 {
+		return nil, fmt.Errorf("payload is empty")
+	}
+	hostPriv := h.rt.Host.Peerstore().PrivKey(h.rt.Host.ID())
+	if hostPriv == nil {
+		return nil, fmt.Errorf("missing host private key")
+	}
+	return hostPriv.Sign(payload)
+}
+
+func (h *moduleHost) InjectPeerAddrs(ctx context.Context, targetPubkeyHex string, addrs []string, ttlSeconds int64) error {
+	if h == nil || h.rt == nil || h.rt.Host == nil {
+		return fmt.Errorf("runtime not initialized")
+	}
+	if strings.TrimSpace(targetPubkeyHex) == "" {
+		return fmt.Errorf("target pubkey hex is required")
+	}
+	if len(addrs) == 0 {
+		return fmt.Errorf("addrs is empty")
+	}
+	if ttlSeconds <= 0 {
+		return fmt.Errorf("ttl must be positive")
+	}
+	pid, err := poolcore.PeerIDFromClientID(targetPubkeyHex)
+	if err != nil {
+		return err
+	}
+	ttl := time.Duration(ttlSeconds) * time.Second
+	for _, raw := range addrs {
+		addr, err := ma.NewMultiaddr(raw)
+		if err != nil {
+			return err
+		}
+		info, err := peer.AddrInfoFromP2pAddr(addr)
+		if err != nil {
+			return err
+		}
+		if info.ID != pid {
+			return fmt.Errorf("announcement peer id mismatch")
+		}
+		h.rt.Host.Peerstore().AddAddrs(pid, info.Addrs, ttl)
+	}
+	return nil
 }
 
 func (h *moduleHost) PeerCallRaw(ctx context.Context, peer string, protocolID string, request moduleapi.PeerCallRequest) (moduleapi.PeerCallResponse, error) {
@@ -873,4 +977,20 @@ func (h *moduleHost) GetModuleStore(name string) any {
 		return nil
 	}
 	return h.rt.GetModuleStore(name)
+}
+
+// peerIDToPubkeyHex 从 peer.ID 获取公钥 hex。
+func peerIDToPubkeyHex(pid peer.ID, h host.Host) string {
+	if h == nil || pid == "" {
+		return ""
+	}
+	pub := h.Peerstore().PubKey(pid)
+	if pub == nil {
+		return ""
+	}
+	pubBytes, err := pub.Raw()
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(hex.EncodeToString(pubBytes))
 }

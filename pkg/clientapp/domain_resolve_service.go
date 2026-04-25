@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	domainbiz "github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
+	domainbiz "github.com/bsv8/BitFS/pkg/clientapp/modules/domainclient"
 	domainwire "github.com/bsv8/BitFS/pkg/clientapp/modules/domain/domainwire"
 )
 

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	domainbiz "github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
+	domainbiz "github.com/bsv8/BitFS/pkg/clientapp/modules/domainclient"
 )
 
 func TestNewRuntimeAPIHandler_DoesNotRequireRuntimeHTTPServer(t *testing.T) {

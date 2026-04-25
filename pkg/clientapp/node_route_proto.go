@@ -39,6 +39,8 @@ func unmarshalNodeRouteProtoBody(route string, raw []byte, out oldproto.Message,
 	return nil
 }
 
+// callNodeRouteProto 直连独立 protocol.ID，不再走 node.call route 分发。
+// 2026-04 兼容层标注：已收窄为兼容工具，主链路请使用 pproto.CallProto。
 func callNodeRouteProto(ctx context.Context, rt *Runtime, peerID peer.ID, protoID protocol.ID, route string, body oldproto.Message, out oldproto.Message) error {
 	if rt == nil || rt.Host == nil {
 		return fmt.Errorf("runtime not initialized")

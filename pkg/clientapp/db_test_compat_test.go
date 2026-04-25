@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	broadcastmodule "github.com/bsv8/BitFS/pkg/clientapp/modules/broadcast"
+	"github.com/bsv8/BitFS/pkg/clientapp/modules/gatewayclient"
 )
 
 // chainPaymentPayloadTxHex 读取链上支付载荷里的交易 hex。
@@ -40,22 +40,50 @@ func chainPaymentPayloadTxHex(payloadJSON string) (string, error) {
 	return "", fmt.Errorf("missing tx_hex")
 }
 
-// storeNodeReachabilityCache 直接落到 runtime state 的统一入口。
-func storeNodeReachabilityCache(store *clientDB, sourceGatewayPubkeyHex string, ann broadcastmodule.NodeReachabilityAnnouncement) error {
-	return dbSaveNodeReachabilityCache(context.Background(), store, sourceGatewayPubkeyHex, ann)
+// storeNodeReachabilityCache 走 runtime state 的统一入口，实际写入 gatewayclient 模块。
+func storeNodeReachabilityCache(store *clientDB, sourceGatewayPubkeyHex string, ann gatewayclient.NodeReachabilityAnnouncement) error {
+	return dbSaveNodeReachabilityCache(context.Background(), store, sourceGatewayPubkeyHex, struct {
+		NodePubkeyHex   string
+		Multiaddrs      []string
+		HeadHeight      uint64
+		Seq             uint64
+		PublishedAtUnix int64
+		ExpiresAtUnix   int64
+		Signature       []byte
+	}{
+		NodePubkeyHex:   ann.NodePubkeyHex,
+		Multiaddrs:      ann.Multiaddrs,
+		HeadHeight:      ann.HeadHeight,
+		Seq:             ann.Seq,
+		PublishedAtUnix: ann.PublishedAtUnix,
+		ExpiresAtUnix:   ann.ExpiresAtUnix,
+		Signature:       ann.Signature,
+	})
 }
 
-// loadNodeReachabilityCache 直接读 runtime state 的统一入口。
-func loadNodeReachabilityCache(store *clientDB, targetNodePubkeyHex string, nowUnix int64) (broadcastmodule.NodeReachabilityAnnouncement, bool, error) {
-	return dbLoadCachedNodeReachability(context.Background(), store, targetNodePubkeyHex, nowUnix)
+// loadNodeReachabilityCache 走 runtime state 的统一入口，实际读取 gatewayclient 模块。
+func loadNodeReachabilityCache(store *clientDB, targetNodePubkeyHex string, nowUnix int64) (gatewayclient.NodeReachabilityAnnouncement, bool, error) {
+	result, found, err := dbLoadCachedNodeReachability(context.Background(), store, targetNodePubkeyHex, nowUnix)
+	if err != nil || !found {
+		return gatewayclient.NodeReachabilityAnnouncement{}, found, err
+	}
+	return gatewayclient.NodeReachabilityAnnouncement{
+		NodePubkeyHex:   result.NodePubkeyHex,
+		Multiaddrs:      result.Multiaddrs,
+		HeadHeight:      result.HeadHeight,
+		Seq:             result.Seq,
+		PublishedAtUnix: result.PublishedAtUnix,
+		ExpiresAtUnix:   result.ExpiresAtUnix,
+		Signature:       result.Signature,
+	}, true, nil
 }
 
-// storeSelfNodeReachabilityState 直接落到 runtime state 的统一入口。
+// storeSelfNodeReachabilityState 走 runtime state 的统一入口，实际写入 gatewayclient 模块。
 func storeSelfNodeReachabilityState(store *clientDB, state selfNodeReachabilityState) error {
 	return dbSaveSelfNodeReachabilityState(context.Background(), store, state)
 }
 
-// loadSelfNodeReachabilityState 直接读 runtime state 的统一入口。
+// loadSelfNodeReachabilityState 走 runtime state 的统一入口，实际读取 gatewayclient 模块。
 func loadSelfNodeReachabilityState(store *clientDB, nodePubkeyHex string) (selfNodeReachabilityState, bool, error) {
 	return dbLoadSelfNodeReachabilityState(context.Background(), store, nodePubkeyHex)
 }

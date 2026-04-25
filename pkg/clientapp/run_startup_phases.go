@@ -347,7 +347,6 @@ func (p *runStartupPhases) StartServices() error {
 	}
 	startChainMaintainer(st.rtCtx, rt, st.store)
 	startListenLoops(st.rtCtx, rt, st.store)
-	startAutoNodeReachabilityAnnounceLoop(st.rtCtx, rt, st.store)
 	if runtimeCfg.HTTP.Enabled && !p.opt.DisableHTTPServer {
 		rt.HTTP = newHTTPAPIServer(rt, st.cfgSvc, st.db, st.store, st.host, st.healthyGateways, rt.FileStorage, st.trace)
 		st.wg.Add(1)

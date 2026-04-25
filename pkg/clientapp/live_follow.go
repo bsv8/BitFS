@@ -121,7 +121,7 @@ func liveAutoBuySegment(ctx context.Context, store *clientDB, rt *Runtime, decis
 	if store == nil {
 		return liveAutoBuyResult{}, fmt.Errorf("client db is nil")
 	}
-	caps := newDownloadFileCaps(rt, store, rt, rt)
+	caps := newDownloadFileCaps(rt, store, rt)
 	if caps == nil {
 		return liveAutoBuyResult{}, fmt.Errorf("download caps not available")
 	}

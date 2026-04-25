@@ -95,7 +95,7 @@ func runDownloadByHashCore(ctx context.Context, store *clientDB, rt *Runtime, p 
 	if seedHash == "" {
 		return downloadByHashResult{}, fmt.Errorf("seed_hash required")
 	}
-	caps := newDownloadFileCaps(rt, store, rt, rt.config)
+	caps := newDownloadFileCaps(rt, store, rt.config)
 	if caps == nil {
 		return downloadByHashResult{}, fmt.Errorf("download caps are not available")
 	}

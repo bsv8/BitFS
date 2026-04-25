@@ -12,7 +12,7 @@ import (
 	"github.com/bsv8/BitFS/pkg/clientapp/infra/ncall"
 	"github.com/bsv8/BitFS/pkg/clientapp/modulelock"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
-	domainbiz "github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
+	domainbiz "github.com/bsv8/BitFS/pkg/clientapp/modules/domainclient"
 	"github.com/libp2p/go-libp2p/core/protocol"
 )
 

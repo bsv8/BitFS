@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+// 2026-04 兼容层标注：只允许加兼容边界注释，不改 schema。
 type GatewaySessionRow struct {
 	SpendTxID string
 

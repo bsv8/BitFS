@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	domainbiz "github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
+	domainbiz "github.com/bsv8/BitFS/pkg/clientapp/modules/domainclient"
 )
 
 type walletOrderTemplateDomainRegister struct{}
@@ -16,12 +16,12 @@ func (walletOrderTemplateDomainRegister) TemplateID() string {
 }
 
 func (walletOrderTemplateDomainRegister) Prepare(ctx context.Context, store *clientDB, rt *Runtime, req WalletOrderRequest) (walletOrderPreparedTx, error) {
-	adapter := newDomainModuleAdapter(rt, store)
-	quote, err := adapter.VerifyRegisterQuote(req.SignerPubkeyHex, req.SignedEnvelope)
+	backend := domainClientBackend{rt: rt, store: store}
+	quote, err := backend.VerifyRegisterQuote(req.SignerPubkeyHex, req.SignedEnvelope)
 	if err != nil {
 		return walletOrderPreparedTx{}, err
 	}
-	built, err := adapter.BuildDomainRegisterTx(ctx, req.SignedEnvelope, quote)
+	built, err := backend.BuildDomainRegisterTx(ctx, req.SignedEnvelope, quote)
 	if err != nil {
 		return walletOrderPreparedTx{}, err
 	}

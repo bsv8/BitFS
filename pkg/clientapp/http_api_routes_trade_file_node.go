@@ -13,8 +13,6 @@ func (s *httpAPIServer) registerHTTPRouteTrade(mux *http.ServeMux, prefix string
 	mux.HandleFunc(prefix+"/v1/biz_purchases/detail", s.withAuth(s.handlePurchaseDetail))
 	mux.HandleFunc(prefix+"/v1/biz_purchases/summary", s.withAuth(s.handlePurchaseSummary))
 	mux.HandleFunc(prefix+"/v1/downloads/settlement-status", s.withAuth(s.handleDownloadSettlementStatus))
-	mux.HandleFunc(prefix+"/v1/gateways/events", s.withAuth(s.handleGatewayEvents))
-	mux.HandleFunc(prefix+"/v1/gateways/events/detail", s.withAuth(s.handleGatewayEventDetail))
 }
 
 func (s *httpAPIServer) registerHTTPRouteFile(mux *http.ServeMux, prefix string) {
@@ -35,7 +33,4 @@ func (s *httpAPIServer) registerHTTPRouteGetFileByHash(mux *http.ServeMux, prefi
 func (s *httpAPIServer) registerHTTPRouteNode(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc(prefix+"/v1/libp2p/call", s.withAuth(s.handleCall))
 	mux.HandleFunc(prefix+"/v1/resolvers/resolve", s.withAuth(s.handleResolverResolve))
-	mux.HandleFunc(prefix+"/v1/domains/register", s.withAuth(s.handleDomainRegister))
-	mux.HandleFunc(prefix+"/v1/domains/set-target", s.withAuth(s.handleDomainSetTarget))
-	mux.HandleFunc(prefix+"/v1/domains/settlement-status", s.withAuth(s.handleDomainSettlementStatus))
 }

@@ -107,7 +107,17 @@ func (h *testHost) SellerResaleDiscountBPS() uint64   { return h.resaleBPS }
 func (h *testHost) PeerCall(context.Context, moduleapi.PeerCallRequest) (moduleapi.PeerCallResponse, error) {
 	return moduleapi.PeerCallResponse{}, fmt.Errorf("peer call is not supported in test host")
 }
-func (h *testHost) GatewaySnapshot() []moduleapi.PeerNode { return nil }
+func (h *testHost) GatewaySnapshot() []moduleapi.PeerNode            { return nil }
+func (h *testHost) PreferredGatewayPubkeyHex() string                { return "" }
+func (h *testHost) HealthyGatewaySnapshot() []moduleapi.PeerNode      { return nil }
+func (h *testHost) LocalAdvertiseAddrs() []string                    { return nil }
+func (h *testHost) CurrentHeadHeight(context.Context) (uint64, error) { return 0, nil }
+func (h *testHost) SignLocalNodePayload(context.Context, []byte) ([]byte, error) {
+	return nil, fmt.Errorf("sign is not supported in test host")
+}
+func (h *testHost) InjectPeerAddrs(context.Context, string, []string, int64) error {
+	return fmt.Errorf("inject peer addrs is not supported in test host")
+}
 
 func (h *testHost) SeedStorage() moduleapi.SeedStorage {
 	if h.seed == nil {

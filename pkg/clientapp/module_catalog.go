@@ -11,8 +11,9 @@ import (
 	"github.com/bsv8/BitFS/pkg/clientapp/modulelock"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb"
 	chain_tx_v1 "github.com/bsv8/BitFS/pkg/clientapp/modules/chain_tx_v1"
-	domainmodule "github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
+	domainmodule "github.com/bsv8/BitFS/pkg/clientapp/modules/domainclient"
 	filestorage "github.com/bsv8/BitFS/pkg/clientapp/modules/filestorage"
+	gatewayclient "github.com/bsv8/BitFS/pkg/clientapp/modules/gatewayclient"
 	inboxmessage "github.com/bsv8/BitFS/pkg/clientapp/modules/inboxmessage"
 	indexresolve "github.com/bsv8/BitFS/pkg/clientapp/modules/indexresolve"
 	pool_2of2_v1 "github.com/bsv8/BitFS/pkg/clientapp/modules/pool_2of2_v1"
@@ -28,6 +29,7 @@ func builtinModuleCatalog() []moduleapi.ModuleDescriptor {
 		indexresolve.Descriptor(),
 		filestorage.Descriptor(),
 		inboxmessage.Descriptor(),
+		gatewayclient.Descriptor(),
 	}
 }
 

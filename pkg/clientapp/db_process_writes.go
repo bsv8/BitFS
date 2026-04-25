@@ -7,9 +7,10 @@ import (
 	"time"
 
 	entsql "entgo.io/ent/dialect/sql"
-	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procchaintipworkerlogs"
 	"github.com/bsv8/BitFS/pkg/clientapp/coredb/gen/procchainutxoworkerlogs"
+	"github.com/bsv8/BitFS/pkg/clientapp/modules/gatewayclient"
+	"github.com/bsv8/BitFS/pkg/clientapp/obs"
 )
 
 // 设计说明：
@@ -32,34 +33,34 @@ type purchaseDoneEntry struct {
 
 // commandJournalEntry proc_command_journal schema 已删除，保留结构体定义仅供编译通过
 type commandJournalEntry struct {
-	CommandID    string
-	CommandType  string
+	CommandID     string
+	CommandType   string
 	GatewayPeerID string
-	AggregateID  string
-	RequestedBy  string
-	RequestedAt  int64
-	Accepted     bool
-	Status       string
-	ErrorCode    string
-	ErrorMessage string
-	StateBefore  string
-	StateAfter   string
-	DurationMS   int64
-	TriggerKey   string
-	Payload      any
-	Result       any
+	AggregateID   string
+	RequestedBy   string
+	RequestedAt   int64
+	Accepted      bool
+	Status        string
+	ErrorCode     string
+	ErrorMessage  string
+	StateBefore   string
+	StateAfter    string
+	DurationMS    int64
+	TriggerKey    string
+	Payload       any
+	Result        any
 }
 
 // domainEventEntry proc_domain_events schema 完整字段定义
 type domainEventEntry struct {
 	CommandID     string
-	EventName    string
-	Source       string
-	OccurredAt   int64
-	Payload      any
+	EventName     string
+	Source        string
+	OccurredAt    int64
+	Payload       any
 	GatewayPeerID string
-	StateBefore  string
-	StateAfter   string
+	StateBefore   string
+	StateAfter    string
 }
 
 // stateSnapshotEntry proc_state_snapshots schema 完整字段定义
@@ -73,22 +74,22 @@ type stateSnapshotEntry struct {
 	GatewayPeerID string
 	PauseReason   string
 	PauseNeedSat  int64
-	PauseHaveSat int64
-	LastError    string
+	PauseHaveSat  int64
+	LastError     string
 }
 
 // effectLogEntry proc_effect_logs schema 完整字段定义
 type effectLogEntry struct {
-	EffectID     string
-	AggregateID  string
-	EffectType   string
-	OccurredAt   int64
-	Payload      any
-	CommandID    string
+	EffectID      string
+	AggregateID   string
+	EffectType    string
+	OccurredAt    int64
+	Payload       any
+	CommandID     string
 	GatewayPeerID string
-	Stage       string
-	Status      string
-	ErrorMessage string
+	Stage         string
+	Status        string
+	ErrorMessage  string
 }
 
 // directTransferPoolAllocationFactInput biz_pool_allocations schema 已删除，保留结构体定义仅供编译通过
@@ -187,29 +188,30 @@ func dbAppendGatewayEvent(ctx context.Context, store *clientDB, e gatewayEventEn
 		obs.Error(ServiceName, "gateway_event_append_rejected", map[string]any{"error": err.Error(), "action": strings.TrimSpace(e.Action)})
 		return err
 	}
-	err = store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-		if strings.TrimSpace(e.GatewayPeerID) == "" {
-			e.GatewayPeerID = "unknown"
-		}
-		if strings.TrimSpace(e.Action) == "" {
-			e.Action = "unknown"
-		}
-		_, err := tx.ProcGatewayEvents.Create().
-			SetCreatedAtUnix(time.Now().Unix()).
-			SetGatewayPubkeyHex(e.GatewayPeerID).
-			SetCommandID(commandID).
-			SetAction(e.Action).
-			SetMsgID(e.MsgID).
-			SetSequenceNum(int64(e.SequenceNum)).
-			SetPoolID(e.PoolID).
-			SetAmountSatoshi(e.AmountSatoshi).
-			SetPayloadJSON(mustJSONString(e.Payload)).
-			Save(ctx)
-		if err != nil {
-			obs.Error(ServiceName, "gateway_event_append_failed", map[string]any{"error": err.Error(), "action": e.Action, "command_id": commandID})
-		}
-		return nil
+	gw, err := gatewayClientStoreFromDB(store)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(e.GatewayPeerID) == "" {
+		e.GatewayPeerID = "unknown"
+	}
+	if strings.TrimSpace(e.Action) == "" {
+		e.Action = "unknown"
+	}
+	err = gw.SaveGatewayEvent(ctx, gatewayclient.GatewayEvent{
+		CreatedAtUnix:    time.Now().Unix(),
+		GatewayPubkeyHex: strings.TrimSpace(e.GatewayPeerID),
+		CommandID:        commandID,
+		Action:           strings.TrimSpace(e.Action),
+		MsgID:            strings.TrimSpace(e.MsgID),
+		SequenceNum:      e.SequenceNum,
+		PoolID:           strings.TrimSpace(e.PoolID),
+		AmountSatoshi:    e.AmountSatoshi,
+		Payload:          []byte(mustJSONString(e.Payload)),
 	})
+	if err != nil {
+		obs.Error(ServiceName, "gateway_event_append_failed", map[string]any{"error": err.Error(), "action": e.Action, "command_id": commandID})
+	}
 	return err
 }
 
@@ -357,30 +359,32 @@ func dbAppendObservedGatewayState(ctx context.Context, store *clientDB, e observ
 	if store == nil {
 		return nil
 	}
-	return store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
-		observedAtUnix := e.ObservedAtUnix
-		if observedAtUnix <= 0 {
-			observedAtUnix = time.Now().Unix()
-		}
-		_, err := tx.ProcObservedGatewayStates.Create().
-			SetCreatedAtUnix(time.Now().Unix()).
-			SetGatewayPubkeyHex(strings.TrimSpace(e.GatewayPeerID)).
-			SetSourceRef(strings.TrimSpace(e.SourceRef)).
-			SetObservedAtUnix(observedAtUnix).
-			SetEventName(strings.TrimSpace(e.EventName)).
-			SetStateBefore(strings.TrimSpace(e.StateBefore)).
-			SetStateAfter(strings.TrimSpace(e.StateAfter)).
-			SetPauseReason(strings.TrimSpace(e.PauseReason)).
-			SetPauseNeedSatoshi(int64(e.PauseNeedSat)).
-			SetPauseHaveSatoshi(int64(e.PauseHaveSat)).
-			SetLastError(strings.TrimSpace(e.LastError)).
-			SetPayloadJSON(mustJSONString(e.Payload)).
-			Save(ctx)
-		if err != nil {
-			obs.Error(ServiceName, "observed_gateway_state_append_failed", map[string]any{"error": err.Error(), "event_name": e.EventName})
-		}
+	gw, err := gatewayClientStoreFromDB(store)
+	if err != nil {
 		return err
+	}
+	observedAtUnix := e.ObservedAtUnix
+	if observedAtUnix <= 0 {
+		observedAtUnix = time.Now().Unix()
+	}
+	err = gw.SaveObservedGatewayState(ctx, gatewayclient.ObservedGatewayState{
+		CreatedAtUnix:    time.Now().Unix(),
+		GatewayPubkeyHex: strings.TrimSpace(e.GatewayPeerID),
+		SourceRef:        strings.TrimSpace(e.SourceRef),
+		ObservedAtUnix:   observedAtUnix,
+		EventName:        strings.TrimSpace(e.EventName),
+		StateBefore:      strings.TrimSpace(e.StateBefore),
+		StateAfter:       strings.TrimSpace(e.StateAfter),
+		PauseReason:      strings.TrimSpace(e.PauseReason),
+		PauseNeedSatoshi: int64(e.PauseNeedSat),
+		PauseHaveSatoshi: int64(e.PauseHaveSat),
+		LastError:        strings.TrimSpace(e.LastError),
+		Payload:          []byte(mustJSONString(e.Payload)),
 	})
+	if err != nil {
+		obs.Error(ServiceName, "observed_gateway_state_append_failed", map[string]any{"error": err.Error(), "event_name": e.EventName})
+	}
+	return err
 }
 
 func dbAppendEffectLog(ctx context.Context, store *clientDB, e effectLogEntry) error {
@@ -590,8 +594,8 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 	}
 	obs.Info(ServiceName, "fee_pool_open_accounting_deprecated", map[string]any{
 		"business_id": strings.TrimSpace(in.BusinessID),
-		"spend_txid":   strings.TrimSpace(in.SpendTxID),
-		"note":         "Group 8 cleanup: settlement layer removed",
+		"spend_txid":  strings.TrimSpace(in.SpendTxID),
+		"note":        "Group 8 cleanup: settlement layer removed",
 	})
 }
 
@@ -614,12 +618,12 @@ func dbRecordFeePoolQuotePayAccounting(ctx context.Context, store *clientDB, gat
 		return fmt.Errorf("client db is nil")
 	}
 	obs.Info(ServiceName, "fee_pool_quote_pay_accounting_deprecated", map[string]any{
-		"gateway":     strings.TrimSpace(gatewayPubkeyHex),
-		"spend_txid":  strings.TrimSpace(spendTxID),
+		"gateway":      strings.TrimSpace(gatewayPubkeyHex),
+		"spend_txid":   strings.TrimSpace(spendTxID),
 		"updated_txid": strings.TrimSpace(updatedTxID),
-		"charged":     chargedAmount,
-		"reason":      strings.TrimSpace(chargeReason),
-		"note":        "Group 8 cleanup: settlement layer removed",
+		"charged":      chargedAmount,
+		"reason":       strings.TrimSpace(chargeReason),
+		"note":         "Group 8 cleanup: settlement layer removed",
 	})
 	return nil
 }
@@ -685,4 +689,3 @@ func dbGetChainPaymentByTxID(ctx context.Context, store *clientDB, txID string) 
 func dbUpsertBusinessSettlementEntTx(ctx context.Context, tx EntWriteRoot, e any) error {
 	return fmt.Errorf("business settlement not available after Group 8 cleanup")
 }
-

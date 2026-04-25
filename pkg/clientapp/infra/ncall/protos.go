@@ -30,6 +30,8 @@ const (
 )
 
 const (
+	// RoutePoolV1* 是兼容层导出，不作为新业务常量。
+	// 2026-04 硬切后主链路已迁移到 contractprotoid.ProtoPoolV1*。
 	RoutePoolV1Info         = string(contractroute.RoutePoolV1Info)
 	RoutePoolV1Create       = string(contractroute.RoutePoolV1Create)
 	RoutePoolV1BaseTx       = string(contractroute.RoutePoolV1BaseTx)

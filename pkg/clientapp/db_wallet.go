@@ -120,11 +120,15 @@ func dbLoadWalletSummaryCounters(ctx context.Context, store *clientDB) (walletSu
 		}
 		out.PurchaseCount = int64(purchaseCount)
 
-		gatewayCount, err := root.ProcGatewayEvents.Query().Count(ctx)
+		gw, err := gatewayClientStoreFromDB(store)
 		if err != nil {
 			return walletSummaryCounters{}, err
 		}
-		out.GatewayEventCount = int64(gatewayCount)
+		gatewayEvents, err := gw.ListGatewayEvents(ctx, 0)
+		if err != nil {
+			return walletSummaryCounters{}, err
+		}
+		out.GatewayEventCount = int64(len(gatewayEvents))
 
 		return out, nil
 	})
